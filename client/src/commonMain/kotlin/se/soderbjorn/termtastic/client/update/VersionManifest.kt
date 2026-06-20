@@ -2,13 +2,13 @@
  * Serializable models for the cross-platform version-update manifest.
  *
  * Every Termtastic client (Android, iOS, and the macOS Electron app) fetches a
- * single `versions.json` published at the root of the GitHub repository and
- * deserializes it into a [VersionManifest]. The manifest lists, per platform,
+ * single `versions.json` published on the main website (`termtastic.soderbjorn.se`)
+ * and deserializes it into a [VersionManifest]. The manifest lists, per platform,
  * the latest published build so a client can compare it against its own running
  * version and surface a discreet "new version available" notification.
  *
- * These classes intentionally mirror the on-disk JSON one-to-one (see the
- * repo-root `versions.json`) and live in the shared `client` module so all
+ * These classes intentionally mirror the published JSON one-to-one (see
+ * `termtastic.soderbjorn.se/versions.json`) and live in the shared `client` module so all
  * three platforms parse the same shape — the comparison and notification logic
  * in [se.soderbjorn.termtastic.client.newsupdates.NewsUpdatesBackingViewModel]
  * is written once here rather than duplicated in Kotlin and Swift.

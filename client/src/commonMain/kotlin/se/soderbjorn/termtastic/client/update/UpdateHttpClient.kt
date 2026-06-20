@@ -1,11 +1,11 @@
 /**
  * Per-platform factory for a plain (un-pinned) [HttpClient] used to fetch the
- * version-update manifest from public GitHub.
+ * version-update manifest from the public website.
  *
  * Unlike [se.soderbjorn.termtastic.client.createPinnedHttpClient], which talks
  * to the user's self-signed Termtastic server and enforces TOFU certificate
  * pinning, the update checker fetches `versions.json` from
- * `raw.githubusercontent.com` — a public host with a normal CA-issued
+ * `termtastic.soderbjorn.se` — a public host with a normal CA-issued
  * certificate. So this client uses ordinary platform TLS validation and no
  * pinning hooks.
  *

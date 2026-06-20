@@ -6,7 +6,7 @@
  * Swift wrapper, and the macOS Electron renderer's JS bootstrap). Following the
  * project's `*BackingViewModel` convention it owns *all* of the logic so the
  * platforms never drift: periodic scheduling, fetching both the `versions.json`
- * update manifest and the `news.json` manifest from GitHub, comparing the
+ * update manifest and the `news.json` manifest from the main website, comparing the
  * running build against the published one, filtering news to the active and
  * not-yet-dismissed items, and exposing the merged result as a single immutable
  * [State] over a [StateFlow]. Platform UIs only render that state, open
@@ -63,13 +63,13 @@ import se.soderbjorn.termtastic.client.storage.LocalRepository
 import se.soderbjorn.termtastic.client.update.VersionManifest
 import se.soderbjorn.termtastic.client.update.createPlainHttpClient
 
-/** The raw GitHub URL of the published version manifest at the repository root. */
+/** The URL of the published version manifest, hosted on the main website. */
 const val DEFAULT_MANIFEST_URL: String =
-    "https://raw.githubusercontent.com/soderbjorn/termtastic/main/versions.json"
+    "https://termtastic.soderbjorn.se/versions.json"
 
-/** The raw GitHub URL of the published news manifest at the repository root. */
+/** The URL of the published news manifest, hosted on the main website. */
 const val DEFAULT_NEWS_URL: String =
-    "https://raw.githubusercontent.com/soderbjorn/termtastic/main/news.json"
+    "https://termtastic.soderbjorn.se/news.json"
 
 /**
  * How often to re-check for news/updates after the on-startup check. Daily —
@@ -147,7 +147,15 @@ class NewsUpdatesBackingViewModel(
     /** The current news/update state, observed by every platform UI. */
     val stateFlow: StateFlow<State> = _stateFlow.asStateFlow()
 
-    private val json = Json { ignoreUnknownKeys = true }
+    // allowComments / allowTrailingComma let the published versions.json and
+    // news.json carry `//` and `/* */` comments (e.g. to temporarily "comment
+    // out" an item) and tolerate a trailing comma without failing the whole
+    // parse. ignoreUnknownKeys keeps forward-compatibility with future fields.
+    private val json = Json {
+        ignoreUnknownKeys = true
+        allowComments = true
+        allowTrailingComma = true
+    }
 
     private var started = false
 

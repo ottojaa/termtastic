@@ -2,8 +2,8 @@
  * Serializable models for the Termtastic "news" manifest.
  *
  * Every Termtastic client (Android, iOS, and the macOS Electron app) fetches a
- * single `news.json` published at the root of the GitHub repository — a sibling
- * of `versions.json` — and deserializes it into a [NewsManifest]. Each [NewsItem]
+ * single `news.json` published on the main website (`termtastic.soderbjorn.se`) —
+ * a sibling of `versions.json` — and deserializes it into a [NewsManifest]. Each [NewsItem]
  * is a short, dated announcement (a new feature, a notable fix, etc.) surfaced in
  * the mobile "News & Updates" screen and the desktop "News" pill. Each item
  * carries an [NewsItem.active] flag: every active item is eligible for display
