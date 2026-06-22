@@ -92,8 +92,9 @@ struct TerminalScreen: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 HStack(spacing: 6) {
-                    // Pane status dot (replaces the spinner/alert): idle green,
-                    // working green-pulse, waiting red-pulse.
+                    // Pane status indicator (issue #38), painted in the theme
+                    // foreground colour: idle = solid dot, working = breathing
+                    // dot, waiting = pulsing warning triangle.
                     StatusDot(state: paneState, box: 18)
                     Text(headerTitle)
                         .font(.headline)

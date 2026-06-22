@@ -392,8 +392,9 @@ fun TerminalScreen(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // Pane status dot (replaces the spinner/alert): idle
-                        // green, working green-pulse, waiting red-pulse. The
+                        // Pane status indicator (issue #38), painted in the
+                        // theme foreground colour: idle = solid dot, working =
+                        // breathing dot, waiting = pulsing warning triangle. The
                         // 18dp box bakes in ~5dp of trailing gap to the title.
                         StatusDot(state = paneState, boxDp = 18)
                         Text(

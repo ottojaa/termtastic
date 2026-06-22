@@ -508,7 +508,8 @@ private fun buildSidebarFooter(): HTMLElement {
 /* elements by `data-session` / `data-tab-state` and re-applies            */
 /* `applyDotState` in-place. The per-pane header/tab factories return      */
 /* `null` for panes whose leaf has no associated terminal session; the     */
-/* sidebar factory always returns a dot (idle-green for stateless panes).  */
+/* sidebar factory always returns a dot (a static idle dot in the theme    */
+/* foreground colour for stateless panes).                                 */
 /* -------------------------------------------------------------------- */
 
 /**

@@ -609,8 +609,9 @@ private fun TabHeaderRow(
                 ),
             )
             Spacer(Modifier.width(4.dp))
-            // Tab-aggregated status dot (replaces the spinner/alert): idle green,
-            // working green-pulse, waiting red-pulse.
+            // Tab-aggregated status indicator (issue #38), painted in the theme
+            // foreground colour: idle = solid dot, working = breathing dot,
+            // waiting = pulsing warning triangle.
             StatusDot(state = row.aggregateState)
         }
         DropdownMenu(
