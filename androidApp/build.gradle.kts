@@ -41,8 +41,8 @@ android {
         applicationId = "se.soderbjorn.termtastic.android"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.2.0"
     }
 
     buildFeatures {
