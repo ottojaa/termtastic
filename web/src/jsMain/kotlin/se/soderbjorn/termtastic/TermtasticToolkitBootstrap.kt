@@ -508,8 +508,8 @@ private fun buildSidebarFooter(): HTMLElement {
 /* elements by `data-session` / `data-tab-state` and re-applies            */
 /* `applyDotState` in-place. The per-pane header/tab factories return      */
 /* `null` for panes whose leaf has no associated terminal session; the     */
-/* sidebar factory always returns a dot (a static idle dot in the theme    */
-/* foreground colour for stateless panes).                                 */
+/* sidebar factory always returns a dot, but CSS hides any idle dot         */
+/* (issue #43), so stateless / idle panes show no indicator in practice.    */
 /* -------------------------------------------------------------------- */
 
 /**
@@ -680,13 +680,21 @@ fun bootViaToolkitShell(root: HTMLElement) {
             paneHeaderBadge = { _, paneId ->
                 sessionIdForPane(paneId)?.let { buildStatusDot(it, header = true) }
             },
-            // The sidebar badge slot holds the per-row status DOT (leading bead)
-            // for EVERY pane — terminal panes are state-driven via their session
-            // id; non-terminal panes show a static idle-green dot. CSS `order`
-            // floats it to the leading edge. See buildStatusDot.
+            // The sidebar badge slot holds the per-row status DOT (trailing bead,
+            // after the label) for EVERY pane — terminal panes are state-driven
+            // via their session id; non-terminal panes get an idle dot. CSS
+            // `order` floats it to the trailing edge and hides it while idle
+            // (issue #43), so a row only shows the dot when working/waiting.
+            // See buildStatusDot.
             paneSidebarBadge = { _, paneId ->
                 buildStatusDot(sessionIdForPane(paneId))
             },
+            // Per-tab aggregated status DOT in the LEFT-PANE tab header, placed
+            // after the tab label (issue #43). Carries `data-tab-state=<tabId>`
+            // just like the tab-strip dot below, so `updateStateIndicators`
+            // repaints both from one query; CSS hides it while the tab is idle,
+            // so it appears only when some pane in the tab is working/waiting.
+            tabSidebarHeaderBadge = { tabId -> buildTabStatusDot(tabId) },
             // Sticky pane-slot index — `①..⑨`, `Ⓐ..Ⓩ` rendered as a
             // trailing badge on both pane header and sidebar row. The
             // assigner is kept in sync with the server-pushed pane set

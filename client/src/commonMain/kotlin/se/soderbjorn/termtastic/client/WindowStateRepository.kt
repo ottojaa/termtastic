@@ -19,9 +19,38 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import se.soderbjorn.darkness.core.PersistKeys
 import se.soderbjorn.termtastic.WindowConfig
+
+/**
+ * The toolkit-owned geometry of a single pane, parsed from the `LAYOUT_STATE`
+ * blob's `geometryByTab[tabId][paneId]` entry. This — not [se.soderbjorn.termtastic.Pane]'s
+ * fields — is the authoritative position/size that the web/Electron client
+ * renders and persists; mobile reads it to lay out the overview faithfully.
+ *
+ * All of [xPct]/[yPct]/[widthPct]/[heightPct] are fractions (0.0–1.0) of the
+ * tab content area, matching the web semantics.
+ *
+ * @property xPct        top-left x as a fraction of the content width.
+ * @property yPct        top-left y as a fraction of the content height.
+ * @property widthPct    width as a fraction of the content width.
+ * @property heightPct   height as a fraction of the content height.
+ * @property zIndex      stacking order (higher renders on top).
+ * @property isMaximized whether the pane currently fills the tab.
+ * @property isMinimized whether the pane is docked off the canvas.
+ */
+data class ToolkitPaneGeometry(
+    val xPct: Double,
+    val yPct: Double,
+    val widthPct: Double,
+    val heightPct: Double,
+    val zIndex: Int,
+    val isMaximized: Boolean,
+    val isMinimized: Boolean,
+)
 
 /**
  * Process-lifetime cache of the latest [WindowConfig] and per-session state
@@ -57,6 +86,21 @@ class WindowStateRepository {
     private val _minimizedPaneIds = MutableStateFlow<Set<String>>(emptySet())
     /** Observable set of currently-minimized pane ids (see backing field). */
     val minimizedPaneIds: StateFlow<Set<String>> = _minimizedPaneIds.asStateFlow()
+
+    /**
+     * Authoritative per-tab pane geometry, keyed `tabId -> (paneId -> geometry)`,
+     * parsed from the toolkit-owned `LAYOUT_STATE` blob the server broadcasts
+     * over `/window`. This is the position/size the web/Electron client actually
+     * renders — [se.soderbjorn.termtastic.Pane]'s own `x/y/width/height` fields
+     * are placeholder defaults and must not be used for layout. The overview
+     * reads this to mirror the desktop arrangement.
+     *
+     * Empty until the first `UiSettings` envelope arrives (or when the server
+     * has no layout state yet); callers should fall back gracefully.
+     */
+    private val _geometryByTab = MutableStateFlow<Map<String, Map<String, ToolkitPaneGeometry>>>(emptyMap())
+    /** Observable per-tab pane geometry (see backing field). */
+    val geometryByTab: StateFlow<Map<String, Map<String, ToolkitPaneGeometry>>> = _geometryByTab.asStateFlow()
 
     /** Whether the server has sent a `PendingApproval` envelope (device not
      *  yet approved). */
@@ -108,43 +152,60 @@ class WindowStateRepository {
      * @param settings the complete UI-settings JSON object.
      */
     fun updateUiSettings(settings: JsonObject) {
-        _minimizedPaneIds.value = parseMinimizedPaneIds(settings)
+        val geometry = parseGeometryByTab(settings)
+        _geometryByTab.value = geometry
+        _minimizedPaneIds.value = geometry.values
+            .flatMap { panes -> panes.filterValues { it.isMinimized }.keys }
+            .toSet()
     }
 
     /**
-     * Extracts the set of minimized pane ids from a UI-settings blob by
-     * reading the toolkit's `LAYOUT_STATE` entry's
-     * `geometryByTab[tab][pane].isMinimized` flags.
+     * Parses the toolkit's `LAYOUT_STATE` blob into per-tab pane geometry by
+     * reading each `geometryByTab[tab][pane]` entry's
+     * `xPct/yPct/widthPct/heightPct/zIndex/isMaximized/isMinimized` fields.
      *
      * The `LAYOUT_STATE` value normally arrives as a JSON-encoded *string*
      * (the toolkit persister writes a stringified blob into the flat-KV);
      * some seed paths inline it as an object. Both shapes are handled, and
-     * any malformed/missing data degrades to an empty set.
+     * any malformed/missing data degrades to an empty map.
      *
      * @param settings the UI-settings JSON object.
-     * @return ids of every pane whose `isMinimized` flag is set.
+     * @return `tabId -> (paneId -> geometry)`, empty when absent/malformed.
      */
-    private fun parseMinimizedPaneIds(settings: JsonObject): Set<String> {
-        val raw = settings[PersistKeys.LAYOUT_STATE] ?: return emptySet()
+    private fun parseGeometryByTab(settings: JsonObject): Map<String, Map<String, ToolkitPaneGeometry>> {
+        val raw = settings[PersistKeys.LAYOUT_STATE] ?: return emptyMap()
         val layout: JsonObject = when {
             raw is JsonObject -> raw
             raw is JsonPrimitive && raw.isString ->
                 runCatching { layoutJson.parseToJsonElement(raw.content).jsonObject }.getOrNull()
-                    ?: return emptySet()
-            else -> return emptySet()
+                    ?: return emptyMap()
+            else -> return emptyMap()
         }
-        val geometryByTab = (layout["geometryByTab"] as? JsonObject) ?: return emptySet()
-        val minimized = mutableSetOf<String>()
-        for ((_, panesEl) in geometryByTab) {
+        val geometryByTab = (layout["geometryByTab"] as? JsonObject) ?: return emptyMap()
+        val out = mutableMapOf<String, Map<String, ToolkitPaneGeometry>>()
+        for ((tabId, panesEl) in geometryByTab) {
             val panes = panesEl as? JsonObject ?: continue
+            val tabGeom = mutableMapOf<String, ToolkitPaneGeometry>()
             for ((paneId, geomEl) in panes) {
                 val geom = geomEl as? JsonObject ?: continue
-                val isMin = (geom["isMinimized"] as? JsonPrimitive)?.booleanOrNull ?: false
-                if (isMin) minimized.add(paneId)
+                tabGeom[paneId] = ToolkitPaneGeometry(
+                    xPct = geom.num("xPct"),
+                    yPct = geom.num("yPct"),
+                    widthPct = geom.num("widthPct", default = 1.0),
+                    heightPct = geom.num("heightPct", default = 1.0),
+                    zIndex = (geom["zIndex"] as? JsonPrimitive)?.intOrNull ?: 0,
+                    isMaximized = (geom["isMaximized"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    isMinimized = (geom["isMinimized"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                )
             }
+            if (tabGeom.isNotEmpty()) out[tabId] = tabGeom
         }
-        return minimized
+        return out
     }
+
+    /** Read a numeric field from a geometry object, defaulting when absent. */
+    private fun JsonObject.num(key: String, default: Double = 0.0): Double =
+        (this[key] as? JsonPrimitive)?.doubleOrNull ?: default
 
     private companion object {
         /** Lenient parser for the embedded `LAYOUT_STATE` blob. */

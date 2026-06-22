@@ -31,6 +31,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -47,19 +48,22 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +75,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
@@ -157,7 +160,7 @@ private sealed class TreeRow {
 }
 
 /** Discriminator for the type of content a leaf pane holds. */
-private enum class LeafKind { TERMINAL, FILE_BROWSER, GIT, EMPTY }
+internal enum class LeafKind { TERMINAL, FILE_BROWSER, GIT, EMPTY }
 
 /**
  * Intermediate data holder used during tree flattening before being
@@ -339,6 +342,10 @@ fun TreeScreen(
     val newsUpdatesVm = remember { NewsUpdatesController.ensureStarted(context) }
     val newsUpdatesState by newsUpdatesVm.stateFlow.collectAsStateWithLifecycle()
 
+    // --- View mode: flat session list vs. the miniaturised overview. Saved so
+    // drilling into a pane and returning lands the user back in the same mode.
+    var viewMode by rememberSaveable { mutableStateOf(SessionsViewMode.LIST) }
+
     // --- Creation dialog state ---
     var showTabName by remember { mutableStateOf(false) }
 
@@ -414,16 +421,13 @@ fun TreeScreen(
         )
     }
 
-    // Collapsing large title — expands to a tall "Sessions" header at rest and
-    // shrinks to an inline bar as the pane list scrolls, mirroring the iOS
-    // session list. Wired to the Scaffold via nestedScroll below.
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = SidebarBackground,
         topBar = {
-            LargeTopAppBar(
+            // Compact (non-collapsing) bar to save vertical space — important
+            // in landscape and for the overview's exposé. The List/Overview
+            // switcher lives in the title slot instead of taking its own row.
+            TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = {
                         scope.launch { ConnectionHolder.disconnect() }
@@ -438,6 +442,27 @@ fun TreeScreen(
                 },
                 title = { Text("Sessions", color = SidebarTextPrimary) },
                 actions = {
+                    // Single toggle between the list and the overview. The icon
+                    // shows the mode you'll switch *to*.
+                    IconButton(onClick = {
+                        viewMode = when (viewMode) {
+                            SessionsViewMode.LIST -> SessionsViewMode.OVERVIEW
+                            SessionsViewMode.OVERVIEW -> SessionsViewMode.LIST
+                        }
+                    }) {
+                        when (viewMode) {
+                            SessionsViewMode.LIST -> Icon(
+                                Icons.Filled.GridView,
+                                contentDescription = "Switch to overview",
+                                tint = SidebarTextPrimary,
+                            )
+                            SessionsViewMode.OVERVIEW -> Icon(
+                                Icons.AutoMirrored.Filled.ViewList,
+                                contentDescription = "Switch to list",
+                                tint = SidebarAccent,
+                            )
+                        }
+                    }
                     NewsBellButton(
                         onClick = onOpenNews,
                         shouldPulse = newsUpdatesState.hasNews,
@@ -451,76 +476,95 @@ fun TreeScreen(
                         )
                     }
                 },
-                // Keep the bar the sidebar colour in both expanded and collapsed
-                // states so the title region never flashes the default surface
-                // tint as it scrolls.
-                colors = TopAppBarDefaults.largeTopAppBarColors(
+                colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = SidebarBackground,
-                    scrolledContainerColor = SidebarBackground,
                     titleContentColor = SidebarTextPrimary,
                 ),
-                scrollBehavior = scrollBehavior,
             )
         },
     ) { paddingValues ->
-        val cfg = config
-        if (cfg == null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Connecting…", color = SidebarTextSecondary)
-            }
-            return@Scaffold
-        }
-
-        val rows = flatten(cfg, states, minimizedPaneIds)
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            items(rows, key = { row ->
-                when (row) {
-                    is TreeRow.SectionHeader -> "section-${row.title}"
-                    is TreeRow.TabHeader -> "tab-${row.tabId}"
-                    is TreeRow.Leaf -> "leaf-${row.paneId}"
+            val cfg = config
+            if (cfg == null) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Connecting…", color = SidebarTextSecondary)
                 }
-            }) { row ->
-                when (row) {
-                    is TreeRow.SectionHeader -> SectionHeaderRow(row)
-                    is TreeRow.TabHeader -> TabHeaderRow(
-                        row = row,
-                        closeEnabled = cfg.tabs.size > 1,
-                        onRename = { renameTabTarget = row },
-                        onAddPane = { kind ->
-                            val socket = ConnectionHolder.windowSocket() ?: return@TabHeaderRow
-                            val cfgSnapshot = config
-                            scope.launch { addPaneToTab(socket, row.tabId, kind, cfgSnapshot) }
-                        },
-                        onClose = { closeTabTarget = row },
-                    )
-                    is TreeRow.Leaf -> LeafRow(
-                        row = row,
-                        state = states[row.sessionId],
-                        onClick = {
-                            when (row.kind) {
-                                LeafKind.TERMINAL -> onOpenTerminal(row.sessionId)
-                                LeafKind.FILE_BROWSER -> onOpenFileBrowser(row.paneId)
-                                LeafKind.GIT -> onOpenGit(row.paneId)
-                                LeafKind.EMPTY -> {} // undecided pane — no action
+                return@Column
+            }
+
+            when (viewMode) {
+                SessionsViewMode.OVERVIEW -> OverviewContent(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    onOpenTerminal = onOpenTerminal,
+                    onOpenFileBrowser = onOpenFileBrowser,
+                    onOpenGit = onOpenGit,
+                )
+                SessionsViewMode.LIST -> {
+                    val rows = flatten(cfg, states, minimizedPaneIds)
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                    ) {
+                        items(rows, key = { row ->
+                            when (row) {
+                                is TreeRow.SectionHeader -> "section-${row.title}"
+                                is TreeRow.TabHeader -> "tab-${row.tabId}"
+                                is TreeRow.Leaf -> "leaf-${row.paneId}"
                             }
-                        },
-                        onRename = { renamePaneTarget = row },
-                        onClose = { closePaneTarget = row },
-                    )
+                        }) { row ->
+                            when (row) {
+                                is TreeRow.SectionHeader -> SectionHeaderRow(row)
+                                is TreeRow.TabHeader -> TabHeaderRow(
+                                    row = row,
+                                    closeEnabled = cfg.tabs.size > 1,
+                                    onRename = { renameTabTarget = row },
+                                    onAddPane = { kind ->
+                                        val socket = ConnectionHolder.windowSocket() ?: return@TabHeaderRow
+                                        val cfgSnapshot = config
+                                        scope.launch { addPaneToTab(socket, row.tabId, kind, cfgSnapshot) }
+                                    },
+                                    onClose = { closeTabTarget = row },
+                                )
+                                is TreeRow.Leaf -> LeafRow(
+                                    row = row,
+                                    state = states[row.sessionId],
+                                    onClick = {
+                                        when (row.kind) {
+                                            LeafKind.TERMINAL -> onOpenTerminal(row.sessionId)
+                                            LeafKind.FILE_BROWSER -> onOpenFileBrowser(row.paneId)
+                                            LeafKind.GIT -> onOpenGit(row.paneId)
+                                            LeafKind.EMPTY -> {} // undecided pane — no action
+                                        }
+                                    },
+                                    onRename = { renamePaneTarget = row },
+                                    onClose = { closePaneTarget = row },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+/**
+ * The two presentations of the Sessions screen.
+ *
+ * @property LIST     the flat, scrollable tab/pane tree (the original view).
+ * @property OVERVIEW the miniaturised tabs-and-panes replica (issue #42).
+ */
+enum class SessionsViewMode { LIST, OVERVIEW }
 
 /**
  * Renders a standalone group label (currently only "Hidden") that separates the
@@ -696,10 +740,10 @@ private fun LeafRow(
                 .padding(start = 32.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Leading: per-row status dot (idle green / working green-pulse /
-            // waiting red-pulse), mirroring the web sidebar. The pane-type icon
-            // moved to the trailing edge (issue #35 follow-up).
-            StatusDot(state = state)
+            // Leading: pane-type icon (terminal / git / file browser / …). The
+            // status dot and the pane-type icon swapped places (issue #43), so
+            // each row now reads [pane icon] [title] [status].
+            PaneIcon(kind = row.kind, floating = row.floating)
             Spacer(Modifier.width(8.dp))
             Text(
                 text = row.title,
@@ -710,8 +754,9 @@ private fun LeafRow(
                 maxLines = 1,
             )
             Spacer(Modifier.width(8.dp))
-            // Trailing: pane-type icon (terminal / git / file browser / …).
-            PaneIcon(kind = row.kind, floating = row.floating)
+            // Trailing: per-row status dot — working = breathing dot, waiting =
+            // pulsing warning triangle; idle renders nothing (issue #43).
+            StatusDot(state = state)
         }
         DropdownMenu(
             expanded = menuOpen,
@@ -730,14 +775,23 @@ private fun LeafRow(
 }
 
 /**
- * 14dp icon mirroring the SVGs in main/web/.../main.kt sidebar:
+ * Pane-type icon mirroring the SVGs in main/web/.../main.kt sidebar:
  *  - terminal: rounded rect with a chevron + line ("terminal prompt")
  *  - markdown: document with folded corner and two text lines
  *  - empty: dashed rounded rect placeholder
  *  - floating: rounded rect with a center line and a small taskbar
+ *
+ * Used by [LeafRow] in the session list and by the overview pane thumbnails
+ * ([MiniPane]) at a smaller [sizeDp] (issue #43).
+ *
+ * @param kind the pane content kind selecting which glyph to draw.
+ * @param floating whether the pane lives in a floating window (brighter tint,
+ *   distinct floating glyph).
+ * @param sizeDp the square canvas size in dp; the drawing scales to fit so any
+ *   size renders cleanly. Defaults to 16dp (the sidebar row size).
  */
 @Composable
-private fun PaneIcon(kind: LeafKind, floating: Boolean) {
+internal fun PaneIcon(kind: LeafKind, floating: Boolean, sizeDp: Int = 16) {
     val tint = SidebarTextSecondary.copy(alpha = if (floating) 0.9f else 0.6f)
     val desc = when {
         kind == LeafKind.FILE_BROWSER -> "File browser pane"
@@ -746,7 +800,7 @@ private fun PaneIcon(kind: LeafKind, floating: Boolean) {
         floating -> "Floating pane"
         else -> "Pane"
     }
-    Canvas(modifier = Modifier.size(16.dp).semantics { contentDescription = desc }) {
+    Canvas(modifier = Modifier.size(sizeDp.dp).semantics { contentDescription = desc }) {
         val w = size.width
         val px = w / 16f
         val stroke = Stroke(

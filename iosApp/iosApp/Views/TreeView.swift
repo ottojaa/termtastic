@@ -422,17 +422,19 @@ private struct LeafRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Leading: per-row status dot (idle green / working green-pulse /
-            // waiting red-pulse), mirroring the web sidebar. The pane-type icon
-            // moved to the trailing edge (issue #35 follow-up).
-            StatusDot(state: state)
+            // Leading: pane-type icon. The status dot and the pane-type icon
+            // swapped places (issue #43), so each row reads
+            // [pane icon] [title] [status] [chevron].
+            PaneIcon(kind: kind, floating: floating)
             Text(title)
                 .font(.body)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(1)
             Spacer()
-            // Trailing: pane-type icon, then the navigation chevron.
-            PaneIcon(kind: kind, floating: floating)
+            // Trailing: per-row status dot — working = breathing dot, waiting =
+            // pulsing warning triangle; idle renders nothing (issue #43). The
+            // navigation chevron follows it.
+            StatusDot(state: state)
             Image(systemName: "chevron.right")
                 .font(.caption2)
                 .foregroundStyle(Palette.textSecondary.opacity(0.5))

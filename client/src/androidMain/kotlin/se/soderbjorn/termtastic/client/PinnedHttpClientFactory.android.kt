@@ -25,6 +25,7 @@ package se.soderbjorn.termtastic.client
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import okhttp3.Dispatcher
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
@@ -55,6 +56,19 @@ actual fun createPinnedHttpClient(
     applyCommonClientConfig(this)
     engine {
         config {
+            // Raise OkHttp's concurrent-call limits. Each open WebSocket counts
+            // as a "running" call that never completes, and the overview opens
+            // one PTY socket per visible terminal miniature on top of the
+            // /window socket. OkHttp's default Dispatcher caps concurrent calls
+            // per host at 5, so without this the extra miniature sockets queue
+            // indefinitely (the connect suspends rather than failing) and those
+            // panes stay blank until another socket is torn down.
+            dispatcher(
+                Dispatcher().apply {
+                    maxRequests = 128
+                    maxRequestsPerHost = 64
+                },
+            )
             val tm = TermtasticPinningTrustManager(
                 pinnedFingerprintHex = pinnedFingerprintHex,
                 onPeerCertCaptured = onPeerCertCaptured,

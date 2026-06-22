@@ -6,7 +6,8 @@
  * indicator (`applyDotState()` in `web/.../WebStateActions.kt`). Per issue #38
  * the indicator is painted in the theme's foreground text colour (not a fixed
  * green/red) so it meshes with any theme:
- *  - idle (`null`) → a solid dot, no pulse.
+ *  - idle (`null`) → no indicator at all (hidden); the bead appears only when
+ *    working or waiting (issue #43).
  *  - `"working"`   → the same dot, breathing (pulsing) between full and ~30%.
  *  - `"waiting"`   → the dot is swapped for a pulsing warning/exclamation
  *    triangle, so working and waiting stay distinguishable now that they share
@@ -46,7 +47,8 @@ private val EaseInOutCss = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
  * session state. It is always painted in the theme's foreground text colour
  * ([SidebarTextPrimary]) so it meshes with any theme instead of a fixed
  * green/red.
- *  - idle (`null`) → a solid dot, no pulse.
+ *  - idle (`null`) → no indicator at all (hidden); the bead appears only when
+ *    working or waiting (issue #43).
  *  - `"working"`   → the same dot, breathing between full and ~30% opacity.
  *  - `"waiting"`   → a pulsing warning/exclamation triangle (see
  *    [WaitingWarningIcon]) in place of the dot.
@@ -63,35 +65,36 @@ private val EaseInOutCss = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
  */
 @Composable
 internal fun StatusDot(state: String?, boxDp: Int = 16) {
+    // Idle (null, or any value other than working/waiting) shows NO indicator
+    // (issue #43): the bead appears only while a session is working or waiting
+    // for input. This single guard hides the indicator everywhere StatusDot is
+    // used — sidebar leaf rows, tab headers, the overview tab strip and pane
+    // thumbnails, and the terminal-screen title bar.
+    if (state != "working" && state != "waiting") return
     val color = SidebarTextPrimary
     // Waiting for input → swap the dot for the warning triangle, still pulsing.
     if (state == "waiting") {
         WaitingWarningIcon(boxDp = boxDp, color = color)
         return
     }
-    val pulsing = state == "working"
-    val alpha = if (pulsing) {
-        val transition = rememberInfiniteTransition(label = "statusDot")
-        transition.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.3f,
-            animationSpec = infiniteRepeatable(
-                // The web `.tt-status-dot.state-working` breathes over a 2.5s
-                // ease-in-out cycle; the reversing tween runs the 1250ms
-                // half-cycle each way so it matches.
-                animation = tween(durationMillis = 1250, easing = EaseInOutCss),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "statusDotAlpha",
-        ).value
-    } else {
-        1f
-    }
-    val desc = if (state == "working") "working" else "idle"
+    // Working → a breathing (pulsing) dot.
+    val transition = rememberInfiniteTransition(label = "statusDot")
+    val alpha = transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(
+            // The web `.tt-status-dot.state-working` breathes over a 2.5s
+            // ease-in-out cycle; the reversing tween runs the 1250ms
+            // half-cycle each way so it matches.
+            animation = tween(durationMillis = 1250, easing = EaseInOutCss),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "statusDotAlpha",
+    ).value
     Canvas(
         modifier = Modifier
             .size(boxDp.dp)
-            .semantics { stateDescription = desc },
+            .semantics { stateDescription = "working" },
     ) {
         val center = Offset(size.width / 2f, size.height / 2f)
         val core = size.minDimension * 0.22f

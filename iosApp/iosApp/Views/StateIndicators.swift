@@ -7,7 +7,8 @@
  * `web/.../WebStateActions.kt`). Per issue #38 the indicator is painted in the
  * theme's foreground text colour (`Palette.textPrimary`) — not a fixed
  * green/red — so it meshes with any theme:
- *  - idle (`nil`) → a solid dot, no pulse.
+ *  - idle (`nil`) → no indicator at all (hidden); the bead appears only when
+ *    working or waiting (issue #43).
  *  - `"working"`  → the same dot, breathing (pulsing) between full and ~30%.
  *  - `"waiting"`  → the dot is swapped for a pulsing warning/exclamation
  *    triangle, so working and waiting stay distinguishable now that they share
@@ -21,7 +22,8 @@ import SwiftUI
 /// session state. It is always painted in the theme's foreground text colour
 /// (`Palette.textPrimary`) so it meshes with any theme instead of a fixed
 /// green/red.
-///  - idle (`nil`) → a solid dot, no pulse.
+///  - idle (`nil`) → no indicator at all (hidden); appears only when working
+///    or waiting (issue #43).
 ///  - `"working"`  → the same dot, breathing between full and ~30% opacity.
 ///  - `"waiting"`  → a pulsing warning/exclamation triangle in place of the dot.
 ///
@@ -43,12 +45,11 @@ struct StatusDot: View {
 
     var body: some View {
         let color = Palette.textPrimary
-        let pulsing = state == "working"
         Group {
             if state == "waiting" {
                 // Waiting for input → swap the dot for the warning triangle.
                 WaitingWarningIcon(box: box, color: color)
-            } else {
+            } else if state == "working" {
                 Circle()
                     .fill(color)
                     .frame(width: box * 0.44, height: box * 0.44)
@@ -57,19 +58,16 @@ struct StatusDot: View {
                     // Web `.tt-status-dot.state-working` breathes 1 → 0.3 → 1
                     // over a 2.5s ease-in-out cycle; the 1.25s autoreversing
                     // half-cycle matches.
-                    .opacity(pulsing && pulse ? 0.3 : 1.0)
+                    .opacity(pulse ? 0.3 : 1.0)
                     .animation(
-                        pulsing
-                            ? .easeInOut(duration: 1.25).repeatForever(autoreverses: true)
-                            : .default,
+                        .easeInOut(duration: 1.25).repeatForever(autoreverses: true),
                         value: pulse
                     )
-                    .onAppear { pulse = pulsing }
-                    .onChange(of: pulsing) { _, value in pulse = value }
-                    .accessibilityLabel(
-                        state == "working" ? "Status: working" : "Status: idle"
-                    )
+                    .onAppear { pulse = true }
+                    .accessibilityLabel("Status: working")
             }
+            // Idle (nil, or any other value) → render nothing (issue #43): the
+            // indicator appears only while a session is working or waiting.
         }
     }
 }

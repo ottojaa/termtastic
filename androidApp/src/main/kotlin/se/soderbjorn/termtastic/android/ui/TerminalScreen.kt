@@ -103,7 +103,7 @@ private const val PTY_RESUME_STALE_MS = 3_000L
  * @param bytes one PTY output frame.
  * @return `true` when the frame contains `ESC c`.
  */
-private fun containsTerminalReset(bytes: ByteArray): Boolean {
+internal fun containsTerminalReset(bytes: ByteArray): Boolean {
     for (i in 0 until bytes.size - 1) {
         if (bytes[i] == 0x1b.toByte() && bytes[i + 1] == 'c'.code.toByte()) return true
     }

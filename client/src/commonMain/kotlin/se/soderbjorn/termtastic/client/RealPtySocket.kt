@@ -87,6 +87,15 @@ class RealPtySocket internal constructor(
         private const val RECONNECT_MAX_MS = 15_000L
 
         /**
+         * How many times to retry the *initial* connect (with backoff) before
+         * giving up. The overview opens one PTY socket per visible terminal
+         * miniature simultaneously, so a transient first-connect failure under
+         * that burst is common; bounded retries recover from it while still
+         * not hammering a genuinely unreachable/rejecting server forever.
+         */
+        private const val MAX_INITIAL_CONNECT_ATTEMPTS = 5
+
+        /**
          * Full terminal reset (RIS), emitted on [output] before a
          * reconnect's ring-buffer replay so renderers clear the stale
          * content first instead of appending a duplicate transcript.
@@ -136,16 +145,19 @@ class RealPtySocket internal constructor(
                     _activeSession.value = null
                 } catch (t: Throwable) {
                     _activeSession.value = null
-                    if (!everConnected) {
-                        // Never managed to connect at all — keep the legacy
-                        // single-shot failure mode instead of retrying into
-                        // an unreachable/rejecting server forever.
+                    if (!everConnected && attempt >= MAX_INITIAL_CONNECT_ATTEMPTS) {
+                        // Never managed to connect after a bounded number of
+                        // tries — stop instead of retrying into an
+                        // unreachable/rejecting server forever.
                         println(
-                            "PtySocket($sessionId): initial connect failed: " +
-                                "${t::class.simpleName}(${t.message ?: "no-message"})",
+                            "PtySocket($sessionId): giving up after ${attempt + 1} initial " +
+                                "connect attempts: ${t::class.simpleName}(${t.message ?: "no-message"})",
                         )
                         return@launch
                     }
+                    // Otherwise fall through to the backoff below and retry —
+                    // covers transient first-connect failures (e.g. the burst
+                    // of miniature sockets the overview opens at once).
                 }
                 if (closed) break
                 // Interruptible backoff before reconnecting (a retrySignal

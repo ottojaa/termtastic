@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import se.soderbjorn.termtastic.DiffHunk
 import se.soderbjorn.termtastic.GitContent
@@ -85,6 +86,12 @@ class GitPaneBackingViewModel(
         coroutineScope {
             launch {
                 windowSocket.envelopes
+                    // Issue the initial fetch only once this collector is
+                    // subscribed. `envelopes` has no replay buffer, so firing
+                    // the request before subscribing (as a separate launch{})
+                    // can race ahead of us and the reply is lost, leaving the
+                    // pane blank until something else triggers a refresh.
+                    .onSubscription { refreshList() }
                     .collect { envelope ->
                         if (!envelope.belongsToPane(paneId)) return@collect
                         when (envelope) {
@@ -132,8 +139,6 @@ class GitPaneBackingViewModel(
                         ))
                     }
             }
-            // Initial load
-            refreshList()
         }
     }
 
