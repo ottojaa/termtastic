@@ -4,8 +4,10 @@
  * Displays the server's window layout as a flat list of tab headers and leaf
  * pane rows, mirroring the sidebar in the web/Electron client. Each leaf is
  * annotated with a type icon (terminal, file browser, git, floating, or empty)
- * and a status indicator (spinner for "working", fading warning triangle for
- * "waiting" — see [StateIndicator]) reflecting the server-pushed session state. Tapping a leaf navigates to [TerminalScreen], [FileBrowserListScreen],
+ * and a status indicator (a foreground-coloured dot that breathes for
+ * "working" and becomes a pulsing warning triangle for "waiting" — see
+ * [StatusDot]) reflecting the server-pushed session state. Tapping a leaf
+ * navigates to [TerminalScreen], [FileBrowserListScreen],
  * or [GitListScreen] depending on the pane type.
  *
  * Tabs the user has hidden from the sidebar on the web client
@@ -607,8 +609,9 @@ private fun TabHeaderRow(
                 ),
             )
             Spacer(Modifier.width(4.dp))
-            // Tab-aggregated status dot (replaces the spinner/alert): idle green,
-            // working green-pulse, waiting red-pulse.
+            // Tab-aggregated status indicator (issue #38), painted in the theme
+            // foreground colour: idle = solid dot, working = breathing dot,
+            // waiting = pulsing warning triangle.
             StatusDot(state = row.aggregateState)
         }
         DropdownMenu(
