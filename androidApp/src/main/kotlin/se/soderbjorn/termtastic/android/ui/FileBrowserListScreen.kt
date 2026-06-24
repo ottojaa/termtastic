@@ -114,12 +114,20 @@ fun FileBrowserListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            color = SidebarTextPrimary,
-                        ),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Leading pane-type icon (issue #48) — the same glyph the
+                        // session list draws before each pane title, keeping the
+                        // full-screen header consistent with the list. This screen
+                        // only ever hosts file-browser panes (never floating).
+                        PaneIcon(kind = LeafKind.FILE_BROWSER, floating = false)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                color = SidebarTextPrimary,
+                            ),
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

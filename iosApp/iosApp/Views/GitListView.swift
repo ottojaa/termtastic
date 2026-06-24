@@ -29,8 +29,21 @@ struct GitListView: View {
                     .tint(Palette.textSecondary)
             }
         }
-        .navigationTitle("Git")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Custom principal title (issue #48) so the pane-type icon can lead
+            // the title, matching the session list's leaf rows. This screen only
+            // ever hosts git panes (never floating windows).
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    PaneIcon(kind: .git, floating: false)
+                    Text("Git")
+                        .font(.headline)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                }
+            }
+        }
         .toolbarBackground(Palette.surface, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task { await loadEntries() }

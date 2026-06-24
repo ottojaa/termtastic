@@ -36,35 +36,44 @@ struct OverviewView: View {
     @State private var selection: String = ""
 
     var body: some View {
-        Group {
-            if !viewModel.isConnected {
-                placeholder("Disconnected")
-            } else if viewModel.tabs.isEmpty {
-                placeholder("No tabs")
-            } else {
-                VStack(spacing: 0) {
-                    OverviewTabStrip(
-                        tabs: viewModel.tabs,
-                        activeTabId: viewModel.activeTabId,
-                        onSelect: { viewModel.setActiveTab($0) }
-                    )
-                    TabView(selection: $selection) {
-                        ForEach(viewModel.tabs, id: \.id) { tab in
-                            ExposeCanvas(
-                                panes: tab.panes,
-                                registry: registry,
-                                onOpenTerminal: onOpenTerminal,
-                                onOpenFileBrowser: onOpenFileBrowser,
-                                onOpenGit: onOpenGit
-                            )
-                            .tag(tab.id)
+        // Measure the safe-area insets at the overview root, *outside* the paging
+        // TabView. A `.page` TabView consumes/ignores the safe area for its pages,
+        // so the GeometryReader inside `ExposeCanvas` reports `safeAreaInsets ==
+        // 0` and a height that runs to the physical screen bottom (under the home
+        // indicator). We read the real bottom inset here and hand it down so the
+        // canvas can keep its panes above the home indicator.
+        GeometryReader { rootGeo in
+            Group {
+                if !viewModel.isConnected {
+                    placeholder("Disconnected")
+                } else if viewModel.tabs.isEmpty {
+                    placeholder("No tabs")
+                } else {
+                    VStack(spacing: 0) {
+                        OverviewTabStrip(
+                            tabs: viewModel.tabs,
+                            activeTabId: viewModel.activeTabId,
+                            onSelect: { viewModel.setActiveTab($0) }
+                        )
+                        TabView(selection: $selection) {
+                            ForEach(viewModel.tabs, id: \.id) { tab in
+                                ExposeCanvas(
+                                    panes: tab.panes,
+                                    bottomInset: rootGeo.safeAreaInsets.bottom,
+                                    registry: registry,
+                                    onOpenTerminal: onOpenTerminal,
+                                    onOpenFileBrowser: onOpenFileBrowser,
+                                    onOpenGit: onOpenGit
+                                )
+                                .tag(tab.id)
+                            }
                         }
+                        .tabViewStyle(.page(indexDisplayMode: .never))
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.background)
         .onAppear {
             if registry == nil, let client = ConnectionHolder.shared.client {
@@ -185,6 +194,10 @@ private struct OverviewTabChip: View {
 /// order. Mirrors the Android `ExposeCanvas`.
 private struct ExposeCanvas: View {
     let panes: [Client.OverviewBackingViewModel.OverviewPane]
+    /// The bottom safe-area inset, measured at the overview root (the paging
+    /// TabView hides it from this view's own GeometryReader). Reserved at the
+    /// bottom of the canvas so panes stay clear of the home indicator.
+    let bottomInset: CGFloat
     let registry: MiniTerminalRegistry?
     let onOpenTerminal: (String) -> Void
     let onOpenFileBrowser: (String) -> Void
@@ -197,7 +210,18 @@ private struct ExposeCanvas: View {
                 .foregroundStyle(Palette.textSecondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            // Inset the exposé by `margin` on every side so even the outermost
+            // panes' full rounded border stays on-screen. The margin is folded
+            // into the projection math rather than applied as a `.padding()` on
+            // the `GeometryReader`: a padded GeometryReader still mapped the
+            // fractions against the *outer* size, so the right/bottom panes (and,
+            // shifted by the leading inset, the whole layout) overflowed the
+            // canvas and their borders clipped at the screen edge. Subtracting
+            // the margin from `geo.size` here pins every edge inside the canvas.
+            let margin: CGFloat = 8
             GeometryReader { geo in
+                let canvasW = geo.size.width - margin * 2
+                let canvasH = geo.size.height - margin * 2 - bottomInset
                 ZStack(alignment: .topLeading) {
                     ForEach(panes, id: \.leaf.id) { pane in
                         let maximized = pane.maximized
@@ -212,12 +236,21 @@ private struct ExposeCanvas: View {
                             onOpenFileBrowser: onOpenFileBrowser,
                             onOpenGit: onOpenGit
                         )
-                        .frame(width: geo.size.width * w, height: geo.size.height * h)
-                        .offset(x: geo.size.width * x, y: geo.size.height * y)
+                        .frame(width: canvasW * w, height: canvasH * h)
+                        // Clip each miniature to its own frame. `.frame(width:height:)`
+                        // sizes the frame but does NOT clip: `MiniPane`'s terminal
+                        // content has a tall intrinsic height (one line per output
+                        // row), so without this it overflows the frame and bleeds
+                        // into the panes stacked below/around it — which read as
+                        // "another pane's content showing in this pane" and "the
+                        // right column only shows ~2 panes" (issue #57). Clipping to
+                        // the frame keeps every pane's content inside its own border.
+                        .clipped()
+                        .offset(x: margin + canvasW * x, y: margin + canvasH * y)
                     }
                 }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             }
-            .padding(8)
         }
     }
 }
@@ -322,33 +355,48 @@ private struct MiniTerminalPane: View {
     let registry: MiniTerminalRegistry?
     let sessionId: String
 
-    /// The session's live line box from the registry, resolved on appear so the
-    /// view stays bound to the same (observed) box across re-renders.
-    @State private var box: MiniTerminalLineBox?
-
     var body: some View {
         let theme = Palette.settings
         let bg = theme.map { Color(argb: $0.bg) } ?? Palette.background
         let fg = theme.map { Color(argb: $0.text) } ?? Palette.textPrimary
-        let lines = box?.lines ?? []
+        // Resolve the line box synchronously from the *current* `sessionId` on
+        // every render — the iOS analogue of the Android
+        // `remember(sessionId) { registry.linesFor(sessionId) }`. `box(for:)` is
+        // idempotent (one cached emulator entry per session, never re-opens the
+        // socket) and the returned box is `@Observable`, so reading `.lines` here
+        // registers a dependency and live feeds still re-render this view. Holding
+        // the box in `@State` resolved asynchronously (`.onAppear`/`.task`) was
+        // the overview's pane-content-mismatch bug: SwiftUI keys this view's
+        // identity on the pane's `leaf.id` and reuses the instance when the pane
+        // set re-sorts by z, but the stale `@State` box stayed bound to the
+        // previous session, so a miniature showed another pane's output.
+        let lines = registry?.box(for: sessionId).lines ?? []
 
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                Text(line)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(fg)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        // Fill the slot with the theme background, then overlay the lines pinned
+        // to the bottom. Using the background as the sizing base (it greedily
+        // takes the whole offered slot) and the lines as a bottom-aligned overlay
+        // is what actually pins the *newest* line to the bottom: a plain
+        // `VStack(...).frame(maxHeight:.infinity, alignment:.bottom)` does not,
+        // because the stack of Text rows has a tall minimum height (one row per
+        // line), so it overflows the slot and the bottom (newest) rows get
+        // clipped instead of the top (oldest) ones. The overlay grows upward past
+        // the slot top and `.clipped()` trims that overflow — the iOS analogue of
+        // the Android reverse-layout LazyColumn.
+        bg
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(fg)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
             }
-        }
-        // Bottom-anchor so the newest line pins to the bottom and surplus lines
-        // overflow upward; `.clipped()` hides that overflow — the iOS analogue
-        // of the Android reverse-layout LazyColumn.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .background(bg)
-        .clipped()
-        .onAppear { box = registry?.box(for: sessionId) }
+            .clipped()
     }
 }
 

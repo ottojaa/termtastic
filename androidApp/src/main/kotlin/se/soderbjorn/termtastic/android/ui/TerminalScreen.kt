@@ -29,9 +29,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -392,6 +394,13 @@ fun TerminalScreen(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // Leading pane-type icon (issue #48) — the same glyph the
+                        // session list shows before each pane title, so the
+                        // full-screen header stays consistent with the list. This
+                        // screen only ever hosts terminal panes, hence the fixed
+                        // [LeafKind.TERMINAL]; it is never a floating window here.
+                        PaneIcon(kind = LeafKind.TERMINAL, floating = false)
+                        Spacer(Modifier.width(8.dp))
                         // Pane status indicator (issue #38), painted in the
                         // theme foreground colour: idle = solid dot, working =
                         // breathing dot, waiting = pulsing warning triangle. The

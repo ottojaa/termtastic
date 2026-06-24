@@ -1,4 +1,5 @@
 import SwiftUI
+import Client
 
 /// Which layout the Sessions screen is showing: the flat list of tabs/panes,
 /// or the graphical miniature overview (issue #44). Mirrors the Android
@@ -29,8 +30,11 @@ private struct CloseTarget: Identifiable {
 /// Displays the window layout tree — tabs and their panes with state dots —
 /// under a large, collapsing "Sessions" title that mirrors the Hosts screen.
 /// Tabs the user hid from the sidebar (`TabConfig.isHiddenFromSidebar`) are
-/// grouped at the bottom under a "Hidden" headline rather than interleaved.
-/// Mirrors the Android `TreeScreen` composable.
+/// excluded from the list by default (issue #52); a "Show hidden tabs" link
+/// reveals them at the bottom under a "Hidden" headline, and "Hide hidden tabs"
+/// re-hides them. The reveal state is held in memory by the view model (seeded
+/// from `SessionsViewModeStore.showHiddenTabs`) so it survives navigation but
+/// resets on app restart. Mirrors the Android `TreeScreen` composable.
 struct TreeView: View {
     @Bindable var viewModel: TreeViewModel
     var onOpenTerminal: (String) -> Void
@@ -48,10 +52,15 @@ struct TreeView: View {
     @State private var renameText = ""
     @State private var closeTarget: CloseTarget?
 
-    /// List vs. graphical overview, toggled from the toolbar (issue #44). Kept
-    /// in view state so drilling into a pane and returning lands on the same
-    /// layout, mirroring Android's `rememberSaveable` view-mode flag.
-    @State private var viewMode: SessionsViewMode = .list
+    /// List vs. graphical overview, toggled from the toolbar (issue #44).
+    ///
+    /// Seeded from (and written back to) the process-wide shared
+    /// `SessionsViewModeStore` so the choice survives navigating away from the
+    /// Sessions screen and back — `@State` alone resets whenever this view is
+    /// recreated — while still resetting to the default on the next app launch
+    /// (issue #54). The store is memory-only (never persisted to disk).
+    @State private var viewMode: SessionsViewMode =
+        Client.SessionsViewModeStore.shared.overviewMode ? .overview : .list
 
     var body: some View {
         screenContent
@@ -110,6 +119,9 @@ struct TreeView: View {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     viewMode = (viewMode == .list) ? .overview : .list
                 }
+                // Persist the new mode in memory so it survives leaving and
+                // returning to this screen (issue #54).
+                Client.SessionsViewModeStore.shared.overviewMode = (viewMode == .overview)
             } label: {
                 Image(systemName: viewMode == .list ? "square.grid.2x2" : "list.bullet")
                     .foregroundStyle(viewMode == .overview ? Palette.headerAccent : Palette.textPrimary)
@@ -191,6 +203,8 @@ struct TreeView: View {
         switch row {
         case .sectionHeader(let title):
             sectionHeaderView(title: title)
+        case .hiddenToggle(let showing):
+            hiddenToggleView(showing: showing)
         case .tabHeader(let tabId, let title, let aggState):
             tabHeaderView(tabId: tabId, title: title, aggState: aggState)
         case .leaf(let paneId, let sessionId, let title, let kind, let floating, let minimized):
@@ -206,6 +220,19 @@ struct TreeView: View {
             .listRowBackground(Palette.background)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+    }
+
+    /// The tappable "Show hidden tabs" / "Hide hidden tabs" link (issue #52).
+    /// Tapping it flips the in-memory reveal state on the view model, which
+    /// rebuilds the rows. Carries the same themed list-row chrome as the
+    /// section header.
+    private func hiddenToggleView(showing: Bool) -> some View {
+        HiddenToggleRow(showing: showing) {
+            viewModel.toggleShowHiddenTabs()
+        }
+        .listRowBackground(Palette.background)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
     }
 
     /// A tab header row. Long-pressing it opens the tab's menu (rename, create
@@ -432,6 +459,40 @@ private struct SectionHeaderRow: View {
         .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+// MARK: - Hidden Toggle Row
+
+/// A tappable accent-coloured link that reveals or re-hides the sidebar-hidden
+/// tabs (issue #52), preceded by a hairline rule. Reads "Show hidden tabs" when
+/// the hidden tabs are omitted and "Hide hidden tabs" when they are revealed.
+/// Styled as an action (accent colour) to distinguish it from the dim,
+/// non-interactive `SectionHeaderRow`. Mirrors the Android `HiddenToggleRow`.
+private struct HiddenToggleRow: View {
+    let showing: Bool
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+                .overlay(Palette.textSecondary.opacity(0.18))
+            Button(action: action) {
+                Text(showing ? "Hide hidden tabs" : "Show hidden tabs")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Palette.headerAccent)
+                    .tracking(0.5)
+                    .padding(.top, 16)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel(showing ? "Hide hidden tabs" : "Show hidden tabs")
     }
 }
 

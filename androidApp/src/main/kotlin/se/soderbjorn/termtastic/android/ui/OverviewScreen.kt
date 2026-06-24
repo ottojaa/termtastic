@@ -50,6 +50,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -204,6 +205,8 @@ private fun ExposeCanvas(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
+            // Even 8dp inset on all sides; the top gap keeps the panes from
+            // crowding the tab strip above (issue #53 follow-up).
             .padding(8.dp),
     ) {
         val canvasW = maxWidth
@@ -347,32 +350,47 @@ private fun OverviewTabStrip(
         modifier = Modifier
             .fillMaxWidth()
             .background(SidebarBackground)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            // Asymmetric vertical padding: no top padding so the strip sits
+            // snug under the toolbar (issue #53 — the old symmetric 4dp, on top
+            // of the FilterChips' ~8dp min-touch-target inflation, opened too
+            // large a gap below the toolbar, most visible in landscape). A
+            // small 2dp bottom keeps the strip from touching the exposé canvas.
+            .padding(start = 8.dp, end = 8.dp, top = 0.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(tabs, key = { it.id }) { tab ->
-            FilterChip(
-                selected = tab.isActive,
-                onClick = { onSelect(tab.id) },
-                label = {
-                    Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                },
-                leadingIcon = { StatusDot(state = tab.aggregateState, boxDp = 12) },
-                colors = FilterChipDefaults.filterChipColors(
-                    containerColor = SidebarBackground,
-                    labelColor = SidebarTextSecondary,
-                    selectedContainerColor = SidebarAccent.copy(alpha = 0.18f),
-                    selectedLabelColor = SidebarAccent,
-                ),
-                border = FilterChipDefaults.filterChipBorder(
-                    enabled = true,
+            // Opt the chips out of the 48dp minimum-interactive-size padding
+            // that Material3 otherwise inflates around each 32dp FilterChip
+            // (issue #53). That hidden ~8dp top/bottom inflation was the bulk of
+            // the gap below the toolbar and above the exposé; dropping it lets
+            // the strip hug the toolbar. The chips stay comfortably tappable at
+            // their natural height.
+            CompositionLocalProvider(
+                LocalMinimumInteractiveComponentEnforcement provides false,
+            ) {
+                FilterChip(
                     selected = tab.isActive,
-                    borderColor = SidebarTextSecondary.copy(alpha = 0.4f),
-                    selectedBorderColor = SidebarAccent,
-                    borderWidth = 1.dp,
-                    selectedBorderWidth = 2.dp,
-                ),
-            )
+                    onClick = { onSelect(tab.id) },
+                    label = {
+                        Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                    leadingIcon = { StatusDot(state = tab.aggregateState, boxDp = 12) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = SidebarBackground,
+                        labelColor = SidebarTextSecondary,
+                        selectedContainerColor = SidebarAccent.copy(alpha = 0.18f),
+                        selectedLabelColor = SidebarAccent,
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = tab.isActive,
+                        borderColor = SidebarTextSecondary.copy(alpha = 0.4f),
+                        selectedBorderColor = SidebarAccent,
+                        borderWidth = 1.dp,
+                        selectedBorderWidth = 2.dp,
+                    ),
+                )
+            }
         }
     }
 }

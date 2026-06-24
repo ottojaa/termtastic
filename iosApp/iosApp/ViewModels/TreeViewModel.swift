@@ -16,12 +16,18 @@ enum TreeRow: Identifiable {
     /// sidebar-hidden tabs below it from the visible tabs above. Mirrors the
     /// Android `TreeRow.SectionHeader`.
     case sectionHeader(title: String)
+    /// A tappable "Show hidden tabs" / "Hide hidden tabs" link that reveals or
+    /// re-hides the sidebar-hidden tabs (issue #52). Emitted only when hidden
+    /// tabs exist; `showing` is `true` when they are currently revealed.
+    /// Mirrors the Android `TreeRow.HiddenToggle`.
+    case hiddenToggle(showing: Bool)
     case tabHeader(tabId: String, title: String, aggregateState: String?)
     case leaf(paneId: String, sessionId: String, title: String, kind: LeafKind, floating: Bool, minimized: Bool)
 
     var id: String {
         switch self {
         case .sectionHeader(let title): return "section-\(title)"
+        case .hiddenToggle: return "hidden-toggle"
         case .tabHeader(let tabId, _, _): return "tab-\(tabId)"
         case .leaf(let paneId, _, _, _, _, _): return "leaf-\(paneId)"
         }
@@ -37,6 +43,13 @@ enum TreeRow: Identifiable {
 final class TreeViewModel {
     var rows: [TreeRow] = []
     var states: [String: String] = [:]
+
+    /// Whether the sidebar-hidden tabs are currently revealed in the list
+    /// (issue #52). Seeded from the process-wide, memory-only
+    /// `SessionsViewModeStore.showHiddenTabs` so the choice survives navigating
+    /// away from the Sessions screen and back, while resetting to the default
+    /// (hidden) on the next app launch. Flipped via `toggleShowHiddenTabs()`.
+    private var showHiddenTabs: Bool = Client.SessionsViewModeStore.shared.showHiddenTabs
 
     private let flowObserver = Client.FlowObserver()
     private var latestConfig: Client.WindowConfig?
@@ -159,6 +172,16 @@ final class TreeViewModel {
         }
     }
 
+    /// Flips whether the sidebar-hidden tabs are revealed (issue #52), persists
+    /// the new value in memory via `SessionsViewModeStore.showHiddenTabs`, and
+    /// rebuilds the row list. Called by `TreeView` when the user taps the
+    /// "Show hidden tabs" / "Hide hidden tabs" link.
+    func toggleShowHiddenTabs() {
+        showHiddenTabs.toggle()
+        Client.SessionsViewModeStore.shared.showHiddenTabs = showHiddenTabs
+        rebuild()
+    }
+
     deinit {
         flowObserver.clear()
     }
@@ -170,10 +193,12 @@ final class TreeViewModel {
             rows = []
             return
         }
-        // Tabs the user hid from the sidebar are pulled out of the normal flow
-        // and grouped at the bottom under a single "Hidden" header, so the
-        // primary list stays decluttered while the sessions remain reachable —
-        // mirroring the web sidebar (which omits them) and Android's flatten().
+        // Tabs the user hid from the sidebar are excluded from the list by
+        // default (issue #52): when any exist, a single "Show hidden tabs"
+        // toggle row is appended instead, keeping the primary list decluttered
+        // like the web sidebar (which omits them). When `showHiddenTabs` is set,
+        // they are revealed at the bottom under a "Hidden" header and the toggle
+        // reads "Hide hidden tabs". Mirrors Android's flatten().
         let visibleTabs = config.tabs.filter { !$0.isHiddenFromSidebar }
         let hiddenTabs = config.tabs.filter { $0.isHiddenFromSidebar }
 
@@ -182,9 +207,12 @@ final class TreeViewModel {
             appendTab(tab, into: &result)
         }
         if !hiddenTabs.isEmpty {
-            result.append(.sectionHeader(title: "Hidden"))
-            for tab in hiddenTabs {
-                appendTab(tab, into: &result)
+            result.append(.hiddenToggle(showing: showHiddenTabs))
+            if showHiddenTabs {
+                result.append(.sectionHeader(title: "Hidden"))
+                for tab in hiddenTabs {
+                    appendTab(tab, into: &result)
+                }
             }
         }
         rows = result

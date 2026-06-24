@@ -11,9 +11,11 @@
  * or [GitListScreen] depending on the pane type.
  *
  * Tabs the user has hidden from the sidebar on the web client
- * (`TabConfig.isHiddenFromSidebar`) are grouped at the bottom of the list under
- * a "Hidden" headline rather than being interleaved or dropped, keeping their
- * sessions reachable while decluttering the main list.
+ * (`TabConfig.isHiddenFromSidebar`) are excluded from the list by default
+ * (issue #52); a "Show hidden tabs" link reveals them at the bottom under a
+ * small "Hidden" headline, and a "Hide hidden tabs" link re-hides them. The
+ * reveal state is held in memory by [SessionsViewModeStore.showHiddenTabs] so it
+ * survives navigation but resets on app restart.
  *
  * Also hosts the "+" button for creating a new tab. Panes are created from
  * each tab header's menu (see [TabNameDialog], [RenameDialog],
@@ -63,7 +65,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -101,6 +102,7 @@ import se.soderbjorn.termtastic.client.closePane
 import se.soderbjorn.termtastic.client.closeTab
 import se.soderbjorn.termtastic.client.renamePane
 import se.soderbjorn.termtastic.client.renameTab
+import se.soderbjorn.termtastic.client.viewmodel.SessionsViewModeStore
 
 // Palette tokens live in SidebarPalette.kt — shared with MarkdownListScreen.
 
@@ -120,6 +122,17 @@ private sealed class TreeRow {
      * @property title the uppercase-rendered label, e.g. "Hidden".
      */
     data class SectionHeader(val title: String) : TreeRow()
+
+    /**
+     * A tappable affordance that reveals or re-hides the sidebar-hidden tabs
+     * (issue #52). Rendered only when the layout actually contains hidden tabs;
+     * tapping it flips [SessionsViewModeStore.showHiddenTabs].
+     *
+     * @property showing `true` when the hidden tabs are currently revealed (the
+     *   row reads "Hide hidden tabs"); `false` when they are omitted (the row
+     *   reads "Show hidden tabs").
+     */
+    data class HiddenToggle(val showing: Boolean) : TreeRow()
 
     /**
      * Section header for a tab, showing the tab title and an aggregate state dot.
@@ -180,11 +193,13 @@ private data class CollectedLeaf(
  * suitable for a [LazyColumn].
  *
  * Tabs the user has chosen to hide from the sidebar
- * ([TabConfig.isHiddenFromSidebar]) are pulled out of the normal flow and
- * grouped at the bottom under a single "Hidden" [TreeRow.SectionHeader], so the
- * primary list stays decluttered while the hidden sessions remain reachable —
- * mirroring the web sidebar, which omits them entirely. Tab order within each
- * group is preserved.
+ * ([TabConfig.isHiddenFromSidebar]) are excluded from the list by default
+ * (issue #52): when any exist, a single [TreeRow.HiddenToggle] "Show hidden
+ * tabs" affordance is appended instead, keeping the primary list decluttered
+ * like the web sidebar (which omits them entirely). When [showHiddenTabs] is
+ * `true` the hidden tabs are revealed at the bottom under a "Hidden"
+ * [TreeRow.SectionHeader], and the affordance flips to "Hide hidden tabs". Tab
+ * order within each group is preserved.
  *
  * For each tab, collects all leaves, computes an aggregate state dot
  * (waiting > working > null), and emits a [TreeRow.TabHeader] followed by
@@ -193,13 +208,18 @@ private data class CollectedLeaf(
  * @param config the current window configuration from the server.
  * @param states map of session ID to state string ("working", "waiting", or null).
  * @param minimizedPaneIds ids of panes minimized on the web client (dimmed here).
- * @return ordered list of tree rows: visible tabs, then (if any) a "Hidden"
- *   header followed by the sidebar-hidden tabs.
+ * @param showHiddenTabs whether the sidebar-hidden tabs should currently be
+ *   revealed (issue #52); when `false` they are omitted and only the toggle row
+ *   appears.
+ * @return ordered list of tree rows: visible tabs, then (if any hidden tabs
+ *   exist) a [TreeRow.HiddenToggle] and, when revealed, a "Hidden" header
+ *   followed by the sidebar-hidden tabs.
  */
 private fun flatten(
     config: WindowConfig,
     states: Map<String, String?>,
     minimizedPaneIds: Set<String>,
+    showHiddenTabs: Boolean,
 ): List<TreeRow> {
     val rows = mutableListOf<TreeRow>()
     val (hiddenTabs, visibleTabs) = config.tabs.partition { it.isHiddenFromSidebar }
@@ -208,9 +228,12 @@ private fun flatten(
         appendTab(tab, states, minimizedPaneIds, rows)
     }
     if (hiddenTabs.isNotEmpty()) {
-        rows.add(TreeRow.SectionHeader("Hidden"))
-        for (tab in hiddenTabs) {
-            appendTab(tab, states, minimizedPaneIds, rows)
+        rows.add(TreeRow.HiddenToggle(showing = showHiddenTabs))
+        if (showHiddenTabs) {
+            rows.add(TreeRow.SectionHeader("Hidden"))
+            for (tab in hiddenTabs) {
+                appendTab(tab, states, minimizedPaneIds, rows)
+            }
         }
     }
     return rows
@@ -342,9 +365,29 @@ fun TreeScreen(
     val newsUpdatesVm = remember { NewsUpdatesController.ensureStarted(context) }
     val newsUpdatesState by newsUpdatesVm.stateFlow.collectAsStateWithLifecycle()
 
-    // --- View mode: flat session list vs. the miniaturised overview. Saved so
-    // drilling into a pane and returning lands the user back in the same mode.
-    var viewMode by rememberSaveable { mutableStateOf(SessionsViewMode.LIST) }
+    // --- View mode: flat session list vs. the miniaturised overview. Seeded
+    // from (and written back to) the process-wide [SessionsViewModeStore] so the
+    // choice survives navigating away from the Sessions screen and back — and
+    // even survives this composable leaving composition entirely — while still
+    // resetting to the default on the next app launch (issue #54). The local
+    // mutableStateOf still drives recomposition; the store is just the durable
+    // backing value behind it.
+    var viewMode by remember {
+        mutableStateOf(
+            if (SessionsViewModeStore.overviewMode) SessionsViewMode.OVERVIEW
+            else SessionsViewMode.LIST
+        )
+    }
+
+    // --- Hidden tabs: whether the sidebar-hidden tabs are currently revealed.
+    // Seeded from (and written back to) the same process-wide
+    // [SessionsViewModeStore] as [viewMode], so the choice survives navigating
+    // away from the Sessions screen and back while resetting to the default
+    // (hidden) on the next app launch (issue #52). Memory-only — never persisted
+    // to disk.
+    var showHiddenTabs by remember {
+        mutableStateOf(SessionsViewModeStore.showHiddenTabs)
+    }
 
     // --- Creation dialog state ---
     var showTabName by remember { mutableStateOf(false) }
@@ -449,6 +492,9 @@ fun TreeScreen(
                             SessionsViewMode.LIST -> SessionsViewMode.OVERVIEW
                             SessionsViewMode.OVERVIEW -> SessionsViewMode.LIST
                         }
+                        // Persist the new mode in memory so it survives leaving
+                        // and returning to this screen (issue #54).
+                        SessionsViewModeStore.overviewMode = viewMode == SessionsViewMode.OVERVIEW
                     }) {
                         when (viewMode) {
                             SessionsViewMode.LIST -> Icon(
@@ -509,7 +555,7 @@ fun TreeScreen(
                     onOpenGit = onOpenGit,
                 )
                 SessionsViewMode.LIST -> {
-                    val rows = flatten(cfg, states, minimizedPaneIds)
+                    val rows = flatten(cfg, states, minimizedPaneIds, showHiddenTabs)
                     LazyColumn(
                         modifier = Modifier
                             .weight(1f)
@@ -518,12 +564,22 @@ fun TreeScreen(
                         items(rows, key = { row ->
                             when (row) {
                                 is TreeRow.SectionHeader -> "section-${row.title}"
+                                is TreeRow.HiddenToggle -> "hidden-toggle"
                                 is TreeRow.TabHeader -> "tab-${row.tabId}"
                                 is TreeRow.Leaf -> "leaf-${row.paneId}"
                             }
                         }) { row ->
                             when (row) {
                                 is TreeRow.SectionHeader -> SectionHeaderRow(row)
+                                is TreeRow.HiddenToggle -> HiddenToggleRow(
+                                    row = row,
+                                    onClick = {
+                                        showHiddenTabs = !showHiddenTabs
+                                        // Persist in memory so it survives
+                                        // leaving and returning (issue #52).
+                                        SessionsViewModeStore.showHiddenTabs = showHiddenTabs
+                                    },
+                                )
                                 is TreeRow.TabHeader -> TabHeaderRow(
                                     row = row,
                                     closeEnabled = cfg.tabs.size > 1,
@@ -589,6 +645,43 @@ private fun SectionHeaderRow(row: TreeRow.SectionHeader) {
         style = MaterialTheme.typography.labelMedium.copy(
             color = SidebarTextSecondary.copy(alpha = 0.7f),
             letterSpacing = 1.sp,
+            fontWeight = FontWeight.SemiBold,
+        ),
+    )
+}
+
+/**
+ * Renders the tappable "Show hidden tabs" / "Hide hidden tabs" link that toggles
+ * whether the sidebar-hidden tabs are revealed in the list (issue #52). Styled
+ * as an accent-coloured link to read as an action distinct from the dim,
+ * non-interactive "Hidden" [SectionHeaderRow]. Preceded by a hairline rule so it
+ * visually separates from the visible tabs above.
+ *
+ * @param row the toggle row data; its [TreeRow.HiddenToggle.showing] flag picks
+ *   the label and reflects whether the hidden tabs are currently revealed.
+ * @param onClick invoked when the user taps the link; flips the in-memory
+ *   show/hide state.
+ * @see flatten for where this row is emitted.
+ */
+@Composable
+private fun HiddenToggleRow(row: TreeRow.HiddenToggle, onClick: () -> Unit) {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 12.dp),
+        color = SidebarTextSecondary.copy(alpha = 0.18f),
+    )
+    Text(
+        text = if (row.showing) "Hide hidden tabs" else "Show hidden tabs",
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                onClickLabel = if (row.showing) "Hide hidden tabs" else "Show hidden tabs",
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 12.dp),
+        style = MaterialTheme.typography.labelMedium.copy(
+            color = SidebarAccent,
+            letterSpacing = 0.5.sp,
             fontWeight = FontWeight.SemiBold,
         ),
     )

@@ -107,6 +107,10 @@ private object TermtasticThemeManagerHost : ThemeManagerHost {
         get() = effectiveFontKey(appVm.stateFlow.value.tabbarFontFamily)
     override val tabbarFontSizePx: Int?
         get() = effectiveChromeSize(appVm.stateFlow.value.tabbarFontSizePx)
+    override val paneHeaderFontFamily: String?
+        get() = effectiveFontKey(appVm.stateFlow.value.paneHeaderFontFamily)
+    override val paneHeaderFontSizePx: Int?
+        get() = effectiveChromeSize(appVm.stateFlow.value.paneHeaderFontSizePx)
     override val desktopNotifications: Boolean
         get() = appVm.stateFlow.value.desktopNotifications
     override val useCustomTitleBar: Boolean
@@ -129,6 +133,12 @@ private object TermtasticThemeManagerHost : ThemeManagerHost {
     }
     override fun setTabbarFontSizePx(value: Int?) {
         if (value != null) launch { appVm.setTabbarFontSizePx(value) }
+    }
+    override fun setPaneHeaderFontFamily(value: String?) {
+        launch { appVm.setPaneHeaderFontFamily(value ?: "") }
+    }
+    override fun setPaneHeaderFontSizePx(value: Int?) {
+        if (value != null) launch { appVm.setPaneHeaderFontSizePx(value) }
     }
     override fun setDesktopNotifications(value: Boolean) {
         launch { appVm.setDesktopNotifications(value) }

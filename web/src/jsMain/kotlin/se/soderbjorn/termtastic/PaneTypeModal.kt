@@ -3,9 +3,18 @@
  *
  * Opened from the "New pane" hover dropdown when the user picks
  * "Terminal link". Shows a scrolling list of existing terminal
- * sessions (grouped by tab) with a live xterm.js preview for each;
+ * sessions (grouped by tab) with a thumbnail preview for each;
  * clicking a preview dispatches [WindowCommand.AddLinkToTab] to link
  * the empty pane against that session.
+ *
+ * Each thumbnail is rendered by [LinkThumbnail] (see
+ * [LinkThumbnailRenderer]): a hidden, read-only xterm.js instance
+ * receives the session PTY as a faithful ANSI/buffer model, and the
+ * visible card paints that buffer's transcript onto an HTML5 canvas,
+ * re-wrapped to the card's own width and bottom-anchored — a port of
+ * the Android overview's terminal miniature, which gives a more
+ * comprehensive view than the previous shrunk-to-tiny-font live xterm
+ * (which kept the source terminal's columns and clipped the right edge).
  *
  * Historically this file also hosted the four-card "pick a pane type"
  * grid. That popup was replaced by the toolkit hover dropdown wired
@@ -21,6 +30,7 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import org.khronos.webgl.ArrayBuffer
 import org.khronos.webgl.Uint8Array
+import org.w3c.dom.HTMLCanvasElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.WebSocket
 import org.w3c.dom.events.Event
@@ -28,15 +38,19 @@ import org.w3c.dom.events.KeyboardEvent
 import kotlin.js.json
 
 /**
- * Closes all live terminal preview WebSockets and disposes their xterm.js instances.
+ * Closes all live terminal preview WebSockets and disposes their thumbnail
+ * renderers (which own and dispose the hidden xterm.js data-source instances).
  *
  * Called when the link picker is closed, to clean up resources created
  * for the preview thumbnails.
+ *
+ * @see LinkThumbnail.dispose
  */
 fun disposeAllPreviews() {
     for (entry in previewEntries) {
         try { (entry.socket as WebSocket).close() } catch (_: Throwable) {}
-        try { entry.term.asDynamic().dispose() } catch (_: Throwable) {}
+        try { (entry.thumbnail as LinkThumbnail).dispose() } catch (_: Throwable) {}
+        try { (entry.hiddenHost as HTMLElement).remove() } catch (_: Throwable) {}
     }
     previewEntries.clear()
 }
@@ -167,42 +181,74 @@ fun openTerminalLinkPicker(
                 cardTitle.textContent = leaf.leafTitle
                 leafCard.appendChild(cardTitle)
 
+                // Visible thumbnail: an HTML5 canvas painted by [LinkThumbnail]
+                // with the Android-style re-wrapped, bottom-anchored transcript
+                // (see LinkThumbnailRenderer). The card's CSS gives the preview
+                // box a fixed size; size the canvas to its backing-store pixels.
                 val previewContainer = document.createElement("div") as HTMLElement
                 previewContainer.className = "link-preview-terminal"
-                val previewInner = document.createElement("div") as HTMLElement
-                previewInner.className = "link-preview-inner"
-                previewContainer.appendChild(previewInner)
+                val canvas = document.createElement("canvas") as HTMLCanvasElement
+                canvas.className = "link-preview-canvas"
+                previewContainer.appendChild(canvas)
+                leafCard.appendChild(previewContainer)
+
+                // Hidden xterm.js model: receives the session PTY exactly as the
+                // old visible preview did, but is kept off-screen and used only
+                // as a faithful ANSI/buffer source for the canvas renderer.
+                val hiddenHost = document.createElement("div") as HTMLElement
+                hiddenHost.className = "link-preview-hidden-host"
+                document.body?.appendChild(hiddenHost)
 
                 val previewTerm = Terminal(json(
                     "cursorBlink" to false, "disableStdin" to true,
                     "fontFamily" to "Menlo, Monaco, 'Courier New', monospace",
-                    "fontSize" to 7, "scrollback" to 100, "theme" to buildXtermTheme()
+                    "fontSize" to 9, "cols" to 120, "rows" to 40,
+                    "scrollback" to 200, "theme" to buildXtermTheme()
                 ))
-                val previewFit = FitAddon()
-                previewTerm.loadAddon(previewFit)
-                previewTerm.open(previewInner)
-                previewTerm.options.theme = buildXtermTheme()
-                leafCard.appendChild(previewContainer)
+                previewTerm.open(hiddenHost)
+
+                val theme = buildXtermTheme()
+                val fg = (theme.foreground as? String) ?: "#d4d4d4"
+                val bg = (theme.background as? String) ?: "#1e1e1e"
+                val thumbnail = LinkThumbnail(previewTerm, canvas, fg, bg)
+
+                // Lay out the canvas backing store to its rendered CSS size once
+                // the card is in the DOM, then paint the initial (empty) frame.
+                window.setTimeout({
+                    val rect = previewContainer.getBoundingClientRect()
+                    val w = (rect.width as? Number)?.toInt() ?: 0
+                    val h = (rect.height as? Number)?.toInt() ?: 0
+                    if (w > 0 && h > 0) {
+                        canvas.width = w
+                        canvas.height = h
+                    }
+                    thumbnail.repaint()
+                }, 0)
 
                 if (isDemoClient) {
                     // Demo mode: paint the simulated session's scrollback once
-                    // instead of opening a preview WebSocket.
+                    // into the hidden model instead of opening a preview socket.
                     attachDemoPreview(previewTerm, leaf.sessionId)
-                    previewEntries.add(json("term" to previewTerm, "fit" to previewFit, "socket" to null))
+                    // The demo write lands asynchronously; repaint shortly after.
+                    window.setTimeout({ thumbnail.scheduleRepaint() }, 120)
+                    previewEntries.add(json(
+                        "thumbnail" to thumbnail, "hiddenHost" to hiddenHost, "socket" to null
+                    ))
                 } else {
                     val previewUrl = "$proto://${window.location.host}/pty/${leaf.sessionId}?$authQueryParam"
                     val previewSocket = WebSocket(previewUrl)
                     previewSocket.asDynamic().binaryType = "arraybuffer"
                     previewSocket.onmessage = { event ->
                         val data = event.asDynamic().data
-                        if (data !is String) previewTerm.write(Uint8Array(data as ArrayBuffer))
+                        if (data !is String) {
+                            previewTerm.write(Uint8Array(data as ArrayBuffer))
+                            thumbnail.scheduleRepaint()
+                        }
                     }
-                    previewSocket.onopen = { _: Event ->
-                        try { safeFit(previewTerm, previewFit) } catch (_: Throwable) {}
-                    }
-                    previewEntries.add(json("term" to previewTerm, "fit" to previewFit, "socket" to previewSocket))
+                    previewEntries.add(json(
+                        "thumbnail" to thumbnail, "hiddenHost" to hiddenHost, "socket" to previewSocket
+                    ))
                 }
-                window.setTimeout({ try { safeFit(previewTerm, previewFit) } catch (_: Throwable) {} }, 100)
 
                 leafCard.addEventListener("click", { _: Event ->
                     closePaneTypeModal()

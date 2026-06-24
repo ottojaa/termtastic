@@ -92,6 +92,11 @@ struct TerminalScreen: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 HStack(spacing: 6) {
+                    // Leading pane-type icon (issue #48) — the same glyph the
+                    // session list draws before each pane title, keeping the
+                    // full-screen header consistent with the list. This screen
+                    // only ever hosts terminal panes (never floating windows).
+                    PaneIcon(kind: .terminal, floating: false)
                     // Pane status indicator (issue #38), painted in the theme
                     // foreground colour: idle = solid dot, working = breathing
                     // dot, waiting = pulsing warning triangle.

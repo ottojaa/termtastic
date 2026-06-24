@@ -431,6 +431,8 @@ private fun start() {
         var prevSidebarSize: Int? = appVm.stateFlow.value.sidebarFontSizePx
         var prevTabbarFamily: String? = appVm.stateFlow.value.tabbarFontFamily
         var prevTabbarSize: Int? = appVm.stateFlow.value.tabbarFontSizePx
+        var prevPaneHeaderFamily: String? = appVm.stateFlow.value.paneHeaderFontFamily
+        var prevPaneHeaderSize: Int? = appVm.stateFlow.value.paneHeaderFontSizePx
         // Chrome font family/size fold in the default fonts (JetBrains Mono /
         // 12px) via `effectiveFontKey` / `effectiveChromeSize`, matching the
         // host getters so the applied chrome and the Settings highlight agree.
@@ -440,6 +442,14 @@ private fun start() {
         se.soderbjorn.darkness.web.applySidebarFontSizePx(effectiveChromeSize(prevSidebarSize))
         se.soderbjorn.darkness.web.applyTabbarFontFamily(effectiveFontKey(prevTabbarFamily))
         se.soderbjorn.darkness.web.applyTabbarFontSizePx(effectiveChromeSize(prevTabbarSize))
+        // Window (pane) title font: mirror the sidebar/tabbar treatment so a
+        // persisted choice is re-applied at startup, and so a server push from
+        // another client repaints the title bars without waiting for the next
+        // `mountAppShell.applyHostFontVars` rebuild. (Issue #51: this font was
+        // applied live but never persisted/restored — the host adapter now
+        // round-trips it through `appVm`.)
+        se.soderbjorn.darkness.web.applyPaneHeaderFontFamily(effectiveFontKey(prevPaneHeaderFamily))
+        se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx(effectiveChromeSize(prevPaneHeaderSize))
         appVm.stateFlow.collect { state ->
             if (state.paneFontSize != prevPaneSize) {
                 prevPaneSize = state.paneFontSize
@@ -467,6 +477,14 @@ private fun start() {
             if (state.tabbarFontSizePx != prevTabbarSize) {
                 prevTabbarSize = state.tabbarFontSizePx
                 se.soderbjorn.darkness.web.applyTabbarFontSizePx(effectiveChromeSize(prevTabbarSize))
+            }
+            if (state.paneHeaderFontFamily != prevPaneHeaderFamily) {
+                prevPaneHeaderFamily = state.paneHeaderFontFamily
+                se.soderbjorn.darkness.web.applyPaneHeaderFontFamily(effectiveFontKey(prevPaneHeaderFamily))
+            }
+            if (state.paneHeaderFontSizePx != prevPaneHeaderSize) {
+                prevPaneHeaderSize = state.paneHeaderFontSizePx
+                se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx(effectiveChromeSize(prevPaneHeaderSize))
             }
         }
     }

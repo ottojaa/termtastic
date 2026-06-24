@@ -37,8 +37,21 @@ struct FileBrowserListView: View {
                     .tint(Palette.textSecondary)
             }
         }
-        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Custom principal title (issue #48) so the pane-type icon can lead
+            // the title, matching the session list's leaf rows. This screen only
+            // ever hosts file-browser panes (never floating windows).
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    PaneIcon(kind: .fileBrowser, floating: false)
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                }
+            }
+        }
         .toolbarBackground(Palette.surface, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task { await loadEntries() }

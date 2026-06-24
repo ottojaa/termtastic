@@ -169,7 +169,12 @@ private final class HeadlessTerminalDelegate: TerminalDelegate {
 /// - Returns: the trailing logical lines, oldest-to-newest.
 func extractRecentLines(_ terminal: SwiftTerm.Terminal, maxLines: Int) -> [String] {
     let data = terminal.getBufferAsData()
-    guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return [] }
+    guard let raw = String(data: data, encoding: .utf8), !raw.isEmpty else { return [] }
+    // `getBufferAsData` serialises blank/cursor-positioned cells (cell code 0) as
+    // NUL (`\u{0}`), not spaces — SwiftUI renders NUL as zero-width, so gaps
+    // between words collapse and lines read like "Youopenedthepage". Map NUL back
+    // to a space, mirroring SwiftTerm's own `getText`, before splitting into lines.
+    let text = raw.replacingOccurrences(of: "\u{0}", with: " ")
     var all = text.components(separatedBy: "\n")
     while let last = all.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
         all.removeLast()

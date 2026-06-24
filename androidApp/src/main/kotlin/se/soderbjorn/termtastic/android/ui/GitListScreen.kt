@@ -105,12 +105,20 @@ fun GitListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        "Git",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            color = SidebarTextPrimary,
-                        ),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Leading pane-type icon (issue #48) — the same glyph the
+                        // session list draws before each pane title, keeping the
+                        // full-screen header consistent with the list. This screen
+                        // only ever hosts git panes (never floating windows).
+                        PaneIcon(kind = LeafKind.GIT, floating = false)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Git",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                color = SidebarTextPrimary,
+                            ),
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

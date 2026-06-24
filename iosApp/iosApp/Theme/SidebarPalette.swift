@@ -91,6 +91,36 @@ enum Palette {
             return UIColor(Color(argb: resolved(isDark: isDark).warn))
         })
     }
+
+    /// Dynamic `UIColor` for the workspace background (the `surface` token),
+    /// suitable for UIKit APIs such as ``UINavigationBarAppearance``.
+    ///
+    /// Used by ``View/themedNavigationBar()`` to paint the navigation bar /
+    /// large-title header so it blends with the themed list content beneath it
+    /// (issue #49). Re-resolves against the current trait collection so flipping
+    /// light/dark picks the matching theme slot.
+    ///
+    /// - SeeAlso: ``background``
+    static var backgroundUIColor: UIColor {
+        UIColor { traitCollection in
+            let isDark = traitCollection.userInterfaceStyle == .dark
+            return UIColor(Color(argb: resolved(isDark: isDark).surface))
+        }
+    }
+
+    /// Dynamic `UIColor` for primary text (the `text` token), suitable for the
+    /// navigation bar's title / large-title text attributes.
+    ///
+    /// Used by ``View/themedNavigationBar()`` so the header title stays legible
+    /// against ``backgroundUIColor`` (issue #49).
+    ///
+    /// - SeeAlso: ``textPrimary``
+    static var textPrimaryUIColor: UIColor {
+        UIColor { traitCollection in
+            let isDark = traitCollection.userInterfaceStyle == .dark
+            return UIColor(Color(argb: resolved(isDark: isDark).text))
+        }
+    }
 }
 
 extension Color {
