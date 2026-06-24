@@ -351,6 +351,14 @@ private struct MiniPane: View {
 /// overview-scoped `MiniTerminalRegistry`, which keeps one live emulator per
 /// session across tab swipes, so swiping back renders instantly. Mirrors the
 /// Android `MiniTerminalPane`.
+///
+/// CONSOLIDATION: this is the iOS "paint" end of the terminal-thumbnail pipeline
+/// (Android analogue: `MiniTerminalPane`; web analogue: `renderThumbnail` in
+/// `LinkThumbnailRenderer.kt`). The paint is irreducibly platform-specific
+/// (SwiftUI bottom-aligned overlay here), but it leans on SwiftUI `Text` to
+/// re-wrap each logical line to the pane width — the step web does by hand via
+/// `wrapLine`, a candidate for a shared `client/commonMain` helper. See the
+/// design note in `web/.../LinkThumbnailRenderer.kt`.
 private struct MiniTerminalPane: View {
     let registry: MiniTerminalRegistry?
     let sessionId: String

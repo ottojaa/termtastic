@@ -163,6 +163,18 @@ private final class HeadlessTerminalDelegate: TerminalDelegate {
 /// and the tail is returned oldest-to-newest. Must be called on the same thread
 /// that feeds the emulator (the main thread, here).
 ///
+/// CONSOLIDATION: the split + trim-to-`maxLines` below mirrors Android
+/// `MiniTerminalRegistry.extractRecentLines` and web
+/// `LinkThumbnailRenderer.readLogicalLines`. Only the buffer read
+/// (`getBufferAsData`) and the NUL-to-space fix are SwiftTerm-specific; the pure
+/// transform could move to `client/commonMain` (e.g.
+/// `TerminalThumbnailModel.trimRecentLines`) and be reached from Swift through the
+/// generated `Client` framework — exactly as `SessionsViewModeStore` already is.
+/// See the full design note in `web/.../LinkThumbnailRenderer.kt`. Note iOS does
+/// NOT re-wrap to the thumbnail width: it resizes the emulator to the real PTY
+/// cols and lets SwiftUI `Text` wrap (see `MiniTerminalPane` in `OverviewView`),
+/// unlike web's explicit `wrapLine`. Reconcile that before sharing the wrap step.
+///
 /// - Parameters:
 ///   - terminal: the headless emulator to read.
 ///   - maxLines: the most lines to return.

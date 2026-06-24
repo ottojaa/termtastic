@@ -22,6 +22,15 @@
  * whole-pane tap that drills into the full-screen terminal is owned by the
  * caller's overlay, so this composable stays render-only.
  *
+ * CONSOLIDATION: this is the Android "paint" end of the terminal-thumbnail
+ * pipeline (the iOS analogue is `MiniTerminalPane` in `OverviewView.swift`; the
+ * web analogue is `renderThumbnail` in `LinkThumbnailRenderer.kt`). The paint is
+ * irreducibly platform-specific (Compose `LazyColumn` here, SwiftUI overlay on
+ * iOS, HTML5 canvas on web), but it leans on Compose `Text` to re-wrap each
+ * logical line to the pane width and on `reverseLayout` to bottom-anchor — two
+ * steps the web has to do by hand and which could become shared pure helpers.
+ * See the design note in `web/.../LinkThumbnailRenderer.kt`.
+ *
  * @see MiniTerminalRegistry
  * @see OverviewContent
  * @see TerminalScreen

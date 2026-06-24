@@ -177,6 +177,17 @@ class MiniTerminalRegistry(
  * to its own width; trailing blank lines are trimmed. Returned oldest-to-newest.
  * Must be called under the emulator lock.
  *
+ * CONSOLIDATION: the split + trim-to-maxLines below is duplicated, identically
+ * in intent, on iOS (`MiniTerminalRegistry.swift` `extractRecentLines`) and web
+ * (`LinkThumbnailRenderer.kt` `readLogicalLines`). Only the line above — reading
+ * `transcriptText` from this platform's native emulator — is platform-specific.
+ * The pure transform could be hoisted into `client/commonMain` (e.g.
+ * `TerminalThumbnailModel.trimRecentLines`) and shared by all three front-ends;
+ * see the full design note in `web/.../LinkThumbnailRenderer.kt`. Note Android
+ * relies on Compose `Text` to re-wrap each logical line to the pane width (see
+ * [MiniTerminalPane]), whereas web re-wraps explicitly — reconcile that before
+ * sharing the wrap step.
+ *
  * @param emulator the externally-fed emulator to read.
  * @param maxLines the most lines to return.
  * @return the trailing logical lines, oldest-to-newest.
