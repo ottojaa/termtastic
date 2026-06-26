@@ -178,17 +178,19 @@ fun OverviewContent(
 
     CompositionLocalProvider(LocalMiniTerminalRegistry provides miniTerminals) {
         Column(modifier) {
-            OverviewTabStrip(
-                tabs = tabs,
-                activeIndex = activeIndex,
-                closeEnabled = tabs.size > 1,
-                onSelect = { id -> scope.launch { vm.setActiveTab(id) } },
-                onRename = { tab -> renameTabTarget = tab },
-                onClose = { tab -> closeTabTarget = tab },
-            )
-
-            // Edit-mode banner: names the mode and offers an unambiguous exit.
-            if (editTabId != null) {
+            // Hide the tab strip while editing layout: the move/resize gestures
+            // own the screen, and the strip's chips would compete for taps.
+            if (editTabId == null) {
+                OverviewTabStrip(
+                    tabs = tabs,
+                    activeIndex = activeIndex,
+                    closeEnabled = tabs.size > 1,
+                    onSelect = { id -> scope.launch { vm.setActiveTab(id) } },
+                    onRename = { tab -> renameTabTarget = tab },
+                    onClose = { tab -> closeTabTarget = tab },
+                )
+            } else {
+                // Edit-mode banner: names the mode and offers an unambiguous exit.
                 EditBanner(onDone = { vm.exitEdit() })
             }
 

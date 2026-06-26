@@ -66,20 +66,24 @@ struct OverviewView: View {
                     placeholder("No tabs")
                 } else {
                     VStack(spacing: 0) {
-                        OverviewTabStrip(
-                            tabs: viewModel.tabs,
-                            activeTabId: viewModel.activeTabId,
-                            closeEnabled: viewModel.tabs.count > 1,
-                            onSelect: { viewModel.setActiveTab($0) },
-                            onRename: { tab in
-                                renameTabText = tab.title
-                                renameTabTarget = PaneTarget(id: tab.id, title: tab.title)
-                            },
-                            onClose: { tab in
-                                closeTabTarget = PaneTarget(id: tab.id, title: tab.title)
-                            }
-                        )
-                        if viewModel.editTabId != nil {
+                        // Hide the tab strip while editing layout: the move/resize
+                        // gestures own the screen, and the strip's chips would
+                        // compete for taps.
+                        if viewModel.editTabId == nil {
+                            OverviewTabStrip(
+                                tabs: viewModel.tabs,
+                                activeTabId: viewModel.activeTabId,
+                                closeEnabled: viewModel.tabs.count > 1,
+                                onSelect: { viewModel.setActiveTab($0) },
+                                onRename: { tab in
+                                    renameTabText = tab.title
+                                    renameTabTarget = PaneTarget(id: tab.id, title: tab.title)
+                                },
+                                onClose: { tab in
+                                    closeTabTarget = PaneTarget(id: tab.id, title: tab.title)
+                                }
+                            )
+                        } else {
                             EditBanner { viewModel.exitEdit() }
                         }
                         pager(bottomInset: rootGeo.safeAreaInsets.bottom)
