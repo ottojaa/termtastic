@@ -417,19 +417,32 @@ fun resyncViewportScroll(entry: TerminalEntry) {
  * content line* when the user has scrolled up (auto-scroll "pause").
  *
  * The pause must keep what the user is reading completely still — not merely
- * stop short of the bottom. The anchor is therefore the absolute top line
- * (`viewportY`), NOT the distance from the bottom: if we held the distance,
- * every appended line would push the read line up by one and the content would
- * drift past the reader every time output arrives.
+ * stop short of the bottom. xterm.js already does this on its own while its
+ * internal `isUserScrolling` flag is set, and it does so correctly in **both**
+ * scrollback regimes (see `BufferService.scroll`):
  *
- * xterm.js's own `BufferService` already holds `ydisp` when its internal
- * `isUserScrolling` flag is set, so normally a write keeps the line still on
- * its own. We re-assert it defensively in the write callback (after the data
- * is parsed): if anything caused the viewport to follow the bottom, scrolling
- * back up to `viewportYBefore` restores the line *and* re-sets
- * `isUserScrolling` (a negative `scrollLines` sets it), so subsequent writes
- * stay pinned. When xterm already held the line, `delta` is 0 and this is a
- * no-op.
+ *  - **Growing** (scrollback not yet full): each appended line increments
+ *    `ybase` but leaves `ydisp` put, so the read line keeps its absolute index
+ *    and stays on screen.
+ *  - **Full** (scrollback at capacity): each appended line trims the oldest
+ *    line off the top, so xterm *decrements* `ydisp` to track that shift and
+ *    keep the read line stationary.
+ *
+ * The subtlety is that the correct anchor differs between the two regimes — the
+ * absolute `viewportY` is stable only while growing; once trimming starts the
+ * absolute index of the read line decreases every write. So we re-assert the
+ * absolute `viewportYBefore` **only while the scrollback is still growing**
+ * (`baseY` increased across the write). There it is both correct and useful: if
+ * a write momentarily followed the bottom, scrolling back up to
+ * `viewportYBefore` restores the line *and* re-sets `isUserScrolling` (a
+ * negative `scrollLines` sets it) so subsequent writes stay pinned; when xterm
+ * already held the line, the delta is 0 and this is a no-op.
+ *
+ * Once the scrollback is **full** (`baseY` unchanged), we must NOT re-assert:
+ * re-anchoring to the now-stale absolute `viewportYBefore` would cancel out
+ * xterm's per-trim `ydisp` decrement and march the viewport up one line per
+ * write — the "tailing a live feed keeps scrolling away" bug. In that regime we
+ * trust xterm's own compensation and leave the scroll position alone.
  *
  * When the user is at the bottom, output is written normally so the terminal
  * keeps auto-following the latest line.
@@ -444,14 +457,21 @@ fun writeHoldingScroll(entry: TerminalEntry, bytes: Uint8Array) {
     if (isScrolledUp(term)) {
         val buffer = term.asDynamic().buffer.active
         val viewportYBefore = (buffer.viewportY as? Number)?.toInt() ?: 0
+        val baseYBefore = (buffer.baseY as? Number)?.toInt() ?: 0
         markScrollButtonNewOutput(entry)
         term.asDynamic().write(bytes) {
             val after = term.asDynamic().buffer.active
             val viewportYAfter = (after.viewportY as? Number)?.toInt() ?: 0
-            // Restore the same top line. delta < 0 (scroll back up) when the
-            // write followed the bottom; that also re-sets isUserScrolling.
-            val delta = viewportYBefore - viewportYAfter
-            if (delta != 0) term.asDynamic().scrollLines(delta)
+            val baseYAfter = (after.baseY as? Number)?.toInt() ?: 0
+            // Only re-anchor while the scrollback is still growing (no trimming
+            // yet, so the absolute viewportYBefore is still the right line).
+            // Once full (baseY unchanged) xterm already decremented ydisp to
+            // hold the line as it trimmed; re-asserting here would undo that and
+            // drift the viewport upward every write.
+            if (baseYAfter > baseYBefore) {
+                val delta = viewportYBefore - viewportYAfter
+                if (delta != 0) term.asDynamic().scrollLines(delta)
+            }
             updateScrollButton(entry)
         }
     } else {
