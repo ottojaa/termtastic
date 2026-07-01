@@ -25,16 +25,18 @@
  *         when running inside the bundled Electron app ([isElectronClient])
  *         — the dialog opens on the server's desktop, which a remote
  *         browser can't see.
- *  2. An **Experimental features** section with two persisted boolean
- *     toggles:
+ *  2. An **Experimental features** section with persisted boolean toggles:
  *       - **Enable file browser** — when off, hides the File Browser
  *         entry from the topbar "New pane" hover dropdown.
  *       - **Enable Git change view** — same for the Git entry.
+ *       - **Name terminals from agent activity** — opt-in auto-naming of
+ *         terminals from AI-agent usage (consumed server-side by the
+ *         AutoNamer); this row carries an explanatory description line.
  *
- * The flags persist server-side under two new top-level keys in
- * `/api/ui-settings`:
+ * The flags persist server-side under top-level keys in `/api/ui-settings`:
  *   - `experimentalFileBrowser` (Boolean, default false)
  *   - `experimentalGitView` (Boolean, default false)
+ *   - `terminalAutoName` (Boolean, default false)
  *
  * Reads consult [toolkitSettingsSnapshot] (already mirrored from the
  * server's payload via [updateToolkitSettingsSnapshot]); writes
@@ -46,6 +48,7 @@
  * @see buildAppSettingsContent
  * @see isExperimentalFileBrowserEnabled
  * @see isExperimentalGitViewEnabled
+ * @see isTerminalAutoNameEnabled
  */
 package se.soderbjorn.termtastic
 
@@ -66,6 +69,13 @@ private const val KEY_EXPERIMENTAL_FILE_BROWSER = "experimentalFileBrowser"
 
 /** Persistence key for the experimental Git-view flag. */
 private const val KEY_EXPERIMENTAL_GIT_VIEW = "experimentalGitView"
+
+/**
+ * Persistence key for the opt-in "auto-name terminals from agent activity"
+ * flag. Read server-side by the AutoNamer via the same string, so this key is
+ * a cross-module contract (see `TERMINAL_AUTO_NAME_KEY` in the server).
+ */
+private const val KEY_TERMINAL_AUTO_NAME = "terminalAutoName"
 
 /**
  * Tooltip/`title` of the toolkit's topbar Theme Manager (palette) button.
@@ -143,6 +153,17 @@ fun isExperimentalFileBrowserEnabled(): Boolean =
  */
 fun isExperimentalGitViewEnabled(): Boolean =
     snapshotBoolean(KEY_EXPERIMENTAL_GIT_VIEW)
+
+/**
+ * Whether Termtastic should auto-name terminals from AI-agent activity. Read
+ * only to seed the toggle's initial state in [buildTerminalSection]; the actual
+ * feature logic lives server-side (the AutoNamer reads the same persisted key).
+ *
+ * @return `true` when the user has opted in.
+ * @see KEY_TERMINAL_AUTO_NAME
+ */
+fun isTerminalAutoNameEnabled(): Boolean =
+    snapshotBoolean(KEY_TERMINAL_AUTO_NAME)
 
 /**
  * Mirror a single boolean key into [toolkitSettingsSnapshot] without
@@ -356,6 +377,18 @@ private fun buildExperimentalSection(): HTMLElement {
             putJsonBoolean(KEY_EXPERIMENTAL_GIT_VIEW, v)
         },
     ))
+    section.appendChild(buildToggleRow(
+        labelText = "Name terminals from agent activity",
+        initialValue = isTerminalAutoNameEnabled(),
+        onChange = { v ->
+            updateSnapshotBoolean(KEY_TERMINAL_AUTO_NAME, v)
+            putJsonBoolean(KEY_TERMINAL_AUTO_NAME, v)
+        },
+        descriptionText = "When an AI agent (Claude, Codex, or Gemini) starts " +
+            "working on your first prompt, the terminal's folder name is " +
+            "replaced with a few words describing the task. Terminals you've " +
+            "named yourself are never changed.",
+    ))
 
     return section
 }
@@ -374,16 +407,19 @@ private fun buildExperimentalSection(): HTMLElement {
  * highlighted rectangle moves immediately, regardless of how long the
  * async server round-trip in [onChange] takes.
  *
- * @param labelText    the visible label text shown above the buttons.
- * @param initialValue which option ("On" = true) starts selected.
- * @param onChange     invoked with the new value every time the user
+ * @param labelText       the visible label text shown above the buttons.
+ * @param initialValue    which option ("On" = true) starts selected.
+ * @param onChange        invoked with the new value every time the user
  *   picks a different option.
+ * @param descriptionText optional muted help text rendered under the label to
+ *   explain what the setting does; omitted (`null`) renders no description.
  * @return the freshly-built row element.
  */
 private fun buildToggleRow(
     labelText: String,
     initialValue: Boolean,
     onChange: (Boolean) -> Unit,
+    descriptionText: String? = null,
 ): HTMLElement {
     val row = document.createElement("div") as HTMLElement
     row.className = "termtastic-app-settings-toggle-row"
@@ -392,6 +428,13 @@ private fun buildToggleRow(
     labelEl.className = "termtastic-app-settings-toggle-label"
     labelEl.textContent = labelText
     row.appendChild(labelEl)
+
+    if (descriptionText != null) {
+        val descEl = document.createElement("div") as HTMLElement
+        descEl.className = "termtastic-app-settings-toggle-desc"
+        descEl.textContent = descriptionText
+        row.appendChild(descEl)
+    }
 
     val btnRow = document.createElement("div") as HTMLElement
     btnRow.className = "dt-settings-button-row"

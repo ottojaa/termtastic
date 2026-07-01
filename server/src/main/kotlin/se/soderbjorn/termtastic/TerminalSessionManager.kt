@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import se.soderbjorn.termtastic.pty.InputCommandScanner
 import se.soderbjorn.termtastic.pty.Osc7Scanner
 import se.soderbjorn.termtastic.pty.ProcessCwdReader
 import se.soderbjorn.termtastic.pty.ShellInitFiles
@@ -175,6 +176,14 @@ class TerminalSession private constructor(
 
     private val osc7 = Osc7Scanner { path -> _cwd.value = path }
 
+    // Counts clear-context commands the user submits (`/clear`, or a shell
+    // `clear`) — an in-place context reset that keeps the same agent process.
+    // Fed from the input (write) path; the AutoNamer watches this to re-enable
+    // naming after a /clear. Watching the user's keystrokes is more direct and
+    // version-robust than sniffing what the agent re-renders.
+    private val clearCmdGen = AtomicLong(0)
+    private val inputScanner = InputCommandScanner { clearCmdGen.incrementAndGet() }
+
     private val screen = ScreenEmulator(initialCols = 120, initialRows = 32)
 
     // Ring buffer of recent bytes for reconnect replay.
@@ -188,6 +197,27 @@ class TerminalSession private constructor(
     private var bytesWritten: Long = 0
 
     fun bytesWritten(): Long = bytesWritten
+
+    /**
+     * The OS process id of this session's shell, or `null` if the PTY has
+     * already exited. Used by the `AutoNamer` (via [ProcessTreeReader]) to
+     * detect whether an interactive agent is currently running as a child of
+     * the shell.
+     *
+     * @return the shell pid, or `null` when unavailable.
+     */
+    fun shellPid(): Long? = try { pty.pid() } catch (_: Throwable) { null }
+
+    /**
+     * A monotonically increasing counter of clear-context commands the user has
+     * submitted in this session (`/clear`, or a shell `clear`), detected from
+     * the input stream. The `AutoNamer` compares this against the value captured
+     * when it named the terminal; a change means the user reset the context in
+     * place, so the next prompt may be named afresh.
+     *
+     * @return the current clear-command count.
+     */
+    fun clearCommandGeneration(): Long = clearCmdGen.get()
 
     init {
         if (initialScrollback != null && initialScrollback.isNotEmpty()) {
@@ -227,8 +257,10 @@ class TerminalSession private constructor(
         }
     }
 
-    /** Write raw bytes to the PTY's stdin. */
+    /** Write raw bytes to the PTY's stdin (the user's keystrokes). */
     fun write(bytes: ByteArray) {
+        // Watch the input for clear-context commands (/clear) before forwarding.
+        inputScanner.feed(bytes)
         try {
             pty.outputStream.write(bytes)
             pty.outputStream.flush()
@@ -293,6 +325,18 @@ class TerminalSession private constructor(
         if (text.isEmpty()) return null
         return StateDetector.detectState(text)
     }
+
+    /**
+     * Return the currently-rendered screen as plain text (one row per line).
+     *
+     * Called by the server-side `AutoNamer` when this session's AI agent
+     * transitions idle → working, so it can summarize the on-screen prompt
+     * into a contextual terminal name. Mirrors what [detectState] scans.
+     *
+     * @return the visible screen text; empty when nothing has rendered yet.
+     * @see ScreenEmulator.snapshotVisibleText
+     */
+    fun snapshotVisibleText(): String = screen.snapshotVisibleText()
 
     /** Return a copy of the ring buffer contents for reconnect replay. */
     fun snapshot(): ByteArray {

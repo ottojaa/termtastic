@@ -20,6 +20,7 @@
  */
 package se.soderbjorn.termtastic
 
+import io.ktor.http.CacheControl
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
@@ -70,6 +71,7 @@ fun main() {
     installWindowConfigPersister(persistenceScope, repo)
     val scrollbackSaver = installScrollbackSaver(persistenceScope, repo)
     val sessionStates = installSessionStatePoller(persistenceScope)
+    installAutoNamer(persistenceScope, sessionStates, repo, defaultNameInferrer())
     val sharedThemesWatch = installSharedThemesWatcher(repo)
 
     val usageMonitor = ClaudeUsageMonitor()
@@ -184,11 +186,17 @@ fun Application.module(
             // Dev flow: serve from the on-disk web dist so edits hot-reload without re-jarring.
             staticFiles("/", File(webDistPath)) {
                 default("index.html")
+                // No-store so the Electron/browser renderer always fetches the
+                // current bundle instead of a cached one. The server is on
+                // loopback, so re-fetching is effectively free — and it avoids
+                // "renderer running a stale web.js" after a rebuild/update.
+                cacheControl { listOf(CacheControl.NoStore(null)) }
             }
         } else {
             // Packaged flow: the web bundle is embedded in the server jar under /web.
             staticResources("/", "web") {
                 default("index.html")
+                cacheControl { listOf(CacheControl.NoStore(null)) }
             }
         }
         uiSettingsRoutes(settingsRepo)
