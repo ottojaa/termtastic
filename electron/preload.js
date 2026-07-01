@@ -202,6 +202,23 @@ contextBridge.exposeInMainWorld("electronApi", {
   },
 
   /**
+   * Subscribes to the "show hotkeys" event sent by the main process when the
+   * user picks "Keyboard Shortcuts" from the macOS app menu. The renderer
+   * uses this to open its in-app Hotkeys sidebar.
+   *
+   * Only the channel name is forwarded; the IPC event object itself is not
+   * leaked into the renderer for context-isolation safety.
+   *
+   * @param {() => void} handler - Called with no arguments on each event.
+   * @returns {() => void} Unsubscribe function that detaches the listener.
+   */
+  onShowHotkeys: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("show-hotkeys", wrapped);
+    return () => ipcRenderer.removeListener("show-hotkeys", wrapped);
+  },
+
+  /**
    * Subscribes to the "debug set pane state" event sent by the main
    * process when the user picks "Pane state: Working/Waiting/Clear"
    * from the macOS Debug submenu. The handler receives the requested

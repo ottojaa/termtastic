@@ -551,6 +551,13 @@ private fun start() {
         electronApi.onShowSettings({ openAppSettingsSidebar() })
     }
 
+    // macOS app menu → "Keyboard Shortcuts" opens the in-app Hotkeys
+    // sidebar. Forwarded from the Electron main process via the
+    // `show-hotkeys` IPC.
+    if (electronApi?.onShowHotkeys != null) {
+        electronApi.onShowHotkeys({ openHotkeysSidebar() })
+    }
+
     // macOS Debug menu → per-pane state override (Working / Waiting /
     // Clear). Forwarded from the Electron main process via the
     // `debug-set-pane-state` IPC; the renderer-side helper looks up

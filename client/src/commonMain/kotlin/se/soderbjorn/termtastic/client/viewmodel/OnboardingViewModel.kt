@@ -40,6 +40,16 @@ import kotlinx.coroutines.flow.asStateFlow
 const val TERMTASTIC_SITE_URL: String = "https://termtastic.soderbjorn.se"
 
 /**
+ * The published privacy policy page, linked from the bottom of the hosts
+ * screen (next to the demo footer) on Android and iOS and from the desktop
+ * app's menu.
+ *
+ * Kept as a shared constant alongside [TERMTASTIC_SITE_URL] so every client
+ * that surfaces the privacy policy points at the same canonical URL.
+ */
+const val TERMTASTIC_PRIVACY_URL: String = "https://termtastic.soderbjorn.se/privacy.html"
+
+/**
  * Semantic icon for an [OnboardingPage], decoupled from any platform's icon
  * set.
  *

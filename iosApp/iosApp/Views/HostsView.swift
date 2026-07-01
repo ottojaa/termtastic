@@ -123,38 +123,59 @@ struct HostsView: View {
 /// to the shared client's in-process demo simulation — instant, offline, and
 /// stateless, so it carries no edit/delete affordances.
 ///
-/// Rendered as a single muted, centered line beneath a hairline divider so it
-/// stays out of the way of the user's own servers while remaining reachable.
-/// Mirrors the Android `DemoFooter` composable.
+/// Rendered as a single muted row beneath a hairline divider: the "Try the live
+/// demo" affordance sits bottom-left and a discreet "Privacy Policy" link
+/// bottom-right, opening the published policy page in the browser. Both stay out
+/// of the way of the user's own servers while remaining reachable. Mirrors the
+/// Android `DemoFooter` composable.
 private struct DemoFooter: View {
     let connecting: Bool
     let enabled: Bool
     let onConnect: () -> Void
 
+    /// Published privacy policy page. Mirrors the shared Kotlin
+    /// `TERMTASTIC_PRIVACY_URL` constant used by the Android client.
+    private let privacyURL = URL(string: "https://termtastic.soderbjorn.se/privacy.html")!
+
     var body: some View {
         VStack(spacing: 0) {
             Divider()
-            Button(action: { if enabled { onConnect() } }) {
-                HStack(spacing: 6) {
-                    if connecting {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                    } else {
-                        Image(systemName: "play.circle")
-                            .font(.system(size: 13))
+            HStack {
+                // Live demo — bottom-left.
+                Button(action: { if enabled { onConnect() } }) {
+                    HStack(spacing: 6) {
+                        if connecting {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "play.circle")
+                                .font(.system(size: 13))
+                        }
+                        Text("Try the live demo")
+                            .font(.footnote)
                     }
-                    Text("Try the live demo")
-                        .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .disabled(!enabled)
+                .accessibilityLabel("Try the live demo, no server needed")
+
+                Spacer()
+
+                // Privacy policy — bottom-right.
+                Link(destination: privacyURL) {
+                    Text("Privacy Policy")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open the privacy policy")
             }
-            .buttonStyle(.plain)
-            .disabled(!enabled)
-            .accessibilityLabel("Try the live demo, no server needed")
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
         }
         // Opaque background that matches the list base (black in dark mode)
         // rather than the lighter `.bar` material. `.bar` filled the bottom

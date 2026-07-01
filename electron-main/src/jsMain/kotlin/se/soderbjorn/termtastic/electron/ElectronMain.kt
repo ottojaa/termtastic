@@ -610,6 +610,23 @@ private fun showSettings() {
     target.webContents.send("show-settings")
 }
 
+/**
+ * Surfaces the in-app Hotkeys sidebar in response to the macOS "Keyboard
+ * Shortcuts" app-menu item. Mirrors [showSettings]: focus (and if needed
+ * reveal) the target window, then send the `show-hotkeys` IPC the renderer
+ * listens for to open the sidebar.
+ */
+private fun showHotkeys() {
+    val focused = BrowserWindow.getFocusedWindow()
+    val mw = mainWindow
+    val target: BrowserWindow = focused
+        ?: (if (mw != null && !mw.isDestroyed()) mw else null)
+        ?: return
+    if (!target.isVisible()) target.show()
+    target.focus()
+    target.webContents.send("show-hotkeys")
+}
+
 // ── Application menu ─────────────────────────────────────────────────
 
 private fun buildAppMenu() {
@@ -626,9 +643,17 @@ private fun buildAppMenu() {
         // "Preferences…" to "Settings…" in macOS Ventura; we follow the
         // current naming.) It opens the in-app App Settings sidebar.
         val settingsItem: dynamic = js("({})")
-        settingsItem.label = "Settings…"
+        settingsItem.label = "Settings"
         settingsItem.accelerator = "Command+,"
         settingsItem.click = { showSettings() }
+
+        // Opens the in-app Hotkeys sidebar. No accelerator: the compact
+        // cheat-sheet modal already owns ⌘/ inside the renderer, and a menu
+        // accelerator would pre-empt it. Sits right below "Settings…" so the
+        // two in-app reference panels read as a pair.
+        val hotkeysItem: dynamic = js("({})")
+        hotkeysItem.label = "Keyboard Shortcuts"
+        hotkeysItem.click = { showHotkeys() }
 
         val loginItem: dynamic = js("({})")
         loginItem.label = "Launch at Login"
@@ -640,6 +665,7 @@ private fun buildAppMenu() {
             aboutItem,
             js("({type:'separator'})"),
             settingsItem,
+            hotkeysItem,
             js("({type:'separator'})"),
             loginItem,
             js("({type:'separator'})"),
@@ -693,6 +719,22 @@ private fun buildAppMenu() {
         debugMenu.submenu = arrayOf<dynamic>(workingItem, waitingItem, clearItem)
         template.add(debugMenu)
     }
+
+    // Help menu (all platforms): links that open in the user's default browser
+    // via shell.openExternal — the marketing site and the published privacy
+    // policy (the latter mirrors the link at the bottom of the mobile hosts
+    // screen).
+    val websiteItem: dynamic = js("({})")
+    websiteItem.label = "Termtastic Website"
+    websiteItem.click = { shell.openExternal("https://termtastic.soderbjorn.se/") }
+    val privacyItem: dynamic = js("({})")
+    privacyItem.label = "Privacy Policy"
+    privacyItem.click = { shell.openExternal("https://termtastic.soderbjorn.se/privacy.html") }
+    val helpMenu: dynamic = js("({})")
+    helpMenu.label = "Help"
+    helpMenu.role = "help"
+    helpMenu.submenu = arrayOf<dynamic>(websiteItem, privacyItem)
+    template.add(helpMenu)
 
     Menu.setApplicationMenu(Menu.buildFromTemplate(template.toTypedArray()))
 }
@@ -823,6 +865,32 @@ private fun showAndFocus() {
     }
 }
 
+/**
+ * Toggle handler for the [SUMMON_ACCELERATOR] global shortcut: bring the
+ * window to the front if it's hidden/backgrounded, or hide it if it's
+ * already the frontmost focused window.
+ *
+ * Called only from [registerGlobalShortcut] — pressing the summon hotkey
+ * a second time while termtastic is focused now dismisses it, so the same
+ * chord flips the window in and out of view. (The `second-instance`
+ * handler still uses the non-toggling [showAndFocus]: relaunching the app
+ * should always raise the window, never hide it.)
+ *
+ * "Frontmost" means visible, un-minimized, and focused; in every other
+ * state — hidden, minimized, or visible-but-behind another app — we fall
+ * through to the summon path and reuse [showAndFocus].
+ *
+ * @see showAndFocus for the plain summon behaviour shared with second-instance.
+ */
+private fun toggleSummon() {
+    val w = mainWindow
+    if (w != null && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused()) {
+        w.hide()
+        return
+    }
+    showAndFocus()
+}
+
 private fun showUnreachable(errorDescription: String, hint: String?) {
     val hintHtml = hint?.let { "<p>$it</p>" }
         ?: "<p>Start the server with:</p><p><code>./gradlew :server:run</code></p>"
@@ -910,7 +978,7 @@ private fun ensureServerThenCreateWindow(): Promise<Unit> = Promise { resolve, _
 }
 
 private fun registerGlobalShortcut() {
-    val ok = globalShortcut.register(SUMMON_ACCELERATOR) { showAndFocus() }
+    val ok = globalShortcut.register(SUMMON_ACCELERATOR) { toggleSummon() }
     if (!ok) {
         console.warn("Failed to register global shortcut: $SUMMON_ACCELERATOR")
     }

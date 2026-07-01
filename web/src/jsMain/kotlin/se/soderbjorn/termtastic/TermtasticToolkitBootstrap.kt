@@ -42,8 +42,6 @@ import se.soderbjorn.darkness.web.shell.AppShellSpec
 import se.soderbjorn.darkness.web.shell.ThemeBootstrap
 import se.soderbjorn.darkness.web.shell.TopbarAction
 import se.soderbjorn.darkness.web.shell.mountAppShell
-import se.soderbjorn.darkness.web.hotkey.ToolkitHotkeysModal
-import se.soderbjorn.darkness.web.hotkey.installCheatsheetHotkey
 
 /* -------------------------------------------------------------------- */
 /* SVG icon constants for top-bar trailing actions and pane-action      */
@@ -647,11 +645,6 @@ private fun sessionIdForPane(paneId: String): String? {
  * @param root host element (typically `document.getElementById("app")`).
  */
 fun bootViaToolkitShell(root: HTMLElement) {
-    // Construct termtastic's cheatsheet modal and bind Cmd/Ctrl+/. The
-    // modal shell, escape-dismiss, and outside-click logic all live in
-    // the toolkit; termtastic only supplies the curated content list.
-    val hotkeysModal = ToolkitHotkeysModal().apply { setContent(termtasticHotkeysSpec()) }
-    installCheatsheetHotkey(hotkeysModal)
     appShellHandle = mountAppShell(
         AppShellSpec(
             rootContainer = root,
@@ -729,6 +722,11 @@ fun bootViaToolkitShell(root: HTMLElement) {
             // the Appearance "Aa" gear) and renders [buildAppSettingsContent]
             // inside the sidebar when the user clicks it.
             appSettingsContent = { buildAppSettingsContent() },
+            // Body of the dedicated "Keyboard shortcuts" sidebar. No topbar
+            // button — opened via [openHotkeysSidebar] (the App Settings
+            // "Hotkeys" button and the Electron "Keyboard Shortcuts" menu
+            // item both route here through the toolkit handle).
+            hotkeysContent = { buildHotkeysSidebarContent() },
             isElectron = isElectronClient,
             theme = ThemeBootstrap.default(),
             // Toolkit fires this after every committed pane-geometry

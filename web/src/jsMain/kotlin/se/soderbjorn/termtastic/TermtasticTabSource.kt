@@ -14,6 +14,7 @@
 package se.soderbjorn.termtastic
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import se.soderbjorn.darkness.web.shell.PaneAddMenuItem
@@ -61,6 +62,11 @@ internal val termtasticPaneAssigner: PaneSlotAssigner = PaneSlotAssigner()
  * non-null emission is mapped to a [TabListSnapshot] and pushed into
  * the toolkit. User gestures fire [WindowCommand]s through [socket].
  *
+ * Tab activation is serialized through a single conflated channel (see
+ * `activeTabRequests` below) so that a fast burst of tab switches always
+ * resolves to the last-requested tab, in order — fixing the flicker /
+ * wrong-tab race that appeared when switching quickly with Cmd+digit.
+ *
  * @param scope coroutine scope for the collector (typically the same
  *   one termtastic runs the rest of its WebSocket loop on).
  * @param windowState the live server-state repository.
@@ -71,7 +77,25 @@ fun termtasticTabSource(
     scope: CoroutineScope,
     windowState: WindowStateRepository,
     socket: WindowSocket,
-): TabSource = TabSource(
+): TabSource {
+    // Serialize + conflate active-tab activation. Each user gesture only
+    // *replaces* the pending request (Channel.CONFLATED), and a single
+    // consumer coroutine sends them to the server one at a time. This
+    // guarantees two things a fast Cmd+digit burst previously broke:
+    //   1. Ordering — sends can't overtake each other the way independent
+    //      `scope.launch { socket.send(...) }` calls could, so the server
+    //      never ends up on an intermediate tab.
+    //   2. Coalescing — passing through several tabs quickly collapses to
+    //      just the final target instead of flooding the socket.
+    // Combined with the toolkit's optimistic tab activation, switching now
+    // feels instant and settles on the tab the user actually landed on.
+    val activeTabRequests = Channel<String>(Channel.CONFLATED)
+    scope.launch {
+        for (tabId in activeTabRequests) {
+            socket.send(WindowCommand.SetActiveTab(tabId))
+        }
+    }
+    return TabSource(
     subscribe = { push ->
         scope.launch {
             windowState.config.collect { config ->
@@ -153,7 +177,10 @@ fun termtasticTabSource(
             }
         }
     },
-    onSelect = { id -> scope.launch { socket.send(WindowCommand.SetActiveTab(id)) } },
+    // Route through the conflated request channel (see above) instead of
+    // launching an independent send per press — that's what makes fast
+    // switching land on the last-requested tab in order.
+    onSelect = { id -> activeTabRequests.trySend(id) },
     onAdd = { scope.launch { socket.send(WindowCommand.AddTab) } },
     onClose = { id -> scope.launch { socket.send(WindowCommand.CloseTab(id)) } },
     onRename = { id, label -> scope.launch { socket.send(WindowCommand.RenameTab(id, label)) } },
@@ -266,4 +293,5 @@ fun termtasticTabSource(
     // SetPanePosition, SetPaneSize) are no longer the route for these
     // gestures; the toolkit persists geometry through the supplied
     // [Persister] which round-trips to the server's flat-KV.
-)
+    )
+}

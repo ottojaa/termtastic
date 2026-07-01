@@ -70,6 +70,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -88,6 +89,7 @@ import se.soderbjorn.termtastic.android.net.ConnectionHolder
 import se.soderbjorn.termtastic.android.net.NewsUpdatesController
 import se.soderbjorn.termtastic.client.ServerUrl
 import se.soderbjorn.termtastic.client.demo.DEMO_HOST
+import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_PRIVACY_URL
 
 /**
  * Sentinel id used in the `connectingId` state for the built-in demo row —
@@ -417,8 +419,11 @@ private fun EmptyState(
  * shared client) — instant, offline, and stateless, so it needs no edit/delete
  * affordances.
  *
- * Rendered as a single muted, centered line beneath a hairline divider so it
- * stays out of the way of the user's own servers while remaining reachable.
+ * Rendered as a single muted row beneath a hairline divider: the "Try the live
+ * demo" affordance sits bottom-left and a discreet "Privacy Policy" link
+ * bottom-right, opening the published policy page ([TERMTASTIC_PRIVACY_URL]) in
+ * the browser via [LocalUriHandler]. Both stay out of the way of the user's own
+ * servers while remaining reachable.
  *
  * @param connecting true while the demo connection is being set up.
  * @param enabled false while another host is connecting.
@@ -430,42 +435,67 @@ private fun DemoFooter(
     enabled: Boolean,
     onConnect: () -> Unit,
 ) {
+    val uriHandler = LocalUriHandler.current
     Column(modifier = Modifier.fillMaxWidth()) {
         HorizontalDivider(color = SidebarTextSecondary.copy(alpha = 0.2f))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = enabled, onClick = onConnect)
-                .semantics {
-                    role = Role.Button
-                    contentDescription = "Try the live demo, no server needed"
-                }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.Center,
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (connecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(13.dp),
-                    strokeWidth = 2.dp,
-                    color = SidebarTextSecondary,
-                )
-            } else {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = SidebarTextSecondary,
+            // Live demo — bottom-left. Only this cluster is clickable so the
+            // demo tap-target stays distinct from the privacy link.
+            Row(
+                modifier = Modifier
+                    .clickable(enabled = enabled, onClick = onConnect)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Try the live demo, no server needed"
+                    }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (connecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(13.dp),
+                        strokeWidth = 2.dp,
+                        color = SidebarTextSecondary,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = SidebarTextSecondary,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "Try the live demo",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = SidebarTextSecondary,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.width(6.dp))
+            // Privacy policy — bottom-right.
             Text(
-                text = "Try the live demo",
+                text = "Privacy Policy",
                 style = MaterialTheme.typography.bodySmall.copy(
-                    color = SidebarTextSecondary,
+                    color = SidebarTextSecondary.copy(alpha = 0.7f),
                 ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clickable { uriHandler.openUri(TERMTASTIC_PRIVACY_URL) }
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Open the privacy policy"
+                    }
+                    .padding(vertical = 2.dp),
             )
         }
     }

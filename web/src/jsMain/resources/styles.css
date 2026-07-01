@@ -2239,6 +2239,164 @@ body.appearance-light .termtastic-app-settings-toggle-row:hover {
 }
 
 
+/* ─── Hotkeys sidebar body ───────────────────────────────────────────
+   Styles the body element produced by buildHotkeysSidebarContent() in
+   HotkeysSidebarContent.kt. The toolkit owns the surrounding chrome; we
+   only style what's inside .termtastic-hotkeys-body. */
+
+.termtastic-hotkeys-body {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 14px 18px 24px;
+    color: var(--t-text, var(--text-primary));
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.termtastic-hotkeys-intro {
+    margin: 0;
+    font-size: 12px;
+    color: var(--t-text-dim, var(--text-secondary));
+}
+
+.termtastic-hotkeys-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.termtastic-hotkeys-group-title {
+    margin: 0 2px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--t-text-dim, var(--text-secondary));
+}
+
+.termtastic-hotkeys-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.termtastic-hotkeys-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 2px;
+    border-bottom: 1px solid color-mix(in srgb, var(--t-border, var(--separator)) 55%, transparent);
+}
+
+.termtastic-hotkeys-row:last-child {
+    border-bottom: none;
+}
+
+.termtastic-hotkeys-label {
+    flex: 1;
+    min-width: 0;
+    padding-top: 3px;
+}
+
+/* Right column: chord(s) + badge. Column so the split tab-switch row can
+   stack its two runtime-tagged chord lines. */
+.termtastic-hotkeys-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+/* One chord + its runtime tag on a single line (split rows). */
+.termtastic-hotkeys-tagged {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.termtastic-hotkeys-chord {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* Keycap pill — mirrors the cheat-sheet modal's .dt-hotkeys-kbd look so the
+   sidebar and modal read as the same family. */
+.termtastic-hotkeys-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    padding: 2px 6px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--t-text, var(--text-primary));
+    background: color-mix(in srgb, var(--t-text, #e6e6e6) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--t-text, #e6e6e6) 18%, transparent);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+}
+
+/* Availability badge (Both / Desktop / Web). */
+.termtastic-hotkeys-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    line-height: 1.5;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.termtastic-hotkeys-badge--both {
+    color: color-mix(in srgb, var(--t-accent) 85%, var(--t-text));
+    background: color-mix(in srgb, var(--t-accent) 14%, transparent);
+    border-color: color-mix(in srgb, var(--t-accent) 35%, transparent);
+}
+
+.termtastic-hotkeys-badge--desktop {
+    color: var(--t-text-dim, var(--text-secondary));
+    background: color-mix(in srgb, var(--t-text, #e6e6e6) 8%, transparent);
+    border-color: color-mix(in srgb, var(--t-text, #e6e6e6) 20%, transparent);
+}
+
+.termtastic-hotkeys-badge--web {
+    color: var(--t-text-dim, var(--text-secondary));
+    background: transparent;
+    border-color: color-mix(in srgb, var(--t-text, #e6e6e6) 22%, transparent);
+}
+
+/* Legend row at the bottom: badge + explanatory text pairs. */
+.termtastic-hotkeys-legend {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 6px 8px;
+    margin-top: 2px;
+    padding-top: 12px;
+    border-top: 1px solid color-mix(in srgb, var(--t-border, var(--separator)) 55%, transparent);
+}
+
+.termtastic-hotkeys-legend-text {
+    font-size: 11px;
+    color: var(--t-text-dim, var(--text-secondary));
+}
+
+body.appearance-light .termtastic-hotkeys-cap {
+    background: rgba(0, 0, 0, 0.05);
+    border-color: rgba(0, 0, 0, 0.16);
+}
+
+
 /* ─── Section theme overrides ─────────────────────────────────────── */
 
 
