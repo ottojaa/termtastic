@@ -208,5 +208,21 @@ internal object ShellInitFiles {
         # Emit once for the initial cwd so the server learns it before the
         # first 'cd' happens.
         __termtastic_emit_osc7
+
+        # termtastic: opt-in terminal auto-naming. Wrap `claude` so that, in a
+        # terminal the server armed (it exports TERMTASTIC_AUTONAME_SETTINGS),
+        # our hook settings are merged in via --settings (non-destructive). A
+        # shell function is defined AFTER the user's rc, so it wins over PATH
+        # regardless of how the user's config orders it (a plain PATH shim loses
+        # to a `~/.local/bin` re-prepend, which is where claude usually lives).
+        # Inert — a transparent passthrough — when the env var is unset.
+        # See se.soderbjorn.termtastic.ClaudeAutoNameHooks.
+        claude() {
+          if [[ -n "${'$'}TERMTASTIC_AUTONAME_SETTINGS" ]]; then
+            command claude --settings "${'$'}TERMTASTIC_AUTONAME_SETTINGS" "${'$'}@"
+          else
+            command claude "${'$'}@"
+          fi
+        }
     """.trimIndent() + "\n"
 }

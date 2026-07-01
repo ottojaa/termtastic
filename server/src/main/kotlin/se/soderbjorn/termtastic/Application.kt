@@ -20,6 +20,7 @@
  */
 package se.soderbjorn.termtastic
 
+import io.ktor.http.CacheControl
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
@@ -64,12 +65,27 @@ fun main() {
     // first value seen by the rest of the app — that way no throwaway PTYs
     // are created for a default layout we'd immediately discard.
     val repo = SettingsRepository(AppPaths.databaseFile())
+
+    // Resolve the loopback port up front and configure the opt-in auto-name
+    // hook installer before any PTY can spawn — a restored layout may create
+    // terminals during WindowState.initialize, and those must already carry
+    // the hook env if the feature is on.
+    val port = System.getProperty("termtastic.port")?.toIntOrNull() ?: SERVER_TLS_PORT
+    val agentEventToken = java.util.UUID.randomUUID().toString().replace("-", "")
+    ClaudeAutoNameHooks.port = port
+    ClaudeAutoNameHooks.token = agentEventToken
+    ClaudeAutoNameHooks.enabled = { autoNameEnabled(repo) }
+
     WindowState.initialize(repo)
 
     val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     installWindowConfigPersister(persistenceScope, repo)
     val scrollbackSaver = installScrollbackSaver(persistenceScope, repo)
     val sessionStates = installSessionStatePoller(persistenceScope)
+    // Structured agent-activity stream: Claude hooks POST to /internal/agent-event
+    // (see agentEventRoutes), which publishes here for the AutoNamer to consume.
+    val agentEvents = MutableSharedFlow<AgentEvent>(extraBufferCapacity = 64)
+    installAutoNamer(persistenceScope, agentEvents, repo, defaultNameInferrer())
     val sharedThemesWatch = installSharedThemesWatcher(repo)
 
     val usageMonitor = ClaudeUsageMonitor()
@@ -91,8 +107,6 @@ fun main() {
         repo.close()
     })
 
-    val port = System.getProperty("termtastic.port")?.toIntOrNull()
-        ?: SERVER_TLS_PORT
     SettingsDialog.setListeningPort(port)
 
     // Generate-or-load the self-signed TLS keystore before binding the
@@ -123,7 +137,7 @@ fun main() {
                 this.port = port
             }
         },
-        module = { module(repo, sessionStates, usageMonitor, scrollbackSaver) }
+        module = { module(repo, sessionStates, usageMonitor, scrollbackSaver, agentEvents) }
     )
 
     if (java.awt.GraphicsEnvironment.isHeadless()) {
@@ -156,12 +170,15 @@ fun main() {
  * @param scrollbackSaver the periodic scrollback flusher; reused by `/admin/shutdown`
  *                        so a graceful stop produces the same on-disk result as the
  *                        JVM shutdown hook
+ * @param agentEvents     the structured agent-activity stream; [agentEventRoutes]
+ *                        publishes Claude hook callbacks here for the AutoNamer
  */
 fun Application.module(
     settingsRepo: SettingsRepository,
     sessionStates: MutableSharedFlow<Map<String, String?>>,
     usageMonitor: ClaudeUsageMonitor,
     scrollbackSaver: ScrollbackSaver,
+    agentEvents: MutableSharedFlow<AgentEvent>,
 ) {
     install(ContentNegotiation) { json() }
     install(WebSockets) {
@@ -184,16 +201,23 @@ fun Application.module(
             // Dev flow: serve from the on-disk web dist so edits hot-reload without re-jarring.
             staticFiles("/", File(webDistPath)) {
                 default("index.html")
+                // No-store so the Electron/browser renderer always fetches the
+                // current bundle instead of a cached one. The server is on
+                // loopback, so re-fetching is effectively free — and it avoids
+                // "renderer running a stale web.js" after a rebuild/update.
+                cacheControl { listOf(CacheControl.NoStore(null)) }
             }
         } else {
             // Packaged flow: the web bundle is embedded in the server jar under /web.
             staticResources("/", "web") {
                 default("index.html")
+                cacheControl { listOf(CacheControl.NoStore(null)) }
             }
         }
         uiSettingsRoutes(settingsRepo)
         ptyRoutes(settingsRepo)
         windowRoutes(settingsRepo, sessionStates, usageMonitor)
         adminRoutes(settingsRepo, scrollbackSaver)
+        agentEventRoutes(agentEvents, ClaudeAutoNameHooks.token)
     }
 }

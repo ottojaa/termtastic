@@ -97,7 +97,7 @@ class ClaudeUsageMonitor {
      * commands every 10 minutes (or sooner on [requestRefresh]).
      */
     private suspend fun runSession() {
-        val claudePath = findClaude() ?: run {
+        val claudePath = ClaudeCli.locate() ?: run {
             log.warn("ClaudeUsageMonitor: 'claude' not found on PATH")
             delay(60_000)
             return
@@ -106,20 +106,7 @@ class ClaudeUsageMonitor {
         // Use a dedicated temp directory to avoid the "trust this folder"
         // prompt that appears for sensitive directories like $HOME.
         val workDir = java.io.File(System.getProperty("java.io.tmpdir"), "termtastic-claude-usage").apply { mkdirs() }
-        val env = HashMap(System.getenv()).apply {
-            put("TERM", "xterm-256color")
-            // GUI launches (Electron from Finder/Dock) inherit a minimal
-            // PATH that usually lacks Node.  Append well-known directories
-            // so that npm-installed claude (#!/usr/bin/env node) still works.
-            val extra = listOf(
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "${System.getProperty("user.home")}/.nvm/versions/node/default/bin",
-                "${System.getProperty("user.home")}/.local/bin",
-            )
-            val current = getOrDefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-            put("PATH", (extra + current.split(":")).distinct().joinToString(":"))
-        }
+        val env = ClaudeCli.augmentedEnv()
 
         val pty = PtyProcessBuilder(arrayOf(claudePath))
             .setDirectory(workDir.absolutePath)
@@ -328,42 +315,5 @@ class ClaudeUsageMonitor {
             return ""
         }
 
-        /**
-         * Locate the `claude` CLI binary on the system.
-         *
-         * Checks well-known install locations first (standalone binaries, then
-         * npm-installed versions), and falls back to `which claude` on the PATH.
-         *
-         * @return absolute path to the `claude` binary, or null if not found
-         */
-        private fun findClaude(): String? {
-            // Prefer standalone (compiled) binaries first — they don't need
-            // Node on the PATH, which is often absent in GUI-launched
-            // environments (Electron from Finder/Dock).  npm-installed
-            // versions (symlinks to .js files) come last as a fallback.
-            val home = System.getProperty("user.home")
-            val candidates = listOf(
-                "$home/.local/bin/claude",
-                "$home/.claude/local/claude",
-                "$home/.claude/bin/claude",
-                "/usr/local/bin/claude",
-                "/opt/homebrew/bin/claude",
-                "$home/.npm-global/bin/claude",
-            )
-            for (path in candidates) {
-                if (java.io.File(path).canExecute()) return path
-            }
-            // Try PATH via which
-            return try {
-                val proc = ProcessBuilder("which", "claude")
-                    .redirectErrorStream(true)
-                    .start()
-                val result = proc.inputStream.bufferedReader().readText().trim()
-                proc.waitFor()
-                if (proc.exitValue() == 0 && result.isNotBlank()) result else null
-            } catch (_: Exception) {
-                null
-            }
-        }
     }
 }

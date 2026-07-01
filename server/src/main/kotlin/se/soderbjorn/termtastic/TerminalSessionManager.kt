@@ -71,7 +71,7 @@ object TerminalSessions {
     /** Create a fresh session and return its newly minted id. */
     fun create(initialCwd: String? = null, initialScrollback: ByteArray? = null): String {
         val id = "s${idCounter.incrementAndGet()}"
-        val session = TerminalSession.create(initialCwd, initialScrollback)
+        val session = TerminalSession.create(id, initialCwd, initialScrollback)
         sessions[id] = session
         watchJobs[id] = watchScope.launch {
             session.cwd
@@ -227,7 +227,7 @@ class TerminalSession private constructor(
         }
     }
 
-    /** Write raw bytes to the PTY's stdin. */
+    /** Write raw bytes to the PTY's stdin (the user's keystrokes). */
     fun write(bytes: ByteArray) {
         try {
             pty.outputStream.write(bytes)
@@ -331,7 +331,11 @@ class TerminalSession private constructor(
     companion object {
         private val SHOW_CURSOR_SUFFIX = "[?25h".toByteArray(Charsets.US_ASCII)
 
-        fun create(initialCwd: String? = null, initialScrollback: ByteArray? = null): TerminalSession {
+        fun create(
+            sessionId: String,
+            initialCwd: String? = null,
+            initialScrollback: ByteArray? = null,
+        ): TerminalSession {
             val shell = System.getenv("SHELL") ?: "/bin/bash"
             val home = System.getProperty("user.home")
             val startDir = initialCwd
@@ -345,6 +349,10 @@ class TerminalSession private constructor(
                 put("PROMPT_EOL_MARK", "")
             }
             ShellInitFiles.configureEnv(shell, env)
+            // Opt-in auto-naming: route `claude` through Termtastic's hook shim
+            // so this session reports its prompts/context-resets back to us.
+            // No-op unless the feature is enabled at spawn (see ClaudeAutoNameHooks).
+            ClaudeAutoNameHooks.augmentEnv(sessionId, env)
             val pty = PtyProcessBuilder(arrayOf(shell, "-l"))
                 .setDirectory(startDir)
                 .setEnvironment(env)

@@ -535,6 +535,24 @@ object WindowState {
     }
 
     /**
+     * Apply an agent-inferred contextual [name] to the pane backed by
+     * [sessionId]. Called by the server-side `AutoNamer` when an AI agent
+     * starts its first turn in a terminal. Mutating `_config` re-broadcasts the
+     * layout to every client and triggers the debounced SQLite persist, exactly
+     * like [updatePaneCwd]. A user's manual name always wins (see
+     * [computeLeafTitle]).
+     *
+     * @param sessionId the PTY session id whose pane should be named.
+     * @param name the inferred name.
+     * @see PaneManager.applyInferredName
+     */
+    fun applyInferredName(sessionId: String, name: String) = synchronized(this) {
+        val cfg = _config.value
+        val newCfg = PaneManager.applyInferredName(cfg, sessionId, name) ?: return@synchronized
+        _config.value = newCfg
+    }
+
+    /**
      * Update the position and size of [paneId]. The user has overridden
      * preset-driven geometry, so the affected tab's `layoutPreset` is
      * cleared (transitions to Custom mode) — subsequent pane add/remove
@@ -659,7 +677,7 @@ object WindowState {
             id = newNodeId(),
             sessionId = sessionId,
             cwd = effectiveCwd,
-            title = computeLeafTitle(null, effectiveCwd, fallbackTitle),
+            title = computeLeafTitle(null, null, effectiveCwd, fallbackTitle),
             content = TerminalContent(sessionId),
         )
         val (ox, oy) = PaneManager.randomSnappedOrigin()
@@ -692,7 +710,7 @@ object WindowState {
             id = newNodeId(),
             sessionId = "",
             cwd = effectiveCwd,
-            title = computeLeafTitle(null, effectiveCwd, "Files"),
+            title = computeLeafTitle(null, null, effectiveCwd, "Files"),
             content = FileBrowserContent(),
         )
         val (ox, oy) = PaneManager.randomSnappedOrigin()
@@ -722,7 +740,7 @@ object WindowState {
             id = newNodeId(),
             sessionId = "",
             cwd = effectiveCwd,
-            title = computeLeafTitle(null, effectiveCwd, "Git"),
+            title = computeLeafTitle(null, null, effectiveCwd, "Git"),
             content = GitContent(),
         )
         val (ox, oy) = PaneManager.randomSnappedOrigin()

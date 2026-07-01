@@ -94,10 +94,11 @@ internal object PaneManager {
         var changed = false
         fun renameLeaf(leaf: LeafNode): LeafNode {
             if (leaf.id != paneId) return leaf
-            val newTitle = computeLeafTitle(newCustomName, leaf.cwd, leaf.title)
+            val updated = leaf.copy(customName = newCustomName)
+            val newTitle = computeLeafTitle(updated)
             if (leaf.customName == newCustomName && leaf.title == newTitle) return leaf
             changed = true
-            return leaf.copy(customName = newCustomName, title = newTitle)
+            return updated.copy(title = newTitle)
         }
         val newCfg = cfg.copy(
             tabs = cfg.tabs.map { tab ->
@@ -120,13 +121,55 @@ internal object PaneManager {
         fun maybeUpdate(leaf: LeafNode): LeafNode {
             if (leaf.sessionId != sessionId || leaf.cwd == cwd) return leaf
             changed = true
-            val newTitle = computeLeafTitle(leaf.customName, cwd, leaf.title)
-            return leaf.copy(cwd = cwd, title = newTitle)
+            val updated = leaf.copy(cwd = cwd)
+            return updated.copy(title = computeLeafTitle(updated))
         }
         val newCfg = cfg.copy(
             tabs = cfg.tabs.map { tab ->
                 tab.copy(
                     panes = tab.panes.map { p -> p.copy(leaf = maybeUpdate(p.leaf)) },
+                )
+            }
+        )
+        return if (changed) newCfg else null
+    }
+
+    /**
+     * Apply an agent-[inferredName] to the pane backed by [sessionId].
+     *
+     * A sibling of [updatePaneCwd]: called by [WindowState.applyInferredName]
+     * (driven by the server-side `AutoNamer`) when an AI agent starts its first
+     * turn in a terminal. The name is stored on [LeafNode.inferredName] and the
+     * denormalized [LeafNode.title] is recomputed via [computeLeafTitle], which
+     * keeps a user's [LeafNode.customName] winning — so this is a no-op on the
+     * visible title when the pane was manually renamed, though the inferred name
+     * is still recorded for later.
+     *
+     * @param cfg the current window config snapshot.
+     * @param sessionId the PTY session id whose pane should be named.
+     * @param name the inferred name (trimmed and capped at 80 chars).
+     * @return the new config, or `null` when no leaf matched or nothing changed.
+     * @see computeLeafTitle
+     * @see updatePaneCwd
+     */
+    fun applyInferredName(cfg: WindowConfig, sessionId: String, name: String): WindowConfig? {
+        val sanitized = name.trim().take(80)
+        if (sessionId.isEmpty() || sanitized.isEmpty()) return null
+        var changed = false
+        fun maybeName(leaf: LeafNode): LeafNode {
+            // Reaching past this guard means the inferred name is genuinely
+            // changing, so we always record it — even when a user [customName]
+            // makes the *visible* title unchanged, so the inferred name is
+            // still there if the manual name is later cleared.
+            if (leaf.sessionId != sessionId || leaf.inferredName == sanitized) return leaf
+            changed = true
+            val updated = leaf.copy(inferredName = sanitized)
+            return updated.copy(title = computeLeafTitle(updated))
+        }
+        val newCfg = cfg.copy(
+            tabs = cfg.tabs.map { tab ->
+                tab.copy(
+                    panes = tab.panes.map { p -> p.copy(leaf = maybeName(p.leaf)) },
                 )
             }
         )

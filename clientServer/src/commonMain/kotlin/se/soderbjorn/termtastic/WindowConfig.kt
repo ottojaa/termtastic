@@ -156,13 +156,22 @@ data class LeafNode(
     val sessionId: String,
     /**
      * Display title shown in the pane header. Always equals
-     * `customName ?: prettifyPath(cwd) ?: defaultLabel` — kept denormalized so
-     * the websocket payload doesn't have to compute it client-side and so
-     * persisted blobs round-trip without recomputation.
+     * `customName ?: inferredName ?: prettifyPath(cwd) ?: defaultLabel` — kept
+     * denormalized so the websocket payload doesn't have to compute it
+     * client-side and so persisted blobs round-trip without recomputation.
      */
     val title: String,
-    /** User-set name. `null` means "fall back to the cwd-based title". */
+    /** User-set name. `null` means "fall back to [inferredName] or the cwd-based title". */
     val customName: String? = null,
+    /**
+     * Auto-generated contextual name inferred from AI-agent activity in this
+     * terminal (see the server-side `AutoNamer`). `null` means "not inferred
+     * yet". Ranks **below** [customName] so a manual rename is never
+     * overwritten, and **above** the cwd-based default so a named agent
+     * session reads better than a bare path. Defaulted so pre-existing
+     * persisted blobs still deserialize.
+     */
+    val inferredName: String? = null,
     /** Last known shell working directory, learned from OSC 7 / proc polling. */
     val cwd: String? = null,
     /**

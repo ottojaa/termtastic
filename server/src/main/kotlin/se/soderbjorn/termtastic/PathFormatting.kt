@@ -25,14 +25,46 @@ internal fun prettifyPath(path: String): String {
 
 /**
  * Resolve the display title for a pane:
- *  1. user-set [customName] wins;
- *  2. else the prettified [cwd];
- *  3. else [fallback] (typically the auto-generated "Session N" label).
+ *  1. user-set [customName] wins (a manual rename is never overridden);
+ *  2. else the agent-[inferredName] (see the server-side `AutoNamer`);
+ *  3. else the prettified [cwd];
+ *  4. else [fallback] (typically the auto-generated "Session N" label).
+ *
+ * Called by [PaneManager.renamePane], [PaneManager.updatePaneCwd],
+ * [PaneManager.applyInferredName], and [WindowState] pane creation.
+ *
+ * @param customName the user's manual name, or `null`.
+ * @param inferredName the auto-inferred contextual name, or `null`.
+ * @param cwd the last known working directory, or `null`.
+ * @param fallback the last-resort label when nothing else is set.
+ * @return the resolved display title.
  */
-internal fun computeLeafTitle(customName: String?, cwd: String?, fallback: String): String =
+internal fun computeLeafTitle(
+    customName: String?,
+    inferredName: String?,
+    cwd: String?,
+    fallback: String,
+): String =
     customName?.takeIf { it.isNotBlank() }
+        ?: inferredName?.takeIf { it.isNotBlank() }
         ?: cwd?.takeIf { it.isNotBlank() }?.let(::prettifyPath)
         ?: fallback
+
+/**
+ * Recompute the display title for an existing [leaf] from its own naming
+ * fields. Convenience overload used by [PaneManager]'s mutation helpers: after
+ * changing one of `customName` / `inferredName` / `cwd` on a copied leaf, call
+ * this to derive the matching [LeafNode.title] — so no call site has to
+ * remember to thread every title input through by hand, and future title
+ * inputs are picked up automatically.
+ *
+ * @param leaf the (already-updated) leaf whose title to compute.
+ * @param fallback the last-resort label; defaults to the leaf's current title,
+ *   which preserves the previously-resolved name when nothing else is set.
+ * @return the resolved display title.
+ */
+internal fun computeLeafTitle(leaf: LeafNode, fallback: String = leaf.title): String =
+    computeLeafTitle(leaf.customName, leaf.inferredName, leaf.cwd, fallback)
 
 /**
  * Returns a deep copy of this config with every [LeafNode.sessionId] blanked.
