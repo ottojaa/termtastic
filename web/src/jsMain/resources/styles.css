@@ -2310,6 +2310,16 @@ body.appearance-light .termtastic-app-settings-toggle-row:hover {
     flex: 0 0 auto;
 }
 
+/* The Mac + Web pill pair for a shortcut shared by both runtimes,
+   kept side by side on one line beneath the chord. */
+.termtastic-hotkeys-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 /* One chord + its runtime tag on a single line (split rows). */
 .termtastic-hotkeys-tagged {
     display: inline-flex;
@@ -2343,7 +2353,7 @@ body.appearance-light .termtastic-app-settings-toggle-row:hover {
     border-radius: 4px;
 }
 
-/* Availability badge (Both / Desktop / Web). */
+/* Availability badge (Mac / Web). */
 .termtastic-hotkeys-badge {
     display: inline-flex;
     align-items: center;
@@ -2357,38 +2367,11 @@ body.appearance-light .termtastic-app-settings-toggle-row:hover {
     white-space: nowrap;
 }
 
-.termtastic-hotkeys-badge--both {
-    color: color-mix(in srgb, var(--t-accent) 85%, var(--t-text));
-    background: color-mix(in srgb, var(--t-accent) 14%, transparent);
-    border-color: color-mix(in srgb, var(--t-accent) 35%, transparent);
-}
-
-.termtastic-hotkeys-badge--desktop {
-    color: var(--t-text-dim, var(--text-secondary));
-    background: color-mix(in srgb, var(--t-text, #e6e6e6) 8%, transparent);
-    border-color: color-mix(in srgb, var(--t-text, #e6e6e6) 20%, transparent);
-}
-
+.termtastic-hotkeys-badge--desktop,
 .termtastic-hotkeys-badge--web {
     color: var(--t-text-dim, var(--text-secondary));
     background: transparent;
     border-color: color-mix(in srgb, var(--t-text, #e6e6e6) 22%, transparent);
-}
-
-/* Legend row at the bottom: badge + explanatory text pairs. */
-.termtastic-hotkeys-legend {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: center;
-    gap: 6px 8px;
-    margin-top: 2px;
-    padding-top: 12px;
-    border-top: 1px solid color-mix(in srgb, var(--t-border, var(--separator)) 55%, transparent);
-}
-
-.termtastic-hotkeys-legend-text {
-    font-size: 11px;
-    color: var(--t-text-dim, var(--text-secondary));
 }
 
 body.appearance-light .termtastic-hotkeys-cap {

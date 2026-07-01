@@ -7,12 +7,13 @@
  * `AppShellHandle.openHotkeysSidebar`).
  *
  * This is termtastic's single keyboard-shortcut reference: every shortcut
- * is listed with an availability badge — **Both** (desktop app + browser),
- * **Desktop** (bundled Electron app only) or **Web** (browser only) — and,
- * for the one shortcut whose chord differs between runtimes (positional tab
- * switching), both chords are shown side by side and labelled. The toolkit
- * owns the sidebar chrome (header, close, slide-in); this file only builds
- * the inner body.
+ * is listed with availability badges — a shortcut in both runtimes shows
+ * both a **Mac** (bundled Electron app) and a **Web** (browser)
+ * pill; a runtime-specific one shows only its pill — and, for the one
+ * shortcut whose chord differs between runtimes (positional tab switching),
+ * both chords are shown side by side and labelled. The toolkit owns the
+ * sidebar chrome (header, close, slide-in); this file only builds the inner
+ * body.
  *
  * When a new chord is wired anywhere in termtastic's web frontend, add a
  * corresponding [HotkeyRow] here so the reference stays accurate.
@@ -29,9 +30,11 @@ import se.soderbjorn.darkness.web.hotkey.webTabSwitchHotkeyEntry
 
 /**
  * Where a shortcut is available. Derived per row from which of the two
- * runtime chords are present / whether they match; drives the row badge.
+ * runtime chords are present; drives the row badge(s). A shortcut present in
+ * both runtimes renders one [DESKTOP] and one [WEB] pill rather than a single
+ * combined badge.
  */
-private enum class HotkeyScope { BOTH, DESKTOP, WEB }
+private enum class HotkeyScope { DESKTOP, WEB }
 
 /**
  * One shortcut row in the Hotkeys sidebar.
@@ -160,7 +163,6 @@ fun buildHotkeysSidebarContent(): HTMLElement {
         container.appendChild(buildGroupSection(group))
     }
 
-    container.appendChild(buildLegend())
     return container
 }
 
@@ -186,10 +188,10 @@ private fun buildGroupSection(group: HotkeyGroupModel): HTMLElement {
  * Build one shortcut row: label on the left, chord(s) + availability badge
  * on the right.
  *
- * When the desktop and web chords match, the chord is shown once with a
- * "Both" badge. When they differ, both chords are stacked, each tagged with
- * its runtime. A desktop- or web-only shortcut shows its single chord with
- * the matching badge.
+ * When the desktop and web chords match, the chord is shown once followed by
+ * both a "Mac" and a "Web" pill. When they differ, both chords are
+ * stacked, each tagged with its runtime. A desktop- or web-only shortcut
+ * shows its single chord with the matching badge.
  */
 private fun buildRow(row: HotkeyRow): HTMLElement {
     val el = document.createElement("div") as HTMLElement
@@ -208,7 +210,11 @@ private fun buildRow(row: HotkeyRow): HTMLElement {
     when {
         desktop != null && web != null && desktop == web -> {
             right.appendChild(buildChord(desktop))
-            right.appendChild(buildBadge(HotkeyScope.BOTH))
+            val badges = document.createElement("div") as HTMLElement
+            badges.className = "termtastic-hotkeys-badges"
+            badges.appendChild(buildBadge(HotkeyScope.DESKTOP))
+            badges.appendChild(buildBadge(HotkeyScope.WEB))
+            right.appendChild(badges)
         }
         desktop != null && web != null -> {
             // Differing chords — show each labelled with its runtime.
@@ -255,31 +261,10 @@ private fun buildChord(caps: List<String>): HTMLElement {
 private fun buildBadge(scope: HotkeyScope): HTMLElement {
     val badge = document.createElement("span") as HTMLElement
     val (text, mod) = when (scope) {
-        HotkeyScope.BOTH -> "Both" to "both"
-        HotkeyScope.DESKTOP -> "Desktop" to "desktop"
+        HotkeyScope.DESKTOP -> "Mac" to "desktop"
         HotkeyScope.WEB -> "Web" to "web"
     }
     badge.className = "termtastic-hotkeys-badge termtastic-hotkeys-badge--$mod"
     badge.textContent = text
     return badge
-}
-
-/** Small legend explaining the three availability badges. */
-private fun buildLegend(): HTMLElement {
-    val legend = document.createElement("div") as HTMLElement
-    legend.className = "termtastic-hotkeys-legend"
-    legend.appendChild(buildBadge(HotkeyScope.BOTH))
-    appendLegendText(legend, "Desktop app & browser")
-    legend.appendChild(buildBadge(HotkeyScope.DESKTOP))
-    appendLegendText(legend, "Bundled desktop app only")
-    legend.appendChild(buildBadge(HotkeyScope.WEB))
-    appendLegendText(legend, "Browser only")
-    return legend
-}
-
-private fun appendLegendText(parent: HTMLElement, text: String) {
-    val span = document.createElement("span") as HTMLElement
-    span.className = "termtastic-hotkeys-legend-text"
-    span.textContent = text
-    parent.appendChild(span)
 }
