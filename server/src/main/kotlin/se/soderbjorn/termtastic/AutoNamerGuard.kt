@@ -1,132 +1,102 @@
 /**
- * Pure once-per-agent-session bookkeeping for the AutoNamer.
+ * Pure once-per-run bookkeeping for the event-driven AutoNamer.
  *
- * Extracted from [installAutoNamer] so the tricky reset semantics can be
- * unit-tested without coroutines, PTY sessions, or process globals. The
- * orchestrator injects the side effects (screen snapshot, inference, pid
- * liveness, clear-generation) via lambdas; this class only tracks state and
- * decides *when* to name and *when* a run has ended.
+ * Extracted from [installAutoNamer] so the naming semantics can be unit-tested
+ * without coroutines or the PTY/inference side effects. The orchestrator feeds
+ * it [AgentEvent]s (indirectly) and asks it *when* to name.
  *
- * ## Reset semantics (the behavior most likely to regress)
- *  - **agent exits or is replaced** (the pid recorded at naming is no longer
- *    alive) → the session becomes eligible to be named again;
- *  - **user runs `/clear`** (the clear-generation differs from the one captured
- *    at naming) → eligible again;
- *  - **between turns** (same agent pid alive, no clear) → NOT re-named.
+ * ## Semantics (the behavior most likely to regress)
+ *  - **name once per run**: after a session is successfully named, further
+ *    prompts don't rename it — until a reset;
+ *  - **reset** ([reset], driven by [AgentEvent.Reset] = new run / `/clear`)
+ *    re-arms the session so the next prompt names it afresh;
+ *  - **stale-name guard**: if a `/clear` (reset) lands *while* an inference for
+ *    the previous prompt is in flight, that inference's result is discarded
+ *    (its captured generation no longer matches) rather than labelling the new
+ *    task with the old prompt's name;
+ *  - **attempt cap**: a run makes at most [maxAttempts] inference attempts
+ *    (each failure burns one) before giving up until the next reset.
  *
- * Thread-safety: [finishNaming] is called from the inference coroutine while
- * the collector calls the other methods, so all methods are synchronized. The
- * injected lambdas in [resetEnded] must be cheap and non-blocking (they run
- * under the lock).
+ * Thread-safety: [finish] runs on the inference coroutine while the collector
+ * calls the others, so all methods are synchronized.
  *
- * @property maxAttempts inference attempts per run before giving up (a failed
- *   inference still burns one — see [beginNaming]).
+ * @property maxAttempts inference attempts per run before giving up.
  * @see installAutoNamer
+ * @see AgentEvent
  */
 package se.soderbjorn.termtastic
 
 class AutoNamerGuard(private val maxAttempts: Int = 3) {
 
+    private val named = HashSet<String>()
     private val inFlight = HashSet<String>()
-    private val namedThisRun = HashSet<String>()
-    private val agentPid = HashMap<String, Long>()
-    private val namedClearGen = HashMap<String, Long>()
     private val attempts = HashMap<String, Int>()
-    private var prev: Map<String, String?> = emptyMap()
+    private val generation = HashMap<String, Long>()
 
     /**
-     * Session ids that transitioned into `"working"` since the last [commit]
-     * (were not `"working"` in the previous snapshot).
-     *
-     * @param states the latest per-session state snapshot.
-     * @return the ids that just started working.
-     */
-    @Synchronized
-    fun startedWorking(states: Map<String, String?>): List<String> =
-        states.filter { (sid, st) -> st == "working" && prev[sid] != "working" }.keys.toList()
-
-    /**
-     * Whether [sid] may be named now: not already in flight or named this run,
-     * under the attempt cap, and the pane still [needsName] (no manual name).
+     * Begin an inference for [sid] if eligible: not already named this run, not
+     * in flight, and under the attempt cap. Marks it in flight and counts an
+     * attempt.
      *
      * @param sid the session id.
-     * @param needsName whether the pane lacks a user-set name.
-     * @return `true` if an inference should be started.
+     * @return a generation token to pass back to [finish], or `null` if the
+     *   session is not eligible right now.
      */
     @Synchronized
-    fun eligible(sid: String, needsName: Boolean): Boolean =
-        sid !in inFlight && sid !in namedThisRun && (attempts[sid] ?: 0) < maxAttempts && needsName
-
-    /** Mark [sid] as having an inference in flight; counts an attempt. */
-    @Synchronized
-    fun beginNaming(sid: String) {
+    fun begin(sid: String): Long? {
+        if (sid in named || sid in inFlight || (attempts[sid] ?: 0) >= maxAttempts) return null
         inFlight += sid
         attempts[sid] = (attempts[sid] ?: 0) + 1
+        return generation[sid] ?: 0L
     }
 
     /**
-     * Record an inference result. On success the session is marked named for
-     * this run, capturing the agent [pid] and clear-generation [clearGen] used
-     * later by [resetEnded] to detect the run ending.
+     * Complete an inference started with [token]. Clears the in-flight mark and,
+     * on [success], marks the session named for this run — but only if no [reset]
+     * bumped its generation in the meantime.
      *
      * @param sid the session id.
-     * @param named whether a name was produced and applied.
-     * @param pid the agent process pid at naming time (or `null` if unknown).
-     * @param clearGen the session's clear-command generation at naming time.
+     * @param token the generation returned by the matching [begin].
+     * @param success whether a usable name was produced.
+     * @return `true` if the caller should apply the name (produced *and* still
+     *   current); `false` if it should be dropped (failed, or superseded by a
+     *   reset during inference).
      */
     @Synchronized
-    fun finishNaming(sid: String, named: Boolean, pid: Long?, clearGen: Long) {
+    fun finish(sid: String, token: Long, success: Boolean): Boolean {
         inFlight -= sid
-        if (named) {
-            namedThisRun += sid
-            if (pid != null) agentPid[sid] = pid
-            namedClearGen[sid] = clearGen
+        val current = (generation[sid] ?: 0L) == token
+        if (success && current) {
+            named += sid
+            return true
         }
+        return false
     }
 
     /**
-     * Reset the per-run guard for named sessions whose run has ended — the
-     * recorded agent pid is no longer [alive], or the session's current
-     * clear-generation ([clearGenOf]) differs from the value captured at naming
-     * (a `/clear`). Cleared sessions become eligible to be named again.
+     * Re-arm [sid] after a context reset (new run / `/clear`): forget that it
+     * was named, reset its attempt count, and bump its generation so any
+     * in-flight inference for the previous prompt is discarded by [finish].
      *
-     * @param alive reports whether a pid is still a live process.
-     * @param clearGenOf current clear-generation for a session, or `null` if gone.
-     * @return `(sessionId, reason)` for each session that was reset.
+     * @param sid the session id.
      */
     @Synchronized
-    fun resetEnded(alive: (Long) -> Boolean, clearGenOf: (String) -> Long?): List<Pair<String, String>> {
-        val reset = mutableListOf<Pair<String, String>>()
-        for (sid in namedThisRun.toList()) {
-            val pid = agentPid[sid]
-            val agentGone = pid != null && !alive(pid)
-            val capturedGen = namedClearGen[sid]
-            val curGen = clearGenOf(sid)
-            val cleared = capturedGen != null && curGen != null && curGen != capturedGen
-            if (agentGone || cleared) {
-                namedThisRun -= sid
-                attempts -= sid
-                agentPid -= sid
-                namedClearGen -= sid
-                reset += sid to if (cleared) "/clear (context reset)" else "agent pid $pid exited"
-            }
-        }
-        return reset
+    fun reset(sid: String) {
+        named -= sid
+        attempts -= sid
+        generation[sid] = (generation[sid] ?: 0L) + 1
     }
 
-    /** Drop bookkeeping for sessions no longer present in [liveSessionIds]. */
+    /** Drop all bookkeeping for sessions no longer in [liveSessionIds]. */
     @Synchronized
     fun retain(liveSessionIds: Set<String>) {
+        named.retainAll(liveSessionIds)
         inFlight.retainAll(liveSessionIds)
-        namedThisRun.retainAll(liveSessionIds)
         attempts.keys.retainAll(liveSessionIds)
-        agentPid.keys.retainAll(liveSessionIds)
-        namedClearGen.keys.retainAll(liveSessionIds)
+        generation.keys.retainAll(liveSessionIds)
     }
 
-    /** Record [states] as the baseline for the next [startedWorking] diff. */
+    /** Whether [sid] has been named in the current run (test/inspection aid). */
     @Synchronized
-    fun commit(states: Map<String, String?>) {
-        prev = states
-    }
+    fun isNamed(sid: String): Boolean = sid in named
 }

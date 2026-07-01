@@ -3,7 +3,7 @@
  *
  * Covers:
  *  - [sanitizeInferredName] normalization rules (quotes, sentinel, word/char caps).
- *  - [HeuristicNameInferrer] prompt scraping from transcript text.
+ *  - [HeuristicNameInferrer] cleaning an exact prompt into a name.
  *  - [computeLeafTitle] precedence (customName > inferredName > cwd > fallback).
  *  - [PaneManager.applyInferredName] applying/gating on a config snapshot.
  *
@@ -77,25 +77,20 @@ class NameInferrerTest {
     // ── HeuristicNameInferrer ───────────────────────────────────────────
 
     @Test
-    fun `heuristic scrapes a plain prompt line`() = runBlocking {
-        val transcript = """
-            $ claude
-            > add dark mode toggle
-            Working...
-        """.trimIndent()
-        assertEquals("add dark mode toggle", HeuristicNameInferrer().infer(transcript))
+    fun `heuristic cleans a short prompt into a name`() = runBlocking {
+        assertEquals("add dark mode toggle", HeuristicNameInferrer().infer("add dark mode toggle"))
     }
 
     @Test
-    fun `heuristic scrapes a boxed prompt line`() = runBlocking {
-        val transcript = "│ ❯ refactor auth flow                │"
-        assertEquals("refactor auth flow", HeuristicNameInferrer().infer(transcript))
+    fun `heuristic caps a long prompt to a few words`() = runBlocking {
+        val name = HeuristicNameInferrer().infer("please refactor the authentication flow to use short-lived tokens")
+        assertNotNull(name)
+        assertEquals("please refactor the authentication", name)
     }
 
     @Test
-    fun `heuristic returns null when no prompt is present`() = runBlocking {
-        val transcript = "just some ordinary shell output\nls -la\ntotal 0"
-        assertNull(HeuristicNameInferrer().infer(transcript))
+    fun `heuristic returns null for a blank prompt`() = runBlocking {
+        assertNull(HeuristicNameInferrer().infer("   "))
     }
 
     // ── computeLeafTitle precedence ─────────────────────────────────────

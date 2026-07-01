@@ -385,13 +385,13 @@ private fun buildExperimentalSection(): HTMLElement {
             putJsonBoolean(KEY_TERMINAL_AUTO_NAME, v)
         },
         descriptionText = "Replaces a terminal's folder name with a few words " +
-            "describing what you asked the agent to do, and re-names it on each " +
-            "new agent session or /clear. Terminals you've named yourself are " +
-            "never changed. To generate the name, your prompt is sent to " +
-            "Anthropic's Claude via the local Claude CLI — for any agent, " +
-            "including Codex and Gemini — which counts toward your Claude usage. " +
-            "Without the Claude CLI installed, the name is derived from your " +
-            "prompt text locally instead.",
+            "describing what you asked Claude Code to do, and re-names it on each " +
+            "new session or /clear. Terminals you've named yourself are never " +
+            "changed. To generate the name, your prompt is sent to Anthropic's " +
+            "Claude via the local Claude CLI, which counts toward your Claude " +
+            "usage; without the CLI installed, the name is derived from your " +
+            "prompt text locally instead. Applies to terminals opened after you " +
+            "enable this. (Codex and Gemini support is coming.)",
     ))
 
     return section
