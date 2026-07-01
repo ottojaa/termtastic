@@ -387,7 +387,8 @@ private fun buildExperimentalSection(): HTMLElement {
         descriptionText = "When an AI agent (Claude, Codex, or Gemini) starts " +
             "working on your first prompt, the terminal's folder name is " +
             "replaced with a few words describing the task. Terminals you've " +
-            "named yourself are never changed.",
+            "named yourself are never changed. Names are generated locally with " +
+            "the Claude CLI, which counts toward your Claude usage.",
     ))
 
     return section

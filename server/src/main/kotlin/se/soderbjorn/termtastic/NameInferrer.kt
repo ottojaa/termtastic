@@ -28,7 +28,6 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
-import java.io.File
 
 /**
  * Strategy that turns a terminal transcript into a short contextual name.
@@ -70,7 +69,13 @@ fun defaultNameInferrer(): NameInferrer =
 sealed interface ClaudeOutcome {
     /** claude produced a usable title. */
     data class Named(val name: String) : ClaudeOutcome
-    /** claude ran but judged there is no clear task to name. */
+    /**
+     * claude ran but produced nothing usable (empty reply). Note: the prompt
+     * intentionally offers no "reply none" escape (the fast model over-used it
+     * and declined real tasks), so in practice claude labels almost any input —
+     * a genuine non-task (e.g. a greeting) just gets a benign label rather than
+     * this outcome. This mainly guards the empty-reply case.
+     */
     data object Declined : ClaudeOutcome
     /** claude could not be run (not installed / spawn error / timeout / non-zero). */
     data object Unavailable : ClaudeOutcome
@@ -79,8 +84,9 @@ sealed interface ClaudeOutcome {
 /**
  * The production [NameInferrer]: asks [claude] and maps its [ClaudeOutcome] —
  *  - [ClaudeOutcome.Named] → use the title;
- *  - [ClaudeOutcome.Declined] → return `null` (leave the terminal on its cwd
- *    title — a greeting or non-task shouldn't get a junk name);
+ *  - [ClaudeOutcome.Declined] → return `null` (empty reply; leave on cwd title).
+ *    In practice claude labels almost any input, so this is rare — see
+ *    [ClaudeOutcome.Declined];
  *  - [ClaudeOutcome.Unavailable] → fall back to the offline [heuristic].
  *
  * @property claude the CLI-backed inferrer.
@@ -135,7 +141,7 @@ class ClaudeCliNameInferrer {
      *   claude replied `none`, or [ClaudeOutcome.Unavailable] on any failure.
      */
     suspend fun tryInfer(transcript: String): ClaudeOutcome {
-        val claudePath = findClaude()
+        val claudePath = ClaudeCli.locate()
         if (claudePath == null) {
             log.info("ClaudeCliNameInferrer: 'claude' not on PATH; using heuristic fallback")
             return ClaudeOutcome.Unavailable
@@ -179,24 +185,40 @@ class ClaudeCliNameInferrer {
      * @return trimmed stdout, or `null`.
      */
     private suspend fun runProcess(claudePath: String, claudeInput: String): String? {
-        // A dedicated, neutrally-named temp dir avoids Claude Code's "trust this
+        // A fresh per-invocation temp dir: avoids Claude Code's "trust this
         // folder" prompt for sensitive dirs like $HOME, keeps any project
-        // CLAUDE.md out of context, and — crucially — its basename must not
-        // resemble a task (Claude Code uses the cwd basename as the project
-        // name, which can otherwise leak into the label).
-        val workDir = File(System.getProperty("java.io.tmpdir"), "tt-title-tmp").apply { mkdirs() }
-        val prompt = claudeInput
+        // CLAUDE.md out of context, avoids a predictable shared path a local
+        // user could pre-plant config in, and doesn't accumulate claude project
+        // history. Its basename must not resemble a task (Claude Code uses the
+        // cwd basename as the project name, which can otherwise leak).
+        val workDir = try {
+            java.nio.file.Files.createTempDirectory("tt-title").toFile()
+        } catch (t: Throwable) {
+            log.info("ClaudeCliNameInferrer: temp dir failed; using heuristic fallback", t)
+            return null
+        }
         val proc = try {
-            // --strict-mcp-config with no --mcp-config loads NO MCP servers, so
-            // startup is fast and can't hang on a flaky server configured in the
-            // user's global settings. This summarization uses no tools.
-            ProcessBuilder(claudePath, "-p", prompt, "--output-format", "text", "--strict-mcp-config")
+            // Flags:
+            //  --model haiku          — cheap/fast; a 2-4 word label needs nothing bigger.
+            //  --allowedTools ""      — deny all tools; the input is untrusted
+            //                           screen text, so guarantee text-only output.
+            //  --strict-mcp-config    — load no MCP servers (fast startup, can't hang).
+            ProcessBuilder(
+                claudePath, "-p", claudeInput,
+                "--model", SUMMARIZER_MODEL,
+                "--allowedTools", "",
+                "--strict-mcp-config",
+                "--output-format", "text",
+            )
                 .directory(workDir)
-                .also { it.environment().putAll(augmentedEnv()) }
-                .redirectErrorStream(false)
+                .also { it.environment().putAll(ClaudeCli.augmentedEnv()) }
+                // Discard stderr so a chatty claude can't fill the pipe buffer
+                // and deadlock us while we read stdout.
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
         } catch (t: Throwable) {
             log.info("ClaudeCliNameInferrer: failed to spawn claude; using heuristic fallback", t)
+            workDir.delete()
             return null
         }
 
@@ -222,6 +244,7 @@ class ClaudeCliNameInferrer {
             null
         } finally {
             runCatching { proc.destroyForcibly() }
+            runCatching { workDir.delete() }
         }
     }
 
@@ -231,6 +254,9 @@ class ClaudeCliNameInferrer {
 
         /** Hard cap on how long we wait for `claude -p` before giving up. */
         private const val TIMEOUT_MS = 25_000L
+
+        /** Model alias for the summarizer — a 2-4 word label needs only the cheapest/fastest. */
+        private const val SUMMARIZER_MODEL = "haiku"
 
         /**
          * Preferred instruction: label the user's isolated request. Passed as
@@ -260,60 +286,6 @@ class ClaudeCliNameInferrer {
             Readme Summary, Debug CI Failure). Reply with ONLY the label -
             no quotes, no punctuation, no explanation.
         """.trimIndent().replace('\n', ' ')
-
-        /**
-         * Locate the `claude` binary. Prefers standalone installs (which don't
-         * need Node on the PATH, often absent in GUI-launched Electron), then
-         * common npm locations, then `which`. Mirrors
-         * [ClaudeUsageMonitor]'s private `findClaude`.
-         *
-         * @return an executable path, or `null` when not found.
-         */
-        private fun findClaude(): String? {
-            val home = System.getProperty("user.home")
-            val candidates = listOf(
-                "$home/.local/bin/claude",
-                "$home/.claude/local/claude",
-                "$home/.claude/bin/claude",
-                "/usr/local/bin/claude",
-                "/opt/homebrew/bin/claude",
-                "$home/.npm-global/bin/claude",
-            )
-            for (path in candidates) {
-                if (File(path).canExecute()) return path
-            }
-            return try {
-                val proc = ProcessBuilder("which", "claude").redirectErrorStream(true).start()
-                val result = proc.inputStream.bufferedReader().readText().trim()
-                proc.waitFor()
-                if (proc.exitValue() == 0 && result.isNotBlank()) result else null
-            } catch (_: Exception) {
-                null
-            }
-        }
-
-        /**
-         * A copy of the current environment with well-known Node/CLI bin
-         * directories appended to PATH, so an npm-installed `claude`
-         * (`#!/usr/bin/env node`) resolves even when Electron was launched from
-         * Finder/Dock with a minimal PATH. Mirrors [ClaudeUsageMonitor].
-         *
-         * @return the augmented environment map.
-         */
-        private fun augmentedEnv(): Map<String, String> {
-            val home = System.getProperty("user.home")
-            val extra = listOf(
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "$home/.nvm/versions/node/default/bin",
-                "$home/.local/bin",
-            )
-            return HashMap(System.getenv()).apply {
-                put("TERM", "xterm-256color")
-                val current = getOrDefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-                put("PATH", (extra + current.split(":")).distinct().joinToString(":"))
-            }
-        }
     }
 }
 

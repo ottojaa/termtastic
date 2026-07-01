@@ -36,6 +36,8 @@ package se.soderbjorn.termtastic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import org.slf4j.LoggerFactory
@@ -50,8 +52,19 @@ import java.util.concurrent.ConcurrentHashMap
  */
 const val TERMINAL_AUTO_NAME_KEY = "terminalAutoName"
 
-/** Max inference attempts per agent run before giving up (bounds retries/cost). */
+/**
+ * Max inference attempts per agent run before giving up (bounds retries/cost).
+ * Counts launches: a failed inference (timeout / non-zero exit) still burns an
+ * attempt, so a few transient `claude` failures stop naming for that run.
+ */
 private const val MAX_ATTEMPTS = 3
+
+/**
+ * Cap on concurrent `claude -p` summarizations. Several sessions can flip to
+ * "working" at once (server start / layout restore fires on the first observed
+ * edge), and each names via a spawned agent; this bounds the process fan-out.
+ */
+private const val MAX_CONCURRENT_INFERENCES = 3
 
 /**
  * Launch the auto-namer coroutine.
@@ -92,6 +105,8 @@ fun installAutoNamer(
     val namedClearGen = ConcurrentHashMap<String, Long>()
     // Per-run attempt counter (reset alongside [namedThisRun]).
     val attempts = ConcurrentHashMap<String, Int>()
+    // Bounds concurrent claude spawns (see MAX_CONCURRENT_INFERENCES).
+    val inferenceSlots = Semaphore(MAX_CONCURRENT_INFERENCES)
     var prev: Map<String, String?> = emptyMap()
 
     log.info(
@@ -100,30 +115,29 @@ fun installAutoNamer(
     )
     scope.launch {
         sessionStates.collect { states ->
-            val enabled = autoNameEnabled(repo)
+            // Short-circuit entirely when disabled: no pane scans, no logging,
+            // no reset work — keep the feature free when off.
+            if (!autoNameEnabled(repo)) {
+                prev = states
+                return@collect
+            }
             for ((sid, state) in states) {
                 val startedWorking = state == "working" && prev[sid] != "working"
                 if (!startedWorking) continue
+                if (sid in inFlight || sid in namedThisRun) continue
 
-                // Log the full decision on every idle→working edge so it's clear
-                // which gate (if any) skipped naming. Edges are infrequent.
                 val att = attempts[sid] ?: 0
-                val needs = paneNeedsName(sid)
-                val alreadyNamed = sid in namedThisRun
-                log.info(
-                    "AutoNamer: session {} -> working (enabled={}, needsName={}, namedThisRun={}, attempts={}, inFlight={})",
-                    sid, enabled, needs, alreadyNamed, att, sid in inFlight,
-                )
-                if (!enabled || sid in inFlight || alreadyNamed || att >= MAX_ATTEMPTS || !needs) continue
+                if (att >= MAX_ATTEMPTS || !paneNeedsName(sid)) continue
 
+                // Log the decision on the idle→working edge that we act on.
+                log.info("AutoNamer: session {} -> working; inferring name (attempt {})", sid, att + 1)
                 inFlight += sid
                 attempts[sid] = att + 1
                 val session = TerminalSessions.get(sid)
                 launch {
                     try {
                         val text = session?.snapshotVisibleText().orEmpty()
-                        log.info("AutoNamer: inferring name for {} ({} chars of screen)", sid, text.length)
-                        val name = if (text.isBlank()) null else inferrer.infer(text)
+                        val name = if (text.isBlank()) null else inferenceSlots.withPermit { inferrer.infer(text) }
                         if (name != null) {
                             WindowState.applyInferredName(sid, name)
                             namedThisRun += sid

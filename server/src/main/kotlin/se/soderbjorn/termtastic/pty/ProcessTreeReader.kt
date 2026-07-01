@@ -30,11 +30,13 @@ internal object ProcessTreeReader {
     /**
      * The pid of the first direct child of process [pid], if any.
      *
-     * Runs `pgrep -P <pid>` and returns the first pid it reports (an
-     * interactive shell running an agent has exactly one foreground child — the
-     * agent). The `AutoNamer` records this at naming time and later checks
-     * whether that pid is still alive (via `ProcessHandle`) to detect the agent
-     * exiting or being replaced.
+     * Runs `pgrep -P <pid>` and returns the first pid it reports. This is a
+     * *heuristic*: it assumes the interactive agent is the shell's one relevant
+     * foreground child. If the shell also has a backgrounded job, or the agent
+     * is wrapped by a launcher (`env`, a node shim, …), the first child may not
+     * be the agent — in which case the `AutoNamer`'s exit detection can latch
+     * onto the wrong pid (worst case: a name stays stale for that shell's life).
+     * Good enough for the common `claude`/`codex`/`gemini` case.
      *
      * @param pid the parent process id (the terminal's shell).
      * @return the child pid, or `null` when there are no children or the check
