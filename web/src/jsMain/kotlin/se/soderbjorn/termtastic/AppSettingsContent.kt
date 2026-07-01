@@ -385,10 +385,12 @@ private fun buildExperimentalSection(): HTMLElement {
             putJsonBoolean(KEY_TERMINAL_AUTO_NAME, v)
         },
         descriptionText = "When an AI agent (Claude, Codex, or Gemini) starts " +
-            "working on your first prompt, the terminal's folder name is " +
-            "replaced with a few words describing the task. Terminals you've " +
-            "named yourself are never changed. Names are generated locally with " +
-            "the Claude CLI, which counts toward your Claude usage.",
+            "working on a prompt, the terminal's folder name is replaced with a " +
+            "few words describing the task — and it re-names for each new agent " +
+            "session or after /clear. Terminals you've named yourself are never " +
+            "changed. Names are generated locally with the Claude CLI when " +
+            "available (counting toward your Claude usage), otherwise from the " +
+            "prompt text.",
     ))
 
     return section
