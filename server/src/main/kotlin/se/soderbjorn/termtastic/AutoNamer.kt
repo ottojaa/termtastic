@@ -46,6 +46,7 @@ import kotlinx.serialization.json.booleanOrNull
 import org.slf4j.LoggerFactory
 import se.soderbjorn.termtastic.persistence.SettingsRepository
 import se.soderbjorn.termtastic.pty.ProcessTreeReader
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * UI-settings key for the opt-in toggle. Must match `KEY_TERMINAL_AUTO_NAME`
@@ -88,6 +89,11 @@ fun installAutoNamer(
     val guard = AutoNamerGuard()
     // Bounds concurrent claude spawns (see MAX_CONCURRENT_INFERENCES).
     val inferenceSlots = Semaphore(MAX_CONCURRENT_INFERENCES)
+    // Coarse health signal: successes / attempts. Logged on each outcome so a
+    // silent decay of the scrape-based extraction (a CLI reskinning its TUI) is
+    // observable rather than invisible.
+    val attempted = AtomicLong(0)
+    val succeeded = AtomicLong(0)
 
     log.info(
         "AutoNamer: installed (opt-in key '{}', currently enabled={})",
@@ -108,6 +114,12 @@ fun installAutoNamer(
                 log.info("AutoNamer: session {} -> working; inferring name", sid)
                 guard.beginNaming(sid)
                 val session = TerminalSessions.get(sid)
+                // Capture the agent pid + clear-generation now, at the working
+                // edge — NOT after the (up-to-25s) inference, by which point the
+                // shell's foreground child may have changed (fast task done, a
+                // stray `ls`, …), which would record a wrong/transient pid.
+                val pid = session?.shellPid()?.let { ProcessTreeReader.firstChild(it) }
+                val clearGen = session?.clearCommandGeneration() ?: 0L
                 launch {
                     var named = false
                     try {
@@ -116,17 +128,20 @@ fun installAutoNamer(
                         if (name != null) {
                             WindowState.applyInferredName(sid, name)
                             named = true
-                            log.info("AutoNamer: named session {} -> \"{}\"", sid, name)
+                            log.info(
+                                "AutoNamer: named session {} -> \"{}\" (rate {}/{})",
+                                sid, name, succeeded.incrementAndGet(), attempted.incrementAndGet(),
+                            )
                         } else {
-                            log.info("AutoNamer: no name produced for {}", sid)
+                            log.info(
+                                "AutoNamer: no name produced for {} (rate {}/{})",
+                                sid, succeeded.get(), attempted.incrementAndGet(),
+                            )
                         }
                     } catch (t: Throwable) {
+                        attempted.incrementAndGet()
                         log.warn("AutoNamer: inference failed for {}", sid, t)
                     } finally {
-                        // Capture the agent pid + clear-generation at naming so the
-                        // reset pass can detect this run ending / a later /clear.
-                        val pid = session?.shellPid()?.let { ProcessTreeReader.firstChild(it) }
-                        val clearGen = session?.clearCommandGeneration() ?: 0L
                         guard.finishNaming(sid, named, pid, clearGen)
                     }
                 }

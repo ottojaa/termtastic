@@ -129,16 +129,21 @@ class ClaudeCliNameInferrer {
     /**
      * Ask `claude` to name the terminal described by [transcript].
      *
-     * Prefers to summarize just the user's most recent prompt (extracted via
-     * [extractLatestPrompt]) rather than the whole screen: the full screen
-     * carries ambient noise (leftover output from a previous session, the agent
-     * banner, the cwd/project name) that can leak into the label. Summarizing
-     * the isolated request yields a clean, on-topic title. Falls back to the
-     * whole screen only when no prompt line can be found.
+     * Only ever sends the user's most recent prompt line (extracted via
+     * [extractLatestPrompt]) to `claude` — never the whole screen. This keeps
+     * the label on-topic (no ambient leftover output / banner / cwd leaking in)
+     * and, importantly, minimizes what leaves the machine: a bounded, deliberate
+     * prompt line rather than up to a full screen of source/output/secrets. If
+     * no prompt line can be found, we don't name (returning
+     * [ClaudeOutcome.Unavailable]) rather than exfiltrating the screen.
+     *
+     * Note: this forwards the prompt to Anthropic's Claude for summarization
+     * regardless of which agent runs in the pane — surfaced in the setting copy.
      *
      * @param transcript the visible screen text.
      * @return [ClaudeOutcome.Named] with a title, [ClaudeOutcome.Declined] if
-     *   claude replied `none`, or [ClaudeOutcome.Unavailable] on any failure.
+     *   claude produced nothing usable, or [ClaudeOutcome.Unavailable] on any
+     *   failure or when no prompt could be extracted.
      */
     suspend fun tryInfer(transcript: String): ClaudeOutcome {
         val claudePath = ClaudeCli.locate()
@@ -147,25 +152,22 @@ class ClaudeCliNameInferrer {
             return ClaudeOutcome.Unavailable
         }
 
-        val prompt = extractLatestPrompt(transcript)
-        val claudeInput = if (prompt != null) {
-            "$PROMPT_INSTRUCTION\n\nRequest: $prompt"
-        } else {
-            val screen = transcript.takeLast(MAX_TRANSCRIPT_CHARS)
-            if (screen.isBlank()) return ClaudeOutcome.Unavailable
-            "$SCREEN_INSTRUCTION\n\n--- terminal screen ---\n$screen"
+        val prompt = extractLatestPrompt(transcript)?.take(MAX_PROMPT_CHARS)
+        if (prompt == null) {
+            log.info("ClaudeCliNameInferrer: no prompt line found; not naming (won't send screen)")
+            return ClaudeOutcome.Unavailable
         }
 
         val raw = withContext(Dispatchers.IO) {
-            runProcess(claudePath, claudeInput)
+            runProcess(claudePath, "$PROMPT_INSTRUCTION\n\nRequest: $prompt")
         } ?: return ClaudeOutcome.Unavailable // runProcess already logged why
 
         val name = sanitizeInferredName(raw)
         return if (name == null) {
-            log.info("ClaudeCliNameInferrer: claude replied \"{}\" (no clear task)", raw.take(80))
+            log.info("ClaudeCliNameInferrer: claude reply not usable (\"{}\")", raw.take(80))
             ClaudeOutcome.Declined
         } else {
-            log.info("ClaudeCliNameInferrer: inferred \"{}\" (from {})", name, if (prompt != null) "prompt" else "screen")
+            log.info("ClaudeCliNameInferrer: inferred \"{}\"", name)
             ClaudeOutcome.Named(name)
         }
     }
@@ -251,8 +253,8 @@ class ClaudeCliNameInferrer {
     }
 
     companion object {
-        /** Max transcript chars sent to the CLI (a terminal screen is small). */
-        private const val MAX_TRANSCRIPT_CHARS = 8_000
+        /** Cap on the extracted prompt chars sent to the CLI (bounds what leaves the machine). */
+        private const val MAX_PROMPT_CHARS = 500
 
         /** Hard cap on how long we wait for `claude -p` before giving up. */
         private const val TIMEOUT_MS = 25_000L
@@ -275,18 +277,6 @@ class ClaudeCliNameInferrer {
             Title Case tab label (for example: Fix Login Bug, Summarize Readme,
             Debug CI Failure). Reply with ONLY the label - no quotes, no
             punctuation, no explanation.
-        """.trimIndent().replace('\n', ' ')
-
-        /**
-         * Fallback instruction used only when no prompt line could be extracted
-         * from the transcript; summarizes the whole screen. More prone to
-         * picking up ambient content, hence the fallback status.
-         */
-        private val SCREEN_INSTRUCTION = """
-            Summarize what the user is doing in this terminal as a concise
-            2-4 word Title Case tab label (for example: Fix Login Bug,
-            Readme Summary, Debug CI Failure). Reply with ONLY the label -
-            no quotes, no punctuation, no explanation.
         """.trimIndent().replace('\n', ' ')
     }
 }
@@ -332,9 +322,14 @@ private val PROMPT_LINE = Regex("""^[\s│]*[>❯⏵]\s+(.+)$""")
  * Normalize a raw inferred title (CLI reply or scraped prompt) into a clean,
  * bounded terminal name.
  *
- * Strips box-drawing/control characters and surrounding quotes/backticks,
- * collapses whitespace, drops trailing punctuation, and caps the result to
- * [MAX_WORDS] words / [MAX_CHARS] characters.
+ * The input is untrusted (it derives from on-screen text run through an LLM),
+ * and the result is written to [LeafNode.title], persisted, and broadcast to
+ * every connected client. So besides trimming box-drawing/control chars and
+ * surrounding quotes, this strips HTML-significant characters (`< > & " '` and
+ * backtick) as a defense-in-depth against a crafted on-screen payload becoming
+ * a stored/propagated XSS if a render path ever used innerHTML — a tab label
+ * never legitimately needs them. Then collapses whitespace, drops trailing
+ * punctuation, and caps to [MAX_WORDS] words / [MAX_CHARS] chars.
  *
  * @param raw the untrusted candidate string.
  * @return a cleaned name, or `null` when empty or the sentinel "none".
@@ -343,6 +338,7 @@ internal fun sanitizeInferredName(raw: String): String? {
     val firstLine = raw.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: return null
     var s = firstLine
         .replace(BOX_AND_CONTROL, " ")
+        .replace(HTML_UNSAFE, "")
         .trim()
         .trim('"', '\'', '`', '“', '”', '‘', '’')
         .trim()
@@ -359,3 +355,4 @@ private const val MAX_WORDS = 4
 private const val MAX_CHARS = 36
 private val WHITESPACE = Regex("""\s+""")
 private val BOX_AND_CONTROL = Regex("""[\p{Cntrl}─-╿]+""")
+private val HTML_UNSAFE = Regex("""[<>&"'`\\]""")

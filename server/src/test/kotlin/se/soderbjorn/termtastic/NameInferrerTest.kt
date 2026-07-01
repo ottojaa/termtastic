@@ -16,6 +16,7 @@ package se.soderbjorn.termtastic
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
@@ -59,6 +60,18 @@ class NameInferrerTest {
     @Test
     fun `sanitize takes only the first non-empty line`() {
         assertEquals("Add Dark Mode", sanitizeInferredName("\nAdd Dark Mode\nsome explanation\n"))
+    }
+
+    @Test
+    fun `sanitize strips HTML-unsafe characters`() {
+        // A crafted on-screen payload must not survive into the (persisted +
+        // broadcast) title with any HTML-significant character intact.
+        val unsafe = "<>&\"'`\\"
+        val payload = sanitizeInferredName("<img src=x onerror=alert(1)>")
+        if (payload != null) assertFalse(payload.any { it in unsafe }, "leaked: $payload")
+        val mixed = sanitizeInferredName("Fix <b>Login</b> & Auth")
+        assertNotNull(mixed)
+        assertFalse(mixed.any { it in unsafe }, "leaked: $mixed")
     }
 
     // ── HeuristicNameInferrer ───────────────────────────────────────────

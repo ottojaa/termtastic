@@ -42,9 +42,15 @@ internal class InputCommandScanner(private val onClearCommand: () -> Unit) {
      * Feed [len] bytes of user input from [chunk], invoking [onClearCommand]
      * for each submitted clear command.
      *
+     * Synchronized: the PTY write path is shared — multiple clients attached to
+     * one session can call [se.soderbjorn.termtastic.TerminalSession.write]
+     * concurrently — so guard the mutable line/state to avoid a corrupted
+     * reconstruction (a missed or spurious `/clear`).
+     *
      * @param chunk raw input bytes written toward the PTY.
      * @param len number of valid bytes (defaults to `chunk.size`).
      */
+    @Synchronized
     fun feed(chunk: ByteArray, len: Int = chunk.size) {
         var i = 0
         while (i < len) {
