@@ -6,10 +6,12 @@
  * glow) and, on the first idle → working transition of an *agent session*,
  * infers a short contextual name for the pane and applies it.
  *
- * **Granularity — once per agent session, not once per terminal.** Naming is
- * gated by an in-memory `namedThisRun` set rather than the persisted
- * [LeafNode.inferredName], so a second `claude`/`codex`/`gemini` run in the
- * same terminal is named again. The guard is reset when either:
+ * **Granularity — once per agent session, not once per terminal.** The
+ * bookkeeping and reset semantics live in [AutoNamerGuard] (pure + unit-tested);
+ * this file is the async orchestration around it. Naming is gated per agent run
+ * rather than by the persisted [LeafNode.inferredName], so a second
+ * `claude`/`codex`/`gemini` run in the same terminal is named again. The guard
+ * is reset when either:
  *  - the agent process exits or is replaced — the pid recorded at naming
  *    (via [se.soderbjorn.termtastic.pty.ProcessTreeReader]) is no longer alive; or
  *  - the user submits a `/clear` (or shell `clear`) — an in-place context reset
@@ -26,6 +28,7 @@
  *
  * Wired from [main] alongside [installSessionStatePoller].
  *
+ * @see AutoNamerGuard
  * @see NameInferrer
  * @see WindowState.applyInferredName
  * @see installSessionStatePoller
@@ -43,7 +46,6 @@ import kotlinx.serialization.json.booleanOrNull
 import org.slf4j.LoggerFactory
 import se.soderbjorn.termtastic.persistence.SettingsRepository
 import se.soderbjorn.termtastic.pty.ProcessTreeReader
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * UI-settings key for the opt-in toggle. Must match `KEY_TERMINAL_AUTO_NAME`
@@ -51,13 +53,6 @@ import java.util.concurrent.ConcurrentHashMap
  * the shared contract).
  */
 const val TERMINAL_AUTO_NAME_KEY = "terminalAutoName"
-
-/**
- * Max inference attempts per agent run before giving up (bounds retries/cost).
- * Counts launches: a failed inference (timeout / non-zero exit) still burns an
- * attempt, so a few transient `claude` failures stop naming for that run.
- */
-private const val MAX_ATTEMPTS = 3
 
 /**
  * Cap on concurrent `claude -p` summarizations. Several sessions can flip to
@@ -90,24 +85,9 @@ fun installAutoNamer(
     inferrer: NameInferrer,
 ) {
     val log = LoggerFactory.getLogger("AutoNamer")
-    // Guard against launching a second inference for the same session while one
-    // is in flight.
-    val inFlight = ConcurrentHashMap.newKeySet<String>()
-    // Sessions successfully named during the CURRENT agent run. Reset when the
-    // agent process exits, so a new run in the same terminal is named again.
-    val namedThisRun = ConcurrentHashMap.newKeySet<String>()
-    // The agent process pid captured when each named session was named. Used to
-    // detect the agent exiting or being replaced (a new run has a new pid).
-    val agentPid = ConcurrentHashMap<String, Long>()
-    // The session's clear-command count captured at naming. A later change means
-    // the user submitted /clear (or `clear`) — an in-place context reset in the
-    // same agent process — so the next prompt should be named afresh.
-    val namedClearGen = ConcurrentHashMap<String, Long>()
-    // Per-run attempt counter (reset alongside [namedThisRun]).
-    val attempts = ConcurrentHashMap<String, Int>()
+    val guard = AutoNamerGuard()
     // Bounds concurrent claude spawns (see MAX_CONCURRENT_INFERENCES).
     val inferenceSlots = Semaphore(MAX_CONCURRENT_INFERENCES)
-    var prev: Map<String, String?> = emptyMap()
 
     log.info(
         "AutoNamer: installed (opt-in key '{}', currently enabled={})",
@@ -115,41 +95,27 @@ fun installAutoNamer(
     )
     scope.launch {
         sessionStates.collect { states ->
-            // Short-circuit entirely when disabled: no pane scans, no logging,
-            // no reset work — keep the feature free when off.
+            // When disabled, still keep bookkeeping tidy but skip all naming
+            // work (no pane scans, no inference, no logging) — free when off.
             if (!autoNameEnabled(repo)) {
-                prev = states
+                guard.retain(states.keys)
+                guard.commit(states)
                 return@collect
             }
-            for ((sid, state) in states) {
-                val startedWorking = state == "working" && prev[sid] != "working"
-                if (!startedWorking) continue
-                if (sid in inFlight || sid in namedThisRun) continue
 
-                val att = attempts[sid] ?: 0
-                if (att >= MAX_ATTEMPTS || !paneNeedsName(sid)) continue
-
-                // Log the decision on the idle→working edge that we act on.
-                log.info("AutoNamer: session {} -> working; inferring name (attempt {})", sid, att + 1)
-                inFlight += sid
-                attempts[sid] = att + 1
+            for (sid in guard.startedWorking(states)) {
+                if (!guard.eligible(sid, paneNeedsName(sid))) continue
+                log.info("AutoNamer: session {} -> working; inferring name", sid)
+                guard.beginNaming(sid)
                 val session = TerminalSessions.get(sid)
                 launch {
+                    var named = false
                     try {
                         val text = session?.snapshotVisibleText().orEmpty()
                         val name = if (text.isBlank()) null else inferenceSlots.withPermit { inferrer.infer(text) }
                         if (name != null) {
                             WindowState.applyInferredName(sid, name)
-                            namedThisRun += sid
-                            // Record the agent's pid (to detect this run ending
-                            // or being replaced) and the hard-clear count (to
-                            // detect an in-place /clear reset).
-                            session?.let { s ->
-                                s.shellPid()?.let { shell ->
-                                    ProcessTreeReader.firstChild(shell)?.let { agentPid[sid] = it }
-                                }
-                                namedClearGen[sid] = s.clearCommandGeneration()
-                            }
+                            named = true
                             log.info("AutoNamer: named session {} -> \"{}\"", sid, name)
                         } else {
                             log.info("AutoNamer: no name produced for {}", sid)
@@ -157,39 +123,28 @@ fun installAutoNamer(
                     } catch (t: Throwable) {
                         log.warn("AutoNamer: inference failed for {}", sid, t)
                     } finally {
-                        inFlight -= sid
+                        // Capture the agent pid + clear-generation at naming so the
+                        // reset pass can detect this run ending / a later /clear.
+                        val pid = session?.shellPid()?.let { ProcessTreeReader.firstChild(it) }
+                        val clearGen = session?.clearCommandGeneration() ?: 0L
+                        guard.finishNaming(sid, named, pid, clearGen)
                     }
                 }
             }
 
-            // Reset the per-run guard for named sessions when either the agent
-            // exited/was replaced (recorded pid no longer alive — cheap
-            // ProcessHandle lookup, no fork) OR the terminal was hard-cleared
-            // (/clear, `clear`). Either means a fresh context, so the next
-            // prompt should be named again.
-            for (sid in namedThisRun) {
-                val session = TerminalSessions.get(sid)
-                val pid = agentPid[sid]
-                val agentGone = pid != null && ProcessHandle.of(pid).isEmpty
-                val cleared = session != null &&
-                    namedClearGen[sid]?.let { session.clearCommandGeneration() != it } == true
-                if (agentGone || cleared) {
-                    namedThisRun.remove(sid)
-                    attempts.remove(sid)
-                    agentPid.remove(sid)
-                    namedClearGen.remove(sid)
-                    val why = if (cleared) "/clear (context reset)" else "agent pid $pid exited"
-                    log.info("AutoNamer: reset {} — {}; will auto-name the next prompt", sid, why)
-                }
+            // Reset the per-run guard for sessions whose run ended (agent pid no
+            // longer alive — cheap ProcessHandle lookup, no fork) or whose
+            // context was cleared (/clear). Either means the next prompt renames.
+            val reset = guard.resetEnded(
+                alive = { pid -> ProcessHandle.of(pid).isPresent },
+                clearGenOf = { sid -> TerminalSessions.get(sid)?.clearCommandGeneration() },
+            )
+            for ((sid, why) in reset) {
+                log.info("AutoNamer: reset {} — {}; will auto-name the next prompt", sid, why)
             }
 
-            // Forget bookkeeping for sessions that have gone away.
-            attempts.keys.retainAll(states.keys)
-            inFlight.retainAll(states.keys)
-            namedThisRun.retainAll(states.keys)
-            agentPid.keys.retainAll(states.keys)
-            namedClearGen.keys.retainAll(states.keys)
-            prev = states
+            guard.retain(states.keys)
+            guard.commit(states)
         }
     }
 }

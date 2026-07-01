@@ -218,7 +218,7 @@ class ClaudeCliNameInferrer {
                 .start()
         } catch (t: Throwable) {
             log.info("ClaudeCliNameInferrer: failed to spawn claude; using heuristic fallback", t)
-            workDir.delete()
+            workDir.deleteRecursively()
             return null
         }
 
@@ -244,7 +244,9 @@ class ClaudeCliNameInferrer {
             null
         } finally {
             runCatching { proc.destroyForcibly() }
-            runCatching { workDir.delete() }
+            // deleteRecursively: claude may drop a .claude.json / log in its cwd,
+            // and File.delete() only removes an empty dir (would leak otherwise).
+            runCatching { workDir.deleteRecursively() }
         }
     }
 
