@@ -721,12 +721,19 @@ private fun buildAppMenu() {
     }
 
     // Help menu (all platforms): links that open in the user's default browser
-    // via shell.openExternal — the marketing site, the published privacy
-    // policy, and the terms of service (the latter two mirror the links at the
-    // bottom of the mobile hosts screen).
+    // via shell.openExternal — the marketing site, the community support forum,
+    // the GitHub repo (to star), and the published privacy policy / terms of
+    // service (the legal pair mirror the links in the mobile top-bar info menu).
     val websiteItem: dynamic = js("({})")
     websiteItem.label = "Termtastic Website"
     websiteItem.click = { shell.openExternal("https://termtastic.soderbjorn.se/") }
+    val forumItem: dynamic = js("({})")
+    forumItem.label = "Community Forum"
+    forumItem.click = { shell.openExternal("https://github.com/soderbjorn/termtastic/discussions") }
+    val gitHubItem: dynamic = js("({})")
+    gitHubItem.label = "Star on GitHub"
+    gitHubItem.click = { shell.openExternal("https://github.com/soderbjorn/termtastic") }
+    val helpSeparator: dynamic = js("({ type: 'separator' })")
     val privacyItem: dynamic = js("({})")
     privacyItem.label = "Privacy Policy"
     privacyItem.click = { shell.openExternal("https://termtastic.soderbjorn.se/privacy.html") }
@@ -736,7 +743,9 @@ private fun buildAppMenu() {
     val helpMenu: dynamic = js("({})")
     helpMenu.label = "Help"
     helpMenu.role = "help"
-    helpMenu.submenu = arrayOf<dynamic>(websiteItem, privacyItem, termsItem)
+    helpMenu.submenu = arrayOf<dynamic>(
+        websiteItem, forumItem, gitHubItem, helpSeparator, privacyItem, termsItem,
+    )
     template.add(helpMenu)
 
     Menu.setApplicationMenu(Menu.buildFromTemplate(template.toTypedArray()))

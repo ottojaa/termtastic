@@ -16,8 +16,11 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -28,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalUriHandler
 import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_DISCUSSIONS_URL
+import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_GITHUB_URL
+import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_PLAY_STORE_URL
 import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_PRIVACY_URL
 import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_SITE_URL
 import se.soderbjorn.termtastic.client.viewmodel.TERMTASTIC_TERMS_URL
@@ -85,6 +90,29 @@ fun AboutMenu() {
                     uriHandler.openUri(TERMTASTIC_SITE_URL)
                 },
             )
+            DropdownMenuItem(
+                text = { Text("Star on GitHub") },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Star, contentDescription = null)
+                },
+                onClick = {
+                    expanded = false
+                    uriHandler.openUri(TERMTASTIC_GITHUB_URL)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Rate on Google Play") },
+                leadingIcon = {
+                    Icon(Icons.Outlined.ThumbUp, contentDescription = null)
+                },
+                onClick = {
+                    expanded = false
+                    uriHandler.openUri(TERMTASTIC_PLAY_STORE_URL)
+                },
+            )
+            // Separate the actionable/engagement links above from the legal
+            // boilerplate below.
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("Privacy Policy") },
                 leadingIcon = {

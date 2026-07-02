@@ -61,13 +61,44 @@ const val TERMTASTIC_TERMS_URL: String = "https://termtastic.soderbjorn.se/terms
 
 /**
  * The GitHub Discussions board used as the app's community support forum,
- * surfaced as a prominent "Support Forum" link at the bottom of the hosts
- * screen on Android and iOS.
+ * surfaced as a prominent "Support Forum" link in the top-bar info menu on
+ * Android and iOS and in the desktop Help menu.
  *
  * Kept as a shared constant alongside [TERMTASTIC_SITE_URL] so every client
  * that offers help points users at the same canonical destination.
  */
 const val TERMTASTIC_DISCUSSIONS_URL: String = "https://github.com/soderbjorn/termtastic/discussions"
+
+/**
+ * The public GitHub repository, surfaced as a "Star on GitHub" link in the
+ * top-bar info menu on Android and iOS and in the desktop Help menu so users
+ * can star the project.
+ *
+ * Kept as a shared constant alongside [TERMTASTIC_DISCUSSIONS_URL] so every
+ * client points at the same repository.
+ */
+const val TERMTASTIC_GITHUB_URL: String = "https://github.com/soderbjorn/termtastic"
+
+/**
+ * The Google Play store listing, surfaced as a "Rate on Google Play" link in
+ * the Android top-bar info menu (the iOS client uses [TERMTASTIC_APP_STORE_URL]
+ * instead).
+ *
+ * Kept as a shared constant alongside [TERMTASTIC_APP_STORE_URL] so the store
+ * URLs live with the other canonical links.
+ */
+const val TERMTASTIC_PLAY_STORE_URL: String =
+    "https://play.google.com/store/apps/details?id=se.soderbjorn.termtastic.android"
+
+/**
+ * The Apple App Store listing, surfaced as a "Rate on the App Store" link in
+ * the iOS top-bar info menu (the Android client uses [TERMTASTIC_PLAY_STORE_URL]
+ * instead).
+ *
+ * Kept as a shared constant alongside [TERMTASTIC_PLAY_STORE_URL] so the store
+ * URLs live with the other canonical links.
+ */
+const val TERMTASTIC_APP_STORE_URL: String = "https://apps.apple.com/app/id6780234087"
 
 /**
  * Semantic icon for an [OnboardingPage], decoupled from any platform's icon

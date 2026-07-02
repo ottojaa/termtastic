@@ -34,6 +34,14 @@ struct AboutMenu: View {
     /// `TERMTASTIC_SITE_URL` constant.
     private let siteURL = URL(string: "https://termtastic.soderbjorn.se")!
 
+    /// Public GitHub repository, offered as a "Star on GitHub" action. Mirrors
+    /// the shared Kotlin `TERMTASTIC_GITHUB_URL` constant.
+    private let gitHubURL = URL(string: "https://github.com/soderbjorn/termtastic")!
+
+    /// Apple App Store listing, offered as a "Rate on the App Store" action.
+    /// Mirrors the shared Kotlin `TERMTASTIC_APP_STORE_URL` constant.
+    private let appStoreURL = URL(string: "https://apps.apple.com/app/id6780234087")!
+
     /// Published privacy policy page. Mirrors the shared Kotlin
     /// `TERMTASTIC_PRIVACY_URL` constant.
     private let privacyURL = URL(string: "https://termtastic.soderbjorn.se/privacy.html")!
@@ -50,6 +58,15 @@ struct AboutMenu: View {
             Link(destination: siteURL) {
                 Label("Website", systemImage: "globe")
             }
+            Link(destination: gitHubURL) {
+                Label("Star on GitHub", systemImage: "star")
+            }
+            Link(destination: appStoreURL) {
+                Label("Rate on the App Store", systemImage: "hand.thumbsup")
+            }
+            // Separate the actionable/engagement links above from the legal
+            // boilerplate below.
+            Divider()
             Link(destination: privacyURL) {
                 Label("Privacy Policy", systemImage: "lock")
             }
