@@ -231,6 +231,23 @@ private fun start() {
         settingsPersister = webSettingsPersister,
     )
 
+    // Keep the darkness-toolkit's custom hotkey bindings in sync with the
+    // server-managed UI settings. The blob lives under
+    // `PersistKeys.HOTKEY_BINDINGS` in the same per-app settings file as
+    // theme/appearance (server-side `SettingsRepository`); this hook covers
+    // the initial REST hydration *and* every live `UiSettings` WebSocket
+    // push, so a rebinding made on one client takes effect on all of them
+    // without a reload. A missing key means "no customizations" and resets
+    // the toolkit to its default chords. Applying an unchanged blob is a
+    // no-op inside the toolkit, so server echoes of our own writes are
+    // harmless.
+    appVm.onServerUiSettingsApplied = { payload ->
+        val raw = (payload[PersistKeys.HOTKEY_BINDINGS]
+            as? kotlinx.serialization.json.JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+        se.soderbjorn.darkness.web.hotkey.HotkeyBindings.applyCustomBindingsJson(raw)
+    }
+
     // Toolkit-shape persister adapter. Reads serve from the in-memory
     // snapshot that `applyServerUiSettings` populates; writes round-trip
     // through `webSettingsPersister.putSetting` (the same REST bridge

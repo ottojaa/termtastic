@@ -293,6 +293,30 @@ fun forceReassert(entry: TerminalEntry) {
 }
 
 /**
+ * Ask the server to reset sticky terminal modes for this session.
+ *
+ * Sends a [PtyControl.ResetModes] control frame over the pane's PTY
+ * WebSocket; the server answers by broadcasting DECRST sequences (mouse
+ * tracking, focus reporting, bracketed paste, application cursor keys,
+ * alt screen) to every client attached to the session and stamping them
+ * into the replay ring buffer.
+ *
+ * Called by the pane kebab menu's "Reset terminal" item — the user-facing
+ * escape hatch for a terminal wedged in mouse-reporting mode, e.g. after
+ * a killed-server restore replayed a dead full-screen app's DECSET
+ * sequences (issue #91).
+ *
+ * @param entry the [TerminalEntry] whose session should be reset
+ */
+fun sendModeReset(entry: TerminalEntry) {
+    val socket = entry.socket ?: return
+    if (socket.readyState.toInt() != WebSocket.OPEN.toInt()) return
+    runCatching {
+        socket.send(windowJson.encodeToString<PtyControl>(PtyControl.ResetModes))
+    }
+}
+
+/**
  * Whether the user has scrolled the terminal up off the bottom of the
  * scrollback (i.e. auto-scroll-to-bottom is effectively paused).
  *

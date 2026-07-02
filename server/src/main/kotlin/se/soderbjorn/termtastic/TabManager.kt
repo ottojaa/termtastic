@@ -28,13 +28,21 @@ internal object TabManager {
      * subsequent panes re-tile automatically — issue #86) and switches the
      * user to it, matching the behaviour every client already expects from
      * the [WindowConfig.activeTabId] echo.
+     *
+     * The lone pane is created **full-bleed** (0,0 → 1,1), which is exactly
+     * what [LayoutPreset.Auto] computes for a single pane. Stamping the
+     * preset alone is not enough: these placeholder geometry fields are the
+     * fallback the mobile overview renders whenever the toolkit's
+     * `LAYOUT_STATE` blob has no entry for the pane yet — which is always
+     * the case at tab-creation time — so a cascading random origin here
+     * showed the first pane as a small floating window instead of the
+     * full-screen tile the Auto preset promises (issue #86, follow-up).
      */
     fun addTab(
         cfg: WindowConfig,
         newTabId: String,
         newNodeId: String,
         sessionId: String,
-        randomOrigin: Pair<Double, Double>,
     ): WindowConfig {
         val nextNumber = cfg.tabs.size + 1
         val leaf = LeafNode(
@@ -43,16 +51,19 @@ internal object TabManager {
             title = "Session ${sessionId.removePrefix("s")}",
             content = TerminalContent(sessionId),
         )
-        val (ox, oy) = randomOrigin
         val newTab = TabConfig(
             id = newTabId,
             title = "Tab $nextNumber",
             panes = listOf(
                 Pane(
                     leaf = leaf,
-                    x = ox, y = oy,
-                    width = PaneGeometry.DEFAULT_SIZE,
-                    height = PaneGeometry.DEFAULT_SIZE,
+                    // Full-bleed: Auto's tiling for a single pane. Keeps the
+                    // placeholder geometry consistent with the stamped preset
+                    // so clients that fall back to it render the pane
+                    // full-screen from the first frame.
+                    x = 0.0, y = 0.0,
+                    width = 1.0,
+                    height = 1.0,
                     z = 1L,
                 )
             ),
@@ -69,6 +80,16 @@ internal object TabManager {
     /**
      * Close [tabId]. Returns `null` when the tab is unknown or it would
      * leave the user with zero tabs.
+     *
+     * When the closed tab was the active one, the replacement is chosen
+     * among the surviving tabs with a preference for **listed** tabs, i.e.
+     * those not hidden from the tab strip ([TabConfig.isHidden] `false`) —
+     * activating an unlisted tab would leave the user staring at content
+     * whose tab has no visible strip entry (issue #88). The search starts
+     * at the slot the closed tab occupied and scans forward, then backward,
+     * so the positional "activate the neighbour" feel is preserved. Only
+     * when *every* surviving tab is unlisted does the old positional pick
+     * (which may be unlisted) apply as a fallback.
      */
     fun closeTab(cfg: WindowConfig, tabId: String): WindowConfig? {
         if (cfg.tabs.size <= 1) return null
@@ -76,7 +97,16 @@ internal object TabManager {
         val newTabs = cfg.tabs.filterNot { it.id == tabId }
         val newActive = if (cfg.activeTabId == tabId) {
             val oldIdx = cfg.tabs.indexOfFirst { it.id == tabId }
-            newTabs.getOrNull(oldIdx.coerceAtMost(newTabs.size - 1))?.id
+            // Index in `newTabs` of the tab that slid into the closed tab's
+            // slot (or the new last tab when the closed one was last).
+            val slotIdx = oldIdx.coerceAtMost(newTabs.size - 1)
+            // Prefer a listed tab: nearest at/after the slot first, then
+            // nearest before it, mirroring how browsers pick a close
+            // successor. Fall back to the positional pick (possibly an
+            // unlisted tab) only when no listed tab survives.
+            val listed = newTabs.drop(slotIdx).firstOrNull { !it.isHidden }
+                ?: newTabs.take(slotIdx).lastOrNull { !it.isHidden }
+            (listed ?: newTabs.getOrNull(slotIdx))?.id
         } else {
             cfg.activeTabId
         }

@@ -247,16 +247,18 @@ object WindowState {
             title = "Session ${s1.removePrefix("s")}",
             content = TerminalContent(s1),
         )
-        val (ox, oy) = PaneManager.randomSnappedOrigin()
         val tab1 = TabConfig(
             id = newTabId(),
             title = "Tab 1",
             panes = listOf(
                 Pane(
                     leaf = leaf,
-                    x = ox, y = oy,
-                    width = PaneGeometry.DEFAULT_SIZE,
-                    height = PaneGeometry.DEFAULT_SIZE,
+                    // Full-bleed — the Auto preset's tiling for a single
+                    // pane, so the cold-start pane fills the tab instead of
+                    // landing as a small floating rectangle (issue #86).
+                    x = 0.0, y = 0.0,
+                    width = 1.0,
+                    height = 1.0,
                     z = 1L,
                 )
             ),
@@ -282,18 +284,26 @@ object WindowState {
         val cfg = _config.value
         val sessionId = TerminalSessions.create()
         val tabId = newTabId()
+        val nodeId = newNodeId()
         val newCfg = TabManager.addTab(
             cfg = cfg,
             newTabId = tabId,
-            newNodeId = newNodeId(),
+            newNodeId = nodeId,
             sessionId = sessionId,
-            randomOrigin = PaneManager.randomSnappedOrigin(),
         )
         _config.value = newCfg
         // Register the auto preset in the live map so pane add/remove/focus
         // events on this tab re-tile via maybeReapplyLayout without waiting
         // for a server restart to re-engage the persisted layoutPreset.
         activeLayoutByTab[tabId] = LayoutPreset.Auto.key
+        // Mirror the addPaneToTab/addFileBrowserToTab/… bookkeeping for the
+        // tab's first pane: seed the importance order (so this pane stays the
+        // primary slot when siblings arrive) and run the Auto re-tile so the
+        // lone pane's geometry matches the stamped preset — full-bleed. The
+        // preset stamp alone never re-laid the pane out, which left it at its
+        // small default rectangle instead of full screen (issue #86).
+        recordPaneCreated(tabId, nodeId, parentPaneId = null)
+        maybeReapplyLayout(tabId)
     }
 
     /** Close [tabId], destroying any PTY sessions no longer referenced. */
@@ -782,11 +792,45 @@ object WindowState {
         leaf
     }
 
-    /** Move [paneId] from its current tab into [targetTabId]. */
+    /**
+     * Move [paneId] from its current tab into [targetTabId].
+     *
+     * Called from `handleWindowCommand` for [WindowCommand.MovePaneToTab]
+     * — dispatched by the mobile clients' pane sheets and by the web pane
+     * menu's "Move to tab" submenu (issue #89). Beyond the structural move
+     * (delegated to [PaneManager.movePaneToTab]) this mirrors the
+     * add/close bookkeeping so preset-driven tabs stay tiled:
+     *  - the moved pane's importance-order entry migrates from the source
+     *    tab to the head of the target tab's order ([recordPaneRemoved] +
+     *    [recordPaneCreated]), matching how a freshly added pane ranks;
+     *  - both the source tab (now one pane lighter) and the target tab
+     *    (one pane heavier) re-apply their remembered layout via
+     *    [maybeReapplyLayout], so e.g. two Auto tabs both re-tile.
+     *
+     * No-op when the pane or target tab doesn't exist, or when the pane
+     * already lives in the target tab (PaneManager returns null then).
+     *
+     * @param paneId      the pane to move
+     * @param targetTabId the destination tab id
+     * @see PaneManager.movePaneToTab
+     */
     fun movePaneToTab(paneId: String, targetTabId: String) = synchronized(this) {
         val cfg = _config.value
+        // Resolve the source tab BEFORE the move so we can re-layout it after.
+        val sourceTabId = cfg.tabs.firstOrNull { tab ->
+            tab.panes.any { it.leaf.id == paneId }
+        }?.id
         val newCfg = PaneManager.movePaneToTab(cfg, paneId, targetTabId) ?: return@synchronized
         _config.value = newCfg
+        // Migrate the importance-order entry: drop it from the source tab's
+        // order (and clear any parent linkage — the "created next to" pane
+        // stays behind in the old tab), then insert it at the head of the
+        // target tab's order like a newly created pane.
+        recordPaneRemoved(paneId)
+        recordPaneCreated(targetTabId, paneId, parentPaneId = null)
+        // Re-tile both sides if a preset (e.g. Auto) is driving them.
+        if (sourceTabId != null) maybeReapplyLayout(sourceTabId)
+        maybeReapplyLayout(targetTabId)
     }
 
     /** Swap the positions and sizes of two panes that share a tab. */

@@ -2379,6 +2379,44 @@ body.appearance-light .termtastic-hotkeys-cap {
     border-color: rgba(0, 0, 0, 0.16);
 }
 
+/* Configurable rows (backed by a toolkit hotkey action) open the
+   capture-based binding editor on click — give them a hover affordance
+   so they read as interactive against the plain reference rows. */
+.termtastic-hotkeys-row--configurable {
+    cursor: pointer;
+    border-radius: 6px;
+    margin: 0 -6px;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+.termtastic-hotkeys-row--configurable:hover {
+    background: color-mix(in srgb, var(--t-text, #e6e6e6) 6%, transparent);
+}
+
+/* Amber "Mac only" tag on a custom chord the browser reserves for itself
+   (works in the bundled Electron app, not in a browser tab). */
+.termtastic-hotkeys-badge--maconly {
+    color: rgb(230, 170, 60);
+    background: transparent;
+    border-color: color-mix(in srgb, rgb(230, 170, 60) 65%, transparent);
+}
+
+/* Small italic tag on rows whose bindings the user has customized. */
+.termtastic-hotkeys-edited {
+    font-size: 10px;
+    font-style: italic;
+    color: var(--t-text-dim, var(--text-secondary));
+}
+
+/* Placeholder shown when the user removed every chord from an action. */
+.termtastic-hotkeys-unbound {
+    font-size: 11px;
+    font-style: italic;
+    color: var(--t-text-dim, var(--text-secondary));
+    padding-top: 3px;
+}
+
 
 /* ─── Section theme overrides ─────────────────────────────────────── */
 

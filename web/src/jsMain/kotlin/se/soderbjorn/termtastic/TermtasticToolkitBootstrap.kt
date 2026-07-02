@@ -75,6 +75,14 @@ private const val PA_ICON_REFORMAT =
 private const val PA_ICON_WORKTREE =
     """<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v2c0 2.2 1.8 4 4 4h4"/><line x1="6" y1="8" x2="6" y2="16"/><line x1="21" y1="9" x2="21" y2="15"/><line x1="18" y1="12" x2="24" y2="12"/></svg>"""
 
+/** Arrow-into-frame glyph for the "Move to tab" pane-menu row (issue #89). */
+private const val PA_ICON_MOVE_TO_TAB =
+    """<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h4a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 19 20h-4"/><line x1="3" y1="12" x2="13" y2="12"/><polyline points="9 8 13 12 9 16"/></svg>"""
+
+/** Circular arrow — "Reset terminal" pane-menu row (issue #91). */
+private const val PA_ICON_RESET_TERMINAL =
+    """<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/></svg>"""
+
 /** Three vertical dots — overflow / "more" menu trigger on the pane header. */
 private const val PA_ICON_MORE =
     """<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>"""
@@ -121,6 +129,85 @@ private fun findLeafDynamic(paneId: String): dynamic {
         }
     }
     return null
+}
+
+/**
+ * Builds the "Move to tab" submenu rows for [paneId]'s pane kebab menu
+ * (issue #89): one [PaneMenuItem] per tab in the current server config,
+ * excluding the tab the pane already lives in. Choosing a row dispatches
+ * [WindowCommand.MovePaneToTab]; the server relocates the pane and
+ * re-applies both tabs' layout presets (e.g. Auto re-tiles both sides),
+ * then broadcasts the updated [WindowConfig] to every client.
+ *
+ * Hidden tabs (both strip-hidden and sidebar-hidden) are deliberately
+ * INCLUDED as targets — they keep all their panes and PTY sessions alive
+ * and remain valid destinations; strip-hidden ones get a "(hidden)"
+ * suffix so the user isn't surprised when the pane seems to vanish.
+ *
+ * Called at menu-open time (inside the kebab's `handlerWithAnchor`) so
+ * the tab list is always the freshest snapshot.
+ *
+ * @param paneId the pane the kebab menu belongs to.
+ * @return submenu rows in tab-strip order; empty when there is no other
+ *   tab to move to (the caller renders the parent row disabled then).
+ */
+private fun buildMoveToTabItems(paneId: String): List<PaneMenuItem> {
+    val cfg: dynamic = currentConfig ?: return emptyList()
+    val tabsArr = cfg.tabs as? Array<dynamic> ?: return emptyList()
+    // Resolve the pane's own tab first so it can be excluded from targets.
+    var ownTabId: String? = null
+    outer@ for (tab in tabsArr) {
+        val panes = (tab.panes as? Array<dynamic>) ?: continue
+        for (p in panes) {
+            if ((p.leaf?.id as? String) == paneId) {
+                ownTabId = tab.id as? String
+                break@outer
+            }
+        }
+    }
+    val items = mutableListOf<PaneMenuItem>()
+    for (tab in tabsArr) {
+        val tabId = tab.id as? String ?: continue
+        if (tabId == ownTabId) continue
+        val title = (tab.title as? String) ?: tabId
+        val hidden = (tab.isHidden as? Boolean) ?: false
+        items += PaneMenuItem(
+            label = if (hidden) "$title (hidden)" else title,
+            handler = {
+                launchCmd(WindowCommand.MovePaneToTab(paneId = paneId, targetTabId = tabId))
+            },
+        )
+    }
+    return items
+}
+
+/**
+ * Builds the "Reset terminal" row for [paneId]'s pane kebab menu, or an
+ * empty list when the pane isn't a terminal (file browser / git panes
+ * have no PTY session to reset).
+ *
+ * The row sends [PtyControl.ResetModes] over the pane's PTY WebSocket via
+ * [sendModeReset]; the server broadcasts DECRST sequences cancelling
+ * sticky modes (mouse tracking, focus reporting, bracketed paste,
+ * application cursor keys, alt screen) to every attached client. Escape
+ * hatch for terminals wedged in mouse-reporting mode — e.g. after a
+ * killed-server restore replayed a dead full-screen app's DECSET
+ * sequences (issue #91).
+ *
+ * @param paneId the pane the kebab menu belongs to.
+ * @param contentKind the pane's content kind as passed to the pane-action
+ *   builder ("terminal", "filebrowser", "git", …).
+ * @return a single-row list for terminal panes, else empty.
+ */
+private fun buildResetTerminalItems(paneId: String, contentKind: String): List<PaneMenuItem> {
+    if (contentKind != "terminal") return emptyList()
+    return listOf(
+        PaneMenuItem(
+            label = "Reset terminal",
+            iconHtml = PA_ICON_RESET_TERMINAL,
+            handler = { terminals[paneId]?.let { sendModeReset(it) } },
+        ),
+    )
 }
 
 /* -------------------------------------------------------------------- */
@@ -320,6 +407,8 @@ fun termtasticPaneActions(paneId: String): List<PaneAction> {
         // available so the popover sits exactly under the kebab button.
         handler = {},
         handlerWithAnchor = { btn ->
+            // Built at open time so the tab list reflects the live config.
+            val moveTargets = buildMoveToTabItems(paneId)
             openPaneMenu(
                 anchor = btn,
                 spec = PaneMenuSpec(items = listOf(
@@ -327,12 +416,20 @@ fun termtasticPaneActions(paneId: String): List<PaneAction> {
                         label = "Rename window",
                         handler = { appShellHandle?.beginPaneRename(paneId) },
                     ),
+                    // "Move to tab ▸" flyout listing every other tab
+                    // (issue #89). Disabled when this is the only tab.
+                    PaneMenuItem(
+                        label = "Move to tab",
+                        iconHtml = PA_ICON_MOVE_TO_TAB,
+                        submenu = moveTargets,
+                        isEnabled = moveTargets.isNotEmpty(),
+                    ),
                     PaneMenuItem(
                         label = "Create worktree",
                         iconHtml = PA_ICON_WORKTREE,
                         handler = { launchCmd(WindowCommand.GetWorktreeDefaults(paneId = paneId)) },
                     ),
-                )),
+                ) + buildResetTerminalItems(paneId, contentKind)),
             )
         },
         extraClass = "tt-pane-action-more",

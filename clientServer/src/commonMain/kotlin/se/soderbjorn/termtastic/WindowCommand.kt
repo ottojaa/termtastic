@@ -611,6 +611,19 @@ sealed class PtyControl {
     @Serializable
     @SerialName("forceResize")
     data class ForceResize(val cols: Int, val rows: Int) : PtyControl()
+
+    /**
+     * "Reset terminal" from the pane menu: asks the server to broadcast
+     * DECRST sequences that cancel sticky client-side terminal modes
+     * (mouse tracking, focus reporting, bracketed paste, application
+     * cursor keys, alt screen) to every attached client and stamp them
+     * into the replay ring buffer. Escape hatch for terminals wedged by
+     * a dead full-screen app — e.g. after a killed-server session
+     * restore replays the app's DECSET sequences (issue #91).
+     */
+    @Serializable
+    @SerialName("resetModes")
+    object ResetModes : PtyControl()
 }
 
 /**

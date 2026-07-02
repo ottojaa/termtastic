@@ -120,5 +120,6 @@ internal fun handleControl(session: TerminalSession, clientId: String, text: Str
     when (control) {
         is PtyControl.Resize -> session.setClientSize(clientId, control.cols, control.rows)
         is PtyControl.ForceResize -> session.forceClientSize(clientId, control.cols, control.rows)
+        is PtyControl.ResetModes -> session.resetTerminalModes()
     }
 }

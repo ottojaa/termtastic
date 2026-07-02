@@ -301,6 +301,20 @@ class AppBackingViewModel(
     // ── Internal ────────────────────────────────────────────────────
 
     /**
+     * Optional observer invoked with the raw settings JSON each time
+     * [applyServerUiSettings] runs (initial REST hydration and every live
+     * [se.soderbjorn.termtastic.WindowEnvelope.UiSettings] push that passes
+     * the local-change guard).
+     *
+     * Used by the web frontend to forward settings keys the [State] model
+     * doesn't track — currently the custom hotkey bindings blob
+     * (`darkness.hotkeyBindings`), which is handed to the darkness-toolkit
+     * so key rebindings sync live across clients. Mobile apps leave this
+     * `null` (they have no shortcut support).
+     */
+    var onServerUiSettingsApplied: ((kotlinx.serialization.json.JsonObject) -> Unit)? = null
+
+    /**
      * Apply a server-pushed UI settings JSON object to the local state.
      * Called when a [se.soderbjorn.termtastic.WindowEnvelope.UiSettings]
      * envelope arrives.
@@ -308,6 +322,7 @@ class AppBackingViewModel(
     fun applyServerUiSettings(settingsJson: kotlinx.serialization.json.JsonObject) {
         val cur = _stateFlow.value
         emit(settings.applyServerUiSettings(cur, settingsJson))
+        onServerUiSettingsApplied?.invoke(settingsJson)
     }
 
     /**

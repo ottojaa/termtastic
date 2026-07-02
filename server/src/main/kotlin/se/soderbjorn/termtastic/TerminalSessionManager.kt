@@ -192,6 +192,18 @@ class TerminalSession private constructor(
     init {
         if (initialScrollback != null && initialScrollback.isNotEmpty()) {
             appendToRing(initialScrollback)
+            // The restored scrollback may contain DECSET sequences from a
+            // full-screen app (vim, htop, …) that died with the old server:
+            // mouse tracking, focus reporting, bracketed paste, application
+            // cursor keys, alternate screen. Replaying them verbatim leaves
+            // the client terminal generating mouse/focus escape reports that
+            // the fresh shell receives as garbage input — and nothing ever
+            // sends the matching DECRST (issue #91). Neutralize those modes
+            // right here in the ring, before the marker, so every future
+            // replay of this scrollback ends in a sane state. The new shell's
+            // own output follows later in the ring and re-enables anything it
+            // actually wants (e.g. readline's bracketed paste).
+            appendToRing(RESTORE_MODE_RESET)
             val marker = "\r\n\r\n[2m[session restored — previous process ended][0m\r\n\r\n"
                 .toByteArray(Charsets.UTF_8)
             appendToRing(marker)
@@ -235,6 +247,23 @@ class TerminalSession private constructor(
         } catch (_: Throwable) {
             // PTY may have died — ignore; next read will close things down.
         }
+    }
+
+    /**
+     * Cancel sticky client-side terminal modes on every attached client.
+     *
+     * Broadcasts [RESTORE_MODE_RESET] (plus a cursor show) as ordinary
+     * session output and stamps it into the ring buffer so future replays
+     * inherit the sane state. Called by [handleControl] when a client
+     * sends [PtyControl.ResetModes] — the pane menu's "Reset terminal"
+     * escape hatch for a terminal wedged in mouse-reporting mode
+     * (issue #91). Touches only the client-side emulator state; the PTY
+     * process itself is not signalled.
+     */
+    fun resetTerminalModes() {
+        val bytes = RESTORE_MODE_RESET + SHOW_CURSOR_SUFFIX
+        appendToRing(bytes)
+        scope.launch { _output.emit(bytes) }
     }
 
     /** Destroy the underlying PTY process and cancel all coroutines. */
@@ -329,6 +358,24 @@ class TerminalSession private constructor(
     }
 
     companion object {
+        /**
+         * Escape sequences appended to restored scrollback (see `init`) to
+         * cancel terminal modes a dead full-screen app may have left enabled.
+         * In order: DECRST of X10/normal/highlight/button-event/any-event
+         * mouse tracking plus the UTF-8, SGR and urxvt mouse encodings
+         * (9, 1000-1003, 1005, 1006, 1015), focus-event reporting (1004),
+         * bracketed paste (2004), application cursor keys (DECCKM, 1) and
+         * the alternate screen buffer (1049 — a no-op when not active),
+         * then DECKPNM (`ESC >`) to restore the normal keypad.
+         *
+         * Used only on the killed-server restore path, never on live
+         * reconnect replays ([snapshot]), where a running TUI still owns
+         * these modes legitimately.
+         */
+        private val RESTORE_MODE_RESET =
+            "[?9;1000;1001;1002;1003;1005;1006;1015l[?1004l[?2004l[?1l[?1049l>"
+                .toByteArray(Charsets.US_ASCII)
+
         private val SHOW_CURSOR_SUFFIX = "[?25h".toByteArray(Charsets.US_ASCII)
 
         fun create(initialCwd: String? = null, initialScrollback: ByteArray? = null): TerminalSession {
