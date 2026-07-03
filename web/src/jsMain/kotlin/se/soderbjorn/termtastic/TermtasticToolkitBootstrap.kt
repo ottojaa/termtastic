@@ -32,6 +32,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.w3c.dom.HTMLElement
 import se.soderbjorn.darkness.web.confirmClosePane
+import se.soderbjorn.darkness.web.hotkey.Hotkey
+import se.soderbjorn.darkness.web.hotkey.HotkeyActionSpec
+import se.soderbjorn.darkness.web.hotkey.HotkeyBindings
 import se.soderbjorn.darkness.web.layout.PaneAction
 import se.soderbjorn.darkness.web.layout.PaneActions
 import se.soderbjorn.darkness.web.layout.PaneMenuItem
@@ -66,6 +69,17 @@ private const val ICON_NEWS =
 /** Material Symbols "content_copy" — file-browser path-copy action. */
 private const val PA_ICON_COPY =
     """<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="1.5"/><path d="M16 8V4.5A1.5 1.5 0 0 0 14.5 3H4.5A1.5 1.5 0 0 0 3 4.5v10A1.5 1.5 0 0 0 4.5 16H8"/></svg>"""
+
+/**
+ * Stable, namespaced id for the user-configurable "Reformat terminal"
+ * hotkey action. This is the persistence key for the user's custom chord
+ * (see [HotkeyBindings]) — renaming it would orphan saved rebindings — and
+ * the id the Keyboard-shortcuts sidebar row references
+ * ([HotkeysSidebarContent]'s Windows group).
+ *
+ * @see registerReformatHotkey
+ */
+internal const val REFORMAT_HOTKEY_ACTION_ID: String = "termtastic.terminal.reformat"
 
 /** Reformat (terminal action). */
 private const val PA_ICON_REFORMAT =
@@ -288,6 +302,58 @@ private fun cycleGitDiffMode(paneId: String, btn: HTMLElement) {
     btn.setAttribute("title", "Diff: ${gitDiffModeLabel(st.diffMode, st.graphicalDiff)} · click to cycle")
     val sel = st.selectedFilePath
     if (sel != null) launchCmd(WindowCommand.GitDiff(paneId = paneId, filePath = sel))
+}
+
+/**
+ * Reformat the terminal in the currently active (most-recently focused)
+ * pane, if any. The keyboard-shortcut counterpart of clicking a pane's
+ * Reformat button: both funnel into [forceReassert], which re-asserts the
+ * remote PTY size to match the pane.
+ *
+ * "Active" is resolved from [lastFocusedTerminalId] (set on terminal
+ * `focusin`), so the shortcut targets whichever terminal the user last
+ * worked in. No-ops silently when no terminal has been focused yet or the
+ * focused pane is not a live terminal (e.g. it was closed) — [forceReassert]
+ * itself is also a safe no-op on a stale socket.
+ *
+ * Called by the [REFORMAT_HOTKEY_ACTION_ID] binding registered in
+ * [registerReformatHotkey].
+ */
+private fun reformatActiveTerminal() {
+    val paneId = lastFocusedTerminalId ?: return
+    val entry = terminals[paneId] ?: return
+    try { forceReassert(entry) } catch (_: Throwable) {}
+}
+
+/**
+ * Register the configurable **Reformat terminal** hotkey (default
+ * ⌃⌥R / Ctrl+Alt+R) with the toolkit's [HotkeyBindings].
+ *
+ * Going through [HotkeyBindings.registerAction] (rather than a raw
+ * [se.soderbjorn.darkness.web.hotkey.HotkeyRegistry.register]) is what makes
+ * the shortcut **user-changeable**: it surfaces as a clickable, rebindable
+ * row in the Keyboard-shortcuts sidebar ([HotkeysSidebarContent]) and its
+ * custom chord persists and syncs across clients through the same
+ * server-managed `HOTKEY_BINDINGS` blob as the toolkit's own hotkeys (see
+ * `onServerUiSettingsApplied` in `main.kt`). The registry dispatches from a
+ * capture-phase `window` listener, so the chord fires even while a terminal
+ * has key focus and is not forwarded to the PTY.
+ *
+ * The default chord uses `key = "r"`: on macOS the browser reports the base
+ * letter (not the Option glyph "®") for `KeyboardEvent.key` whenever Control
+ * is also held, so ⌃⌥R matches. Idempotent — safe to call once at boot from
+ * [bootViaToolkitShell].
+ *
+ * @see reformatActiveTerminal
+ */
+private fun registerReformatHotkey() {
+    HotkeyBindings.registerAction(
+        HotkeyActionSpec(
+            id = REFORMAT_HOTKEY_ACTION_ID,
+            label = "Reformat terminal",
+            defaults = listOf(Hotkey(key = "r", ctrl = true, alt = true)),
+        ),
+    ) { reformatActiveTerminal() }
 }
 
 /* -------------------------------------------------------------------- */
@@ -902,6 +968,11 @@ fun bootViaToolkitShell(root: HTMLElement) {
     // so it survives the toolkit's chrome rebuilds without per-render
     // re-wiring — see [installReformatHoverPopup].
     installReformatHoverPopup()
+
+    // Register Ctrl+Alt+R as a *configurable* hotkey that reformats the
+    // active terminal — the keyboard equivalent of the pane-header Reformat
+    // button. See [registerReformatHotkey].
+    registerReformatHotkey()
 
     // Double-click a pane title to rename it (mirrors tab-label rename).
     // Document-level delegation, so it survives toolkit chrome rebuilds;

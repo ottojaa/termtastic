@@ -113,6 +113,10 @@ private fun hotkeyGroups(): List<HotkeyGroupModel> = listOf(
             actionRow("Focus window right", ToolkitHotkeyIds.PANE_FOCUS_RIGHT),
             actionRow("Focus window up", ToolkitHotkeyIds.PANE_FOCUS_UP),
             actionRow("Focus window down", ToolkitHotkeyIds.PANE_FOCUS_DOWN),
+            // App-specific (not a toolkit action): reflow the active terminal
+            // to fit its pane. Default ⌃⌥R; configurable + registered in
+            // `registerReformatHotkey`. See [REFORMAT_HOTKEY_ACTION_ID].
+            actionRow("Reformat terminal", REFORMAT_HOTKEY_ACTION_ID),
         ),
     ),
     HotkeyGroupModel(
