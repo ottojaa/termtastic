@@ -862,11 +862,6 @@ fun bootViaToolkitShell(root: HTMLElement) {
             // was redundant. Leaving `tabSidebarHeaderBadge` unset falls back
             // to the toolkit default (no badge). The tab-strip dot below is
             // deliberately kept.
-            // Sticky pane-slot index — `①..⑨`, `Ⓐ..Ⓩ` rendered as a
-            // trailing badge on both pane header and sidebar row. The
-            // assigner is kept in sync with the server-pushed pane set
-            // by `TermtasticTabSource`'s collector.
-            paneIndex = { _, paneId -> termtasticPaneAssigner.indexOf(paneId) },
             // Per-tab aggregated status DOT on the tab itself in the strip.
             // `updateStateIndicators` aggregates pane states per tab in its
             // `for (tab in cfg.tabs)` block and repaints every

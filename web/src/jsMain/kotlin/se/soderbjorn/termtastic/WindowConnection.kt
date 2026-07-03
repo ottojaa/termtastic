@@ -275,6 +275,38 @@ private fun resyncVisibleTerminalsScroll() {
     }
 }
 
+/**
+ * Builds a signature string over exactly the config fields the toolkit chrome
+ * and the per-push focus/scroll housekeeping depend on: the active tab, and per
+ * tab its id / title / visibility flags / focused pane, plus the ordered pane
+ * ids. Deliberately EXCLUDES pane titles (`leaf.title`) — the only field a
+ * program-set OSC title tick changes.
+ *
+ * Mirrors the fields carried in the toolkit's `TabListSnapshot`, so two configs
+ * with equal signatures are exactly the pushes for which the toolkit takes its
+ * label-only fast path (no chrome rebuild, no pane-content detach). [renderConfig]
+ * uses this to skip the refocus / scroll-realign / dot-repaint that only a real
+ * structural render needs.
+ *
+ * @param config the dynamic server config object.
+ * @return a stable signature that changes iff something structural changed.
+ */
+private fun structuralConfigSignature(config: dynamic): String {
+    val sb = StringBuilder()
+    sb.append(config.activeTabId as? String ?: "")
+    val tabs = config.tabs as? Array<dynamic> ?: return sb.toString()
+    for (tab in tabs) {
+        sb.append("|t:").append(tab.id as? String ?: "")
+        sb.append(",ti:").append(tab.title as? String ?: "")
+        sb.append(",h:").append((tab.isHidden as? Boolean ?: false).toString())
+        sb.append(",hs:").append((tab.isHiddenFromSidebar as? Boolean ?: false).toString())
+        sb.append(",f:").append(tab.focusedPaneId as? String ?: "")
+        val panes = tab.panes as? Array<dynamic> ?: continue
+        for (p in panes) sb.append(",p:").append(p.leaf.id as? String ?: "")
+    }
+    return sb.toString()
+}
+
 fun renderConfig(config: dynamic) {
     // Post-toolkit-migration: the toolkit's `mountAppShell` (driven by
     // `TermtasticTabSource`) owns the entire chrome rebuild — top bar,
@@ -283,6 +315,7 @@ fun renderConfig(config: dynamic) {
     // a side effect: snapshot the live config for synchronous lookups
     // (`mountPaneContent`, `savedFocusedPaneId`, `countPanesForSession`)
     // and prune any PTY entries whose pane is no longer in the config.
+    val prevConfig = currentConfig
     currentConfig = config
     val tabsArr = config.tabs as? Array<dynamic> ?: return
 
@@ -314,6 +347,22 @@ fun renderConfig(config: dynamic) {
         if (lastFocusedTerminalId == pid) lastFocusedTerminalId = null
     }
     updateAggregateStatus()
+    // Label-only fast path. When nothing structural changed (only pane titles
+    // did — e.g. a program-set OSC title tick while a terminal task runs), the
+    // toolkit takes its own label-only fast path: it refreshes the label text
+    // in place and never detaches pane content. So there is no lost focus to
+    // restore and no reset scrollbar to realign, and the status dots weren't
+    // recreated — skip the per-push refocus / scroll-resync / dot repaint that
+    // only a real structural render needs. This keeps a working pane's ~750 ms
+    // title cadence from force-refocusing the active terminal (which would
+    // otherwise steal focus from e.g. a settings field) on every tick.
+    // The signature match is exactly the toolkit's fast-path condition, so the
+    // two stay consistent. See [structuralConfigSignature].
+    if (prevConfig != null &&
+        structuralConfigSignature(prevConfig) == structuralConfigSignature(config)
+    ) {
+        return
+    }
     refocusActivePane(config)
     // Realign every visible terminal's native scrollbar with its buffer after
     // the toolkit reattaches the active tab's cached pane elements (which

@@ -469,6 +469,47 @@ private fun checkStateNotifications(sessionStates: Map<String, String?>) {
 }
 
 /**
+ * Shared pulse period, in milliseconds, for every status indicator. MUST match
+ * the `fade-warning` animation duration in styles.css (`2.5s`) that
+ * `.tt-status-dot.state-working` / `.state-waiting` and `.app-logo-dot` all use.
+ * Used by [phaseLockPulse] to compute the negative `animation-delay` that keeps
+ * all indicators breathing in lockstep against one global clock.
+ */
+private const val STATUS_PULSE_PERIOD_MS = 2500.0
+
+/**
+ * Phase-locks a status indicator's breathing pulse to a shared wall clock by
+ * setting a negative inline `animation-delay`.
+ *
+ * Why this exists: the toolkit rebuilds the chrome (sidebar rows, tab strip,
+ * pane headers, sidebar logo) on every `WindowConfig` push, and each rebuild
+ * creates a *fresh* `.tt-status-dot` / `.app-logo-dot` element via the badge
+ * factories. A brand-new element starts its `fade-warning` CSS animation at the
+ * `0% { opacity: 1 }` keyframe, snapping the dot to full opacity. Config pushes
+ * became frequent once the opt-in program-title feature (commit c6012d6) began
+ * rebroadcasting the window config on each program title change — Claude Code
+ * rewrites its terminal title with a live task summary while working, so a
+ * working pane re-pushes config roughly every debounce interval (~750 ms). The
+ * result was every status icon "blipping" from faded back to full opacity on
+ * each push instead of pulsing smoothly.
+ *
+ * The fix: because all indicators share one [STATUS_PULSE_PERIOD_MS] period,
+ * anchoring each element's animation to `-(now % period)` places every element
+ * — freshly created or long-lived — at the *same* point in the cycle as the
+ * global clock. A recreated element therefore resumes exactly where its
+ * predecessor was, so the rebuild is visually seamless. Re-applying the same
+ * anchor to an already-running element is idempotent (the new start time
+ * differs from the old only by whole periods, which is invisible for a periodic
+ * animation), so it is safe to call on every in-place repaint too.
+ *
+ * @param el the status indicator element whose pulse is being (re)started.
+ */
+internal fun phaseLockPulse(el: HTMLElement) {
+    val phase = kotlin.js.Date().getTime() % STATUS_PULSE_PERIOD_MS
+    el.style.animationDelay = "-${phase}ms"
+}
+
+/**
  * Applies the working/waiting state to a status indicator (`.tt-status-dot`) —
  * the unified indicator used on sidebar rows, pane headers, and the tab strip.
  * Its look is driven purely by the `state-working` / `state-waiting` modifier
@@ -482,13 +523,14 @@ private fun checkStateNotifications(sessionStates: Map<String, String?>) {
  *
  * @param el the `.tt-status-dot` element to repaint.
  * @param state the session state (`"working"`, `"waiting"`, or null/idle).
+ * @see phaseLockPulse
  */
 internal fun applyDotState(el: HTMLElement, state: String?) {
     el.classList.remove("state-working")
     el.classList.remove("state-waiting")
     when (state) {
-        "working" -> el.classList.add("state-working")
-        "waiting" -> el.classList.add("state-waiting")
+        "working" -> { el.classList.add("state-working"); phaseLockPulse(el) }
+        "waiting" -> { el.classList.add("state-waiting"); phaseLockPulse(el) }
     }
 }
 

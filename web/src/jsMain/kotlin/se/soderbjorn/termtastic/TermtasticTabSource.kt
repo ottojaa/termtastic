@@ -22,7 +22,6 @@ import se.soderbjorn.darkness.web.shell.PaneSnapshotEntry
 import se.soderbjorn.darkness.web.shell.TabListSnapshot
 import se.soderbjorn.darkness.web.shell.TabSnapshotEntry
 import se.soderbjorn.darkness.web.shell.TabSource
-import se.soderbjorn.darkness.web.util.PaneSlotAssigner
 import se.soderbjorn.termtastic.client.WindowSocket
 import se.soderbjorn.termtastic.client.WindowStateRepository
 import se.soderbjorn.termtastic.WindowCommand
@@ -44,15 +43,6 @@ private const val NEW_PANE_FILE_BROWSER_SVG =
     """<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9 a1 1 0 0 1 1-1 h7 l2 3 h13 a1 1 0 0 1 1 1 v13 a1 1 0 0 1 -1 1 H5 a1 1 0 0 1 -1 -1 Z"/><line x1="9" y1="17" x2="23" y2="17"/><line x1="9" y1="21" x2="19" y2="21"/></svg>"""
 private const val NEW_PANE_GIT_SVG =
     """<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="2.5"/><circle cx="10" cy="24" r="2.5"/><circle cx="22" cy="16" r="2.5"/><line x1="10" y1="10.5" x2="10" y2="21.5"/><path d="M10 10.5 C10 16 16 16 19.5 16"/></svg>"""
-
-/**
- * Process-global pane-slot assigner. Sticky 1-based indices used to render
- * the encircled-digit/letter badge in pane headers and sidebar rows. The
- * snapshot collector below keeps this in sync with the server-pushed pane
- * set on every config emission; the toolkit reads it via the
- * `paneIndex` callback wired in [bootViaToolkitShell].
- */
-internal val termtasticPaneAssigner: PaneSlotAssigner = PaneSlotAssigner()
 
 /**
  * Builds a [TabSource] backed by termtastic's server-pushed
@@ -128,17 +118,6 @@ fun termtasticTabSource(
                 // reach the toolkit so it can decide whether to render
                 // the row. The two server flags map 1:1 onto the
                 // toolkit snapshot fields.
-                // Reconcile the sticky pane-slot assigner with the live
-                // pane set BEFORE pushing the snapshot, so the toolkit's
-                // `paneIndex` lookups during the resulting render see
-                // up-to-date slots. Order: across all tabs (including
-                // hidden ones) in tab order, panes in their tab order —
-                // matches the canonical global enumeration the user sees
-                // when scanning the sidebar top-to-bottom.
-                val livePaneIds = config.tabs.flatMap { tab ->
-                    tab.panes.map { it.leaf.id }
-                }
-                termtasticPaneAssigner.syncTo(livePaneIds)
                 push(
                     TabListSnapshot(
                         tabs = config.tabs.map { tab ->
