@@ -31,7 +31,8 @@
  *       - **Enable Git change view** — same for the Git entry.
  *       - **Use program-set terminal titles** — opt-in: panes take the
  *         title the running program sets via OSC 0/2 (consumed
- *         server-side); this row carries an explanatory description line.
+ *         server-side); its explanation lives behind a "?" help popover
+ *         next to the label rather than an inline paragraph.
  *
  * The flags persist server-side under top-level keys in
  * `/api/ui-settings`:
@@ -110,6 +111,14 @@ private const val ICON_HOTKEYS =
 /** Monitor glyph for the "Server Settings" navigation button. */
 private const val ICON_SERVER_SETTINGS =
     """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>"""
+
+/**
+ * Question-mark-in-a-circle glyph for the per-setting help trigger. Rendered
+ * inside the small "?" button that [buildHelpPopover] builds next to a toggle
+ * label; clicking that button reveals the setting's explanation popover.
+ */
+private const val ICON_HELP =
+    """<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>"""
 
 /**
  * Read a Boolean flag from the in-memory server-settings snapshot.
@@ -426,8 +435,10 @@ private fun buildExperimentalSection(): HTMLElement {
  * @param initialValue    which option ("On" = true) starts selected.
  * @param onChange        invoked with the new value every time the user
  *   picks a different option.
- * @param descriptionText optional muted help text rendered under the label to
- *   explain what the setting does; omitted (`null`) renders no description.
+ * @param descriptionText optional explanation of what the setting does. When
+ *   supplied it is no longer rendered inline under the label; instead a small
+ *   "?" help button sits next to the label and reveals this text in a popover
+ *   on click (see [buildHelpPopover]). Omitted (`null`) renders no help affordance.
  * @return the freshly-built row element.
  */
 private fun buildToggleRow(
@@ -439,17 +450,21 @@ private fun buildToggleRow(
     val row = document.createElement("div") as HTMLElement
     row.className = "termtastic-app-settings-toggle-row"
 
-    val labelEl = document.createElement("div") as HTMLElement
+    // Label header. With a description, the label shares a row with a "?" help
+    // trigger whose popover carries the explanation; without one, the label is
+    // a plain full-width block as before.
+    val header = document.createElement("div") as HTMLElement
+    header.className = "termtastic-app-settings-toggle-header"
+
+    val labelEl = document.createElement("span") as HTMLElement
     labelEl.className = "termtastic-app-settings-toggle-label"
     labelEl.textContent = labelText
-    row.appendChild(labelEl)
+    header.appendChild(labelEl)
 
     if (descriptionText != null) {
-        val descEl = document.createElement("div") as HTMLElement
-        descEl.className = "termtastic-app-settings-toggle-desc"
-        descEl.textContent = descriptionText
-        row.appendChild(descEl)
+        header.appendChild(buildHelpPopover(descriptionText))
     }
+    row.appendChild(header)
 
     val btnRow = document.createElement("div") as HTMLElement
     btnRow.className = "dt-settings-button-row"
@@ -471,4 +486,76 @@ private fun buildToggleRow(
     row.appendChild(btnRow)
 
     return row
+}
+
+/**
+ * Build a "?" help affordance: a small circular icon button that toggles a
+ * popover containing [text].
+ *
+ * Called by [buildToggleRow] for any toggle that carries a `descriptionText`,
+ * replacing the old always-visible muted paragraph under the row. Keeping the
+ * explanation behind a click declutters the Experimental features list while
+ * still letting the user read what a setting does on demand.
+ *
+ * Interaction: clicking the trigger opens the popover (and registers a
+ * document-level click listener that closes it again when the user clicks
+ * anywhere outside the affordance); clicking the trigger a second time closes
+ * it. The trigger's own click is stopped from bubbling so the freshly-added
+ * outside-click listener doesn't immediately fire on the same event.
+ *
+ * @param text the explanation to show inside the popover.
+ * @return a `<span>` wrapper element containing the trigger button and its
+ *   (CSS-hidden-until-open) popover, ready to append next to a toggle label.
+ * @see buildToggleRow
+ */
+private fun buildHelpPopover(text: String): HTMLElement {
+    val wrapper = document.createElement("span") as HTMLElement
+    wrapper.className = "termtastic-app-settings-help"
+
+    val trigger = document.createElement("button") as HTMLElement
+    (trigger.asDynamic()).type = "button"
+    trigger.className = "termtastic-app-settings-help-trigger"
+    trigger.setAttribute("aria-label", "What does this setting do?")
+    trigger.setAttribute("aria-haspopup", "dialog")
+    trigger.setAttribute("aria-expanded", "false")
+    trigger.innerHTML = ICON_HELP
+
+    val popover = document.createElement("div") as HTMLElement
+    popover.className = "termtastic-app-settings-help-popover"
+    popover.setAttribute("role", "tooltip")
+    popover.textContent = text
+
+    // Holds the active document-level outside-click listener while the popover
+    // is open, so we can remove exactly that listener again on close.
+    var outsideClick: ((Event) -> Unit)? = null
+
+    fun close() {
+        wrapper.classList.remove("is-open")
+        trigger.setAttribute("aria-expanded", "false")
+        outsideClick?.let { document.removeEventListener("click", it) }
+        outsideClick = null
+    }
+
+    fun open() {
+        wrapper.classList.add("is-open")
+        trigger.setAttribute("aria-expanded", "true")
+        val handler: (Event) -> Unit = handler@{ e: Event ->
+            val target = e.target as? org.w3c.dom.Node
+            if (target != null && wrapper.contains(target)) return@handler
+            close()
+        }
+        outsideClick = handler
+        document.addEventListener("click", handler)
+    }
+
+    trigger.addEventListener("click", { e: Event ->
+        // Stop bubbling so the outside-click listener open() registers below
+        // doesn't see this very click and close the popover immediately.
+        e.stopPropagation()
+        if (wrapper.classList.contains("is-open")) close() else open()
+    })
+
+    wrapper.appendChild(trigger)
+    wrapper.appendChild(popover)
+    return wrapper
 }

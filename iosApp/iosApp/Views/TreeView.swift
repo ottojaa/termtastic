@@ -132,7 +132,15 @@ struct TreeView: View {
                 )
             }
             .sheet(isPresented: $showAppearanceSheet) {
-                AppearanceSheet(viewModel: appearanceViewModel)
+                // Pass this (presenting) view's size class so the sheet can size
+                // itself per device — a page-sized presentation on iPad, bottom
+                // detents on iPhone. The sheet's own environment reports
+                // `.compact` inside the iPad form-sheet container and so cannot
+                // detect the device on its own (issue #99).
+                AppearanceSheet(
+                    viewModel: appearanceViewModel,
+                    presentingSizeClass: hSize
+                )
             }
     }
 

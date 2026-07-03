@@ -2212,18 +2212,83 @@ body.appearance-light .git-graphical-connector {
     user-select: none;
 }
 
+/* Label header: the label text and (optionally) a trailing "?" help trigger
+   share one baseline-aligned row so the icon reads as attached to the label. */
+.termtastic-app-settings-toggle-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 .termtastic-app-settings-toggle-label {
     font-size: 13px;
     line-height: 1.35;
     color: inherit;
 }
 
-/* Muted help text under a toggle label, explaining what the setting does. */
-.termtastic-app-settings-toggle-desc {
-    font-size: 11.5px;
-    line-height: 1.4;
+/* ─── Per-setting "?" help affordance ────────────────────────────────
+   A small circular icon button next to a toggle label; clicking it reveals
+   the setting's explanation in a popover (built by buildHelpPopover()). The
+   explanation is no longer shown inline. */
+.termtastic-app-settings-help {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.termtastic-app-settings-help-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
     color: inherit;
-    opacity: 0.65;
+    opacity: 0.55;
+    cursor: pointer;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.termtastic-app-settings-help-trigger:hover,
+.termtastic-app-settings-help.is-open .termtastic-app-settings-help-trigger {
+    opacity: 1;
+    background: rgba(127, 127, 127, 0.18);
+}
+
+/* Popover with the explanation text. Hidden until the wrapper is toggled
+   open; anchored below the trigger and grown leftwards so it stays within
+   the narrow sidebar. */
+.termtastic-app-settings-help-popover {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 100000;
+    width: 230px;
+    max-width: 72vw;
+    padding: 9px 11px;
+    border-radius: 8px;
+    background: var(--t-surface, #2a2a2e);
+    color: var(--t-text, var(--text-primary));
+    border: 1px solid rgba(127, 127, 127, 0.28);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    font-size: 11.5px;
+    line-height: 1.45;
+    text-align: left;
+    white-space: normal;
+}
+
+.termtastic-app-settings-help.is-open .termtastic-app-settings-help-popover {
+    display: block;
+}
+
+body.appearance-light .termtastic-app-settings-help-popover {
+    background: #ffffff;
+    border-color: rgba(0, 0, 0, 0.14);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
 /* Light-mode tweaks. */

@@ -77,6 +77,8 @@ class AppBackingViewModel(
      * @property lightThemeName     theme bound to the light slot.
      * @property darkThemeName      theme bound to the dark slot.
      * @property customThemes       the user's custom (cloned/edited) themes.
+     * @property favoriteThemeNames names of the user's starred / favorite themes
+     *   (the theme picker hoists these to the top of its single list).
      */
     data class State(
         val config: WindowConfig? = null,
@@ -108,6 +110,7 @@ class AppBackingViewModel(
         val lightThemeName: String = DEFAULT_LIGHT_THEME,
         val darkThemeName: String = DEFAULT_DARK_THEME,
         val customThemes: List<Theme> = emptyList(),
+        val favoriteThemeNames: Set<String> = emptySet(),
     ) {
         /** Builds the persisted v2 snapshot from this state. */
         fun toThemeSnapshot(): ThemeSnapshotV2 = ThemeSnapshotV2(
@@ -115,6 +118,7 @@ class AppBackingViewModel(
             lightThemeName = lightThemeName,
             customThemes = customThemes,
             appearance = appearance,
+            favorites = favoriteThemeNames.toList(),
         )
     }
 
@@ -390,7 +394,8 @@ class AppBackingViewModel(
 
     /**
      * Delete a custom theme by name, falling the light/dark slots back to the
-     * built-in defaults when they pointed at the removed theme.
+     * built-in defaults when they pointed at the removed theme, and dropping it
+     * from the favorites set.
      */
     suspend fun deleteCustomTheme(name: String) {
         val cur = _stateFlow.value
@@ -401,14 +406,35 @@ class AppBackingViewModel(
             customThemes = nextThemes,
             lightThemeName = nextLight,
             darkThemeName = nextDark,
+            favoriteThemeNames = cur.favoriteThemeNames - name,
         ))
         persistThemeSnapshot()
     }
 
     /**
+     * Toggle whether [name] is starred / favorited and persist the change.
+     * Called from the web Theme Manager's per-card star button (via
+     * `TermtasticThemeManagerHost.toggleFavorite`). The starred set is persisted
+     * under [PersistKeys.THEME_V2_FAVORITES] and synced to every connected client.
+     *
+     * @param name the theme to star or unstar.
+     */
+    suspend fun toggleThemeFavorite(name: String) {
+        val cur = _stateFlow.value
+        val next = if (name in cur.favoriteThemeNames) {
+            cur.favoriteThemeNames - name
+        } else {
+            cur.favoriteThemeNames + name
+        }
+        emit(cur.copy(favoriteThemeNames = next))
+        persistThemeSnapshot()
+    }
+
+    /**
      * Persist the v2 theme snapshot: the custom themes under
-     * [PersistKeys.THEME_V2_CUSTOM] (shared across Darkness apps) and the
-     * dual-slot selection + appearance under [PersistKeys.THEME_V2_SELECTION]
+     * [PersistKeys.THEME_V2_CUSTOM] (shared across Darkness apps), the dual-slot
+     * selection + appearance under [PersistKeys.THEME_V2_SELECTION] (per-app),
+     * and the starred-theme names under [PersistKeys.THEME_V2_FAVORITES]
      * (per-app), in a single batch.
      */
     private suspend fun persistThemeSnapshot() {
@@ -416,6 +442,7 @@ class AppBackingViewModel(
         settings.persistSettings(mapOf(
             PersistKeys.THEME_V2_CUSTOM to snap.customThemesJson(),
             PersistKeys.THEME_V2_SELECTION to snap.selectionJson(),
+            PersistKeys.THEME_V2_FAVORITES to snap.favoritesJson(),
         ))
     }
 

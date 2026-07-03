@@ -849,12 +849,14 @@ fun bootViaToolkitShell(root: HTMLElement) {
             paneSidebarBadge = { _, paneId ->
                 buildStatusDot(sessionIdForPane(paneId))
             },
-            // Per-tab aggregated status DOT in the LEFT-PANE tab header, placed
-            // after the tab label (issue #43). Carries `data-tab-state=<tabId>`
-            // just like the tab-strip dot below, so `updateStateIndicators`
-            // repaints both from one query; CSS hides it while the tab is idle,
-            // so it appears only when some pane in the tab is working/waiting.
-            tabSidebarHeaderBadge = { tabId -> buildTabStatusDot(tabId) },
+            // No per-tab aggregated status dot in the LEFT-PANE tab header
+            // (issue #108): the status is already surfaced on each session
+            // row in this sidebar (`paneSidebarBadge`), on the tab in the
+            // strip (`tabTrailingBadge`), and in the pane title bar
+            // (`paneHeaderBadge`), so an extra dot on the enclosing tab row
+            // was redundant. Leaving `tabSidebarHeaderBadge` unset falls back
+            // to the toolkit default (no badge). The tab-strip dot below is
+            // deliberately kept.
             // Sticky pane-slot index — `①..⑨`, `Ⓐ..Ⓩ` rendered as a
             // trailing badge on both pane header and sidebar row. The
             // assigner is kept in sync with the server-pushed pane set

@@ -78,7 +78,8 @@ data class TermtasticThemeConfig(
         fun fromUiSettingsJson(obj: JsonObject): TermtasticThemeConfig {
             val selection = coerce(obj[PersistKeys.THEME_V2_SELECTION])
             val custom = coerce(obj[PersistKeys.THEME_V2_CUSTOM])
-            return TermtasticThemeConfig(ThemeSnapshotV2.fromParts(selection, custom))
+            val favorites = coerce(obj[PersistKeys.THEME_V2_FAVORITES])
+            return TermtasticThemeConfig(ThemeSnapshotV2.fromParts(selection, custom, favorites))
         }
 
         /** Coerce a value that may be a JSON-encoded string into a [JsonElement]. */

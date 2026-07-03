@@ -57,10 +57,11 @@ final class ThemeStore {
 final class AppearanceViewModel {
     /// The user's current Auto / Light / Dark preference.
     private(set) var appearance: Client.Appearance = .auto_
-    /// Pickable themes designed for the dark slot.
-    private(set) var darkThemes: [Client.Theme] = []
-    /// Pickable themes designed for the light slot.
-    private(set) var lightThemes: [Client.Theme] = []
+    /// The full pickable catalog as a single list, ordered starred dark →
+    /// starred light → unstarred dark → unstarred light (issue #107).
+    private(set) var orderedThemes: [Client.Theme] = []
+    /// Names of the user's starred / favorite themes.
+    private(set) var favorites: Set<String> = []
     /// The dark slot's current theme name (for the assigned-card highlight).
     private(set) var darkThemeName: String = ""
     /// The light slot's current theme name (for the assigned-card highlight).
@@ -94,11 +95,11 @@ final class AppearanceViewModel {
         flowObserver = Client.FlowObserver()
         flowObserver.observe(flow: backing.snapshot) { [weak self] value in
             guard let self, let snap = value as? Client.ThemeSnapshotV2 else { return }
-            let grouped = backing.themesGrouped()
+            let ordered = backing.themesOrdered()
             DispatchQueue.main.async {
                 self.appearance = snap.appearance
-                self.darkThemes = grouped.dark
-                self.lightThemes = grouped.light
+                self.orderedThemes = ordered
+                self.favorites = Set(snap.favorites)
                 self.darkThemeName = snap.darkThemeName
                 self.lightThemeName = snap.lightThemeName
                 // Re-point Palette at the live selection and force a repaint.
@@ -146,6 +147,25 @@ final class AppearanceViewModel {
     func setActiveTheme(name: String, systemIsDark: Bool) {
         guard let backing else { return }
         Task { try? await backing.setActiveTheme(name: name, systemIsDark: systemIsDark) }
+    }
+
+    /// Whether `name` is currently starred (drives the context-menu label and the
+    /// card's star badge).
+    ///
+    /// - Parameter name: the theme name to test.
+    /// - Returns: `true` if the theme is favorited.
+    func isFavorite(name: String) -> Bool {
+        favorites.contains(name)
+    }
+
+    /// Toggle whether `name` is starred / favorited; applies + persists and syncs
+    /// to every connected client (issue #107). Invoked from the theme card's
+    /// long-press context menu.
+    ///
+    /// - Parameter name: the theme to star or unstar.
+    func toggleFavorite(name: String) {
+        guard let backing else { return }
+        Task { try? await backing.toggleFavorite(name: name) }
     }
 
     deinit {

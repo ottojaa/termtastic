@@ -96,6 +96,7 @@ internal class SettingsViewModel(
     ): AppBackingViewModel.State {
         val selection = coerceObject(settings[PersistKeys.THEME_V2_SELECTION])
         val customEl = coerce(settings[PersistKeys.THEME_V2_CUSTOM])
+        val favoritesEl = coerce(settings[PersistKeys.THEME_V2_FAVORITES])
 
         val appearance = selection?.get("appearance")?.let { (it as? JsonPrimitive)?.contentOrNull }
             ?.let { runCatching { Appearance.valueOf(it) }.getOrNull() } ?: cur.appearance
@@ -106,6 +107,15 @@ internal class SettingsViewModel(
 
         val parsedCustom = customEl?.let { ThemeSnapshotV2.parseCustomThemes(it) }
         val customThemes = if (!parsedCustom.isNullOrEmpty()) parsedCustom else cur.customThemes
+
+        // Favorites: an absent key preserves the current set (an empty push never
+        // clears it), but a present empty array *does* clear it — the user having
+        // unstarred their last favorite is a legitimate state to sync.
+        val favoriteThemeNames = if (favoritesEl != null) {
+            ThemeSnapshotV2.parseFavorites(favoritesEl).toSet()
+        } else {
+            cur.favoriteThemeNames
+        }
 
         // Flat top-level keys (not part of any theme blob).
         fun str(key: String): String? =
@@ -133,6 +143,7 @@ internal class SettingsViewModel(
             lightThemeName = lightName,
             darkThemeName = darkName,
             customThemes = customThemes,
+            favoriteThemeNames = favoriteThemeNames,
         )
     }
 

@@ -4,10 +4,12 @@ import Client
 /// Appearance + theme picker sheet for the iOS sessions view.
 ///
 /// Brings the Mac/Electron app's appearance toggle + theme manager to mobile in
-/// a deliberately simple, read-only form: pick the appearance (Auto / Light /
-/// Dark) and tap a theme thumbnail to assign it to the currently-active slot.
-/// There is no semantic-colour editing and no clone/delete — browse and pick
-/// only.
+/// a deliberately simple form: pick the appearance (Auto / Light / Dark) and tap
+/// a theme thumbnail to assign it to the currently-active slot. Long-pressing a
+/// theme opens a context menu to star / unstar it (issue #107); the catalog is a
+/// single list with no "Dark"/"Light" headings, ordered starred dark → starred
+/// light → unstarred dark → unstarred light. There is no semantic-colour editing
+/// and no clone/delete.
 ///
 /// Every choice routes through `AppearanceViewModel` → the shared
 /// `ThemeBackingViewModel`, which writes the same canonical server selection the
@@ -18,13 +20,34 @@ import Client
 /// `LayoutSheet` (a sheet of native thumbnails). `ThemeThumbnail` ports the
 /// token → region mapping of the web `buildThemeThumb` silhouette.
 ///
+/// **Presentation (issue #99).** On iPhone the sheet keeps its phone-native
+/// bottom detents (`.medium` / `.large`). On a full-screen iPad the default
+/// `.sheet` would host the browser in a narrow, centred form-sheet card that
+/// leaves most of a landscape canvas empty ("the theme browser is tiny"), so on
+/// a regular-width presenter it is promoted to a large, page-sized presentation
+/// that uses the available space — see ``AppearanceSheetSizing``. The device is
+/// distinguished by the *presenting* view's `horizontalSizeClass`, passed in as
+/// ``presentingSizeClass``, because the sheet's own environment always reports
+/// `.compact` inside the iPad form-sheet container and so cannot tell the two
+/// apart on its own.
+///
 /// - SeeAlso: `AppearanceViewModel`
 /// - SeeAlso: `LayoutSheet`
+/// - SeeAlso: `AppearanceSheetSizing`
 struct AppearanceSheet: View {
     @Bindable var viewModel: AppearanceViewModel
 
+    /// The **presenting** view's horizontal size class (`TreeView`'s), captured
+    /// at the call site and passed in explicitly rather than read from this
+    /// sheet's own `@Environment`. On iPad a modal sheet is hosted in a narrow
+    /// (~540 pt) form-sheet container that always reports `.compact`, so an
+    /// in-sheet size-class read can never tell an iPad apart from an iPhone;
+    /// driving the presentation sizing off the presenter's class lets a
+    /// full-screen iPad (`.regular`) get a roomy page-sized sheet while iPhone
+    /// keeps its bottom detents (issue #99).
+    let presentingSizeClass: UserInterfaceSizeClass?
+
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var hSize
 
     /// The system dark-mode flag; decides which slot is active while the
     /// appearance is Auto, and which colour scheme the nav bar needs.
@@ -33,6 +56,13 @@ struct AppearanceSheet: View {
     private let columns = [GridItem(.flexible(), spacing: 12),
                            GridItem(.flexible(), spacing: 12)]
 
+    /// Guards the one-time "scroll to the active theme when the sheet opens"
+    /// behaviour (issue #105). The theme catalog is populated asynchronously by
+    /// `viewModel.start()`, so the scroll is triggered once — either at
+    /// `onAppear` (if the list is already loaded) or when `orderedThemes` first
+    /// arrives — and never again, so it does not fight the user scrolling away.
+    @State private var didScrollToActive = false
+
     /// The appearance options shown in the segmented control, in display order.
     private let appearanceOptions: [(label: String, value: Client.Appearance)] = [
         ("Auto", .auto_), ("Light", .light), ("Dark", .dark),
@@ -40,6 +70,7 @@ struct AppearanceSheet: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -51,10 +82,18 @@ struct AppearanceSheet: View {
                             .foregroundStyle(Palette.textBright)
                         appearancePicker
                     }
-                    themeSection(title: "Dark themes", themes: viewModel.darkThemes)
-                    themeSection(title: "Light themes", themes: viewModel.lightThemes)
+                    themeGrid
                 }
                 .padding(16)
+            }
+            // Centre the active theme in view the first time the sheet's catalog
+            // is available, so opening the picker reveals the current theme
+            // rather than starting at the top (issue #105). `orderedThemes` loads
+            // asynchronously, so trigger from whichever fires with data first.
+            .onChange(of: viewModel.orderedThemes.count) { _, _ in
+                scrollToActiveIfNeeded(proxy)
+            }
+            .onAppear { scrollToActiveIfNeeded(proxy) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Palette.background)
@@ -77,12 +116,10 @@ struct AppearanceSheet: View {
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
-        .presentationDetents(hSize.pick([.medium, .large], [.large]))
-        // Scroll the theme grid in place instead of letting a scroll gesture
-        // expand the sheet to `.large` — so the sheet stays at the medium detent
-        // and the live theme preview behind it remains visible while browsing.
-        // The grabber still resizes the sheet manually.
-        .presentationContentInteraction(.scrolls)
+        // Size the presentation per device: bottom detents on iPhone, a large
+        // page-sized sheet on iPad so the browser fills a landscape canvas
+        // instead of a tiny centred card (issue #99).
+        .modifier(AppearanceSheetSizing(isRegularWidth: presentingSizeClass == .regular))
     }
 
     /// The Auto / Light / Dark segmented control.
@@ -118,47 +155,110 @@ struct AppearanceSheet: View {
             : viewModel.lightThemeName
     }
 
-    /// A titled grid of theme cards. The dark/light sections are just a catalog
-    /// grouping: tapping any card assigns that theme to the currently-active
-    /// slot (issue #97), like the Mac/Electron theme manager. Skipped when
-    /// `themes` is empty.
-    @ViewBuilder
-    private func themeSection(
-        title: String,
-        themes: [Client.Theme]
-    ) -> some View {
-        if !themes.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                // Same header treatment as the sheet's "Dark mode" title.
-                Text(title)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Palette.textBright)
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(themes, id: \.name) { theme in
-                        ThemeCardView(
-                            theme: theme,
-                            selected: theme.name == activeThemeName,
-                            onTap: {
-                                viewModel.setActiveTheme(
-                                    name: theme.name,
-                                    systemIsDark: colorScheme == .dark
-                                )
-                            }
+    /// The single, unheaded grid of theme cards (issue #107). Tapping a card
+    /// assigns that theme to the currently-active slot (issue #97); long-pressing
+    /// opens the star / unstar context menu. The list order (starred first) is
+    /// computed by the backing VM.
+    private var themeGrid: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(viewModel.orderedThemes, id: \.name) { theme in
+                ThemeCardView(
+                    theme: theme,
+                    selected: theme.name == activeThemeName,
+                    favorite: viewModel.isFavorite(name: theme.name),
+                    onTap: {
+                        viewModel.setActiveTheme(
+                            name: theme.name,
+                            systemIsDark: colorScheme == .dark
                         )
+                    },
+                    onToggleFavorite: {
+                        viewModel.toggleFavorite(name: theme.name)
                     }
-                }
+                )
+                // Stable scroll anchor so ScrollViewReader can centre the active
+                // theme on open (issue #105); `\.name` is the ForEach identity.
+                .id(theme.name)
             }
+        }
+    }
+
+    /// Scrolls the active theme's card to the vertical centre of the grid, once
+    /// per sheet presentation (issue #105).
+    ///
+    /// Called from `onAppear` and from `onChange(of: orderedThemes.count)` — the
+    /// catalog loads asynchronously via `viewModel.start()`, so whichever fires
+    /// first with a non-empty list performs the scroll; `didScrollToActive` then
+    /// suppresses every later call so the user's own scrolling is left alone.
+    ///
+    /// - Parameter proxy: the enclosing `ScrollViewReader`'s scroll proxy.
+    private func scrollToActiveIfNeeded(_ proxy: ScrollViewProxy) {
+        guard !didScrollToActive, !viewModel.orderedThemes.isEmpty else { return }
+        didScrollToActive = true
+        let target = activeThemeName
+        guard viewModel.orderedThemes.contains(where: { $0.name == target }) else { return }
+        proxy.scrollTo(target, anchor: .center)
+    }
+}
+
+/// Chooses how ``AppearanceSheet`` fills the screen, per device (issue #99).
+///
+/// Applied to the sheet's root. On an iPhone-width presenter it keeps the
+/// phone-native bottom detents (`.medium` / `.large`) plus in-place grid
+/// scrolling, so a half sheet still reveals the live theme repaint behind it. On
+/// a roomy iPad canvas the default `.sheet` hosts the browser in a narrow,
+/// centred form-sheet card — the "tiny in landscape" complaint — so this promotes
+/// it to a large, page-sized presentation that uses the available space:
+/// `.presentationSizing(.page)` on iOS 18+, with a generous minimum content frame
+/// (which grows the form sheet toward the screen bounds) as the iOS 17 fallback.
+///
+/// Called by ``AppearanceSheet`` with the *presenting* view's size class, since
+/// the sheet's own environment reports `.compact` inside the iPad form-sheet
+/// container and so cannot be trusted to detect the device.
+///
+/// - SeeAlso: `AppearanceSheet`
+private struct AppearanceSheetSizing: ViewModifier {
+    /// True when the presenting view is regular-width (a full-screen iPad), and
+    /// the sheet should therefore adopt the large, page-sized presentation.
+    let isRegularWidth: Bool
+
+    /// Applies the device-appropriate presentation-sizing modifiers.
+    ///
+    /// - Parameter content: the ``AppearanceSheet`` root being sized.
+    /// - Returns: the content with iPad page sizing or iPhone detents applied.
+    func body(content: Content) -> some View {
+        if isRegularWidth {
+            if #available(iOS 18.0, *) {
+                content.presentationSizing(.page)
+            } else {
+                // iOS 17 fallback: an explicit large content frame expands the
+                // iPad form sheet toward the screen bounds.
+                content.frame(minWidth: 704, minHeight: 900)
+            }
+        } else {
+            content
+                .presentationDetents([.medium, .large])
+                // Scroll the theme grid in place instead of letting a scroll
+                // gesture expand the sheet to `.large` — so it stays at the
+                // medium detent and the live theme preview behind it remains
+                // visible while browsing. The grabber still resizes it manually.
+                .presentationContentInteraction(.scrolls)
         }
     }
 }
 
 /// One theme card: the theme name above its ``ThemeThumbnail``. When `selected`
-/// the thumbnail is encircled with an accent ring (the assigned-theme highlight).
+/// the thumbnail is encircled with an accent ring (the assigned-theme highlight);
+/// when `favorite` a filled star badge sits in the thumbnail's top-right corner.
+///
+/// Tapping assigns the theme; long-pressing opens a context menu to star / unstar
+/// it (issue #107).
 private struct ThemeCardView: View {
     let theme: Client.Theme
     let selected: Bool
+    let favorite: Bool
     let onTap: () -> Void
+    let onToggleFavorite: () -> Void
 
     var body: some View {
         Button(action: onTap) {
@@ -174,9 +274,30 @@ private struct ThemeCardView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(selected ? Palette.headerAccent : Color.clear, lineWidth: 1.5)
                     )
+                    // Filled star badge, top-right, so favorites are recognisable
+                    // at a glance (they're also hoisted to the top of the list).
+                    .overlay(alignment: .topTrailing) {
+                        if favorite {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Palette.headerAccent)
+                                .padding(3)
+                        }
+                    }
             }
         }
         .buttonStyle(.plain)
+        // Long-press context menu to star / unstar (issue #107).
+        .contextMenu {
+            Button {
+                onToggleFavorite()
+            } label: {
+                Label(
+                    favorite ? "Unstar theme" : "Star theme",
+                    systemImage: favorite ? "star.slash" : "star"
+                )
+            }
+        }
     }
 }
 

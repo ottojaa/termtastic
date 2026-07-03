@@ -431,6 +431,7 @@ private fun start() {
         var prevLight = appVm.stateFlow.value.lightThemeName
         var prevDark = appVm.stateFlow.value.darkThemeName
         var prevCustomThemes = appVm.stateFlow.value.customThemes
+        var prevFavorites = appVm.stateFlow.value.favoriteThemeNames
         appVm.stateFlow.collect { state ->
             val slotChanged = state.lightThemeName != prevLight || state.darkThemeName != prevDark
             // Structural equality (`!=`), not identity (`!==`). Server
@@ -439,11 +440,16 @@ private fun start() {
             // would flip on every round-trip even when the data is identical.
             val customChanged = state.customThemes != prevCustomThemes
             val appearanceChanged = state.appearance != prevAppearance
-            if (slotChanged || appearanceChanged || customChanged) {
+            // Favorites don't affect the *active* resolved theme, but they do
+            // change the Theme Manager's list ordering and star icons — so a
+            // toggle (local or synced) must repaint the open manager (issue #107).
+            val favoritesChanged = state.favoriteThemeNames != prevFavorites
+            if (slotChanged || appearanceChanged || customChanged || favoritesChanged) {
                 prevLight = state.lightThemeName
                 prevDark = state.darkThemeName
                 prevCustomThemes = state.customThemes
                 prevAppearance = state.appearance
+                prevFavorites = state.favoriteThemeNames
                 refreshAndApplyActiveTheme()
             }
         }

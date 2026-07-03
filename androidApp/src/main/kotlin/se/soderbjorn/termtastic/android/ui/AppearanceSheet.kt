@@ -2,10 +2,12 @@
  * Appearance + theme picker bottom sheet for the Termtastic Android sessions view.
  *
  * Brings the Mac/Electron app's appearance toggle + theme manager to mobile in a
- * deliberately simple, read-only form: the user picks the appearance
- * ([Appearance] Auto / Light / Dark) and taps a theme thumbnail to assign it to
- * the currently-active slot. There is no semantic-colour editing and no
- * clone/delete — the catalog is browse-and-pick only.
+ * deliberately simple form: the user picks the appearance ([Appearance] Auto /
+ * Light / Dark) and taps a theme thumbnail to assign it to the currently-active
+ * slot. Long-pressing a theme opens a context menu to star / unstar it (issue
+ * #107); the catalog is a single list with no "Dark"/"Light" headings, ordered
+ * starred dark → starred light → unstarred dark → unstarred light. There is no
+ * semantic-colour editing and no clone/delete.
  *
  * Every choice is routed through [ThemeBackingViewModel], which writes the same
  * canonical server selection the desktop writes ([se.soderbjorn.darkness.core.PersistKeys.THEME_V2_SELECTION]),
@@ -22,10 +24,12 @@
 package se.soderbjorn.termtastic.android.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,14 +43,21 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,9 +75,16 @@ import kotlinx.coroutines.launch
 import se.soderbjorn.darkness.core.Appearance
 import se.soderbjorn.darkness.core.ResolvedTheme
 import se.soderbjorn.darkness.core.Theme
-import se.soderbjorn.darkness.core.ThemeGroup
-import se.soderbjorn.darkness.core.allThemes
+import se.soderbjorn.darkness.core.orderThemesForPicker
 import se.soderbjorn.termtastic.client.viewmodel.ThemeBackingViewModel
+
+/**
+ * Number of full-span grid rows that precede the theme cards (the "Dark mode"
+ * header and the appearance Auto/Light/Dark toggle). Added to a theme's index in
+ * `orderedThemes` to get its flattened `LazyVerticalGrid` item index, used when
+ * scrolling the active theme into view on open (issue #105).
+ */
+private const val LEADING_GRID_ITEMS = 2
 
 /**
  * The appearance + theme picker bottom sheet.
@@ -85,9 +103,11 @@ fun AppearanceSheet(
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val all = allThemes(snapshot.customThemes)
-    val darkThemes = all.filter { it.group == ThemeGroup.Dark }
-    val lightThemes = all.filter { it.group == ThemeGroup.Light }
+    // Single ordered list (issue #107): starred dark → starred light → unstarred
+    // dark → unstarred light. `orderThemesForPicker` and the favorites set both
+    // read the live snapshot, so re-ordering happens automatically after a star.
+    val favorites = snapshot.favorites.toSet()
+    val orderedThemes = orderThemesForPicker(allThemes(snapshot.customThemes), favorites)
 
     // Which slot a tap fills — whichever is *currently painted* (the appearance
     // preference, or the OS dark flag when Auto), exactly like clicking a card
@@ -101,12 +121,31 @@ fun AppearanceSheet(
     }
     val activeThemeName = if (activeIsDark) snapshot.darkThemeName else snapshot.lightThemeName
 
+    // Scroll the active theme into view the first time the sheet opens (issue
+    // #105), so the currently-painted theme is visible instead of the grid
+    // always starting at the top. The catalog may populate a frame after the
+    // sheet appears, so the effect is keyed on the list size (0 → N) and a
+    // one-shot [didScrollToActive] guard stops it from ever yanking the grid
+    // back once the user has scrolled away. The two leading full-span rows (the
+    // "Dark mode" header + the appearance toggle) offset every theme's grid
+    // index by [LEADING_GRID_ITEMS].
+    val gridState = rememberLazyGridState()
+    var didScrollToActive by remember { mutableStateOf(false) }
+    LaunchedEffect(orderedThemes.size, activeThemeName) {
+        if (didScrollToActive || orderedThemes.isEmpty()) return@LaunchedEffect
+        val index = orderedThemes.indexOfFirst { it.name == activeThemeName }
+        if (index < 0) return@LaunchedEffect
+        didScrollToActive = true
+        gridState.scrollToItem(LEADING_GRID_ITEMS + index)
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = SidebarSurface,
     ) {
         LazyVerticalGrid(
+            state = gridState,
             columns = GridCells.Fixed(2),
             modifier = Modifier
                 .fillMaxWidth()
@@ -143,53 +182,19 @@ fun AppearanceSheet(
                     }
                 }
             }
-            // The dark/light sections are just a catalog grouping — tapping any
-            // card assigns that theme to the currently-active slot, so the pick
-            // always takes visible effect (issue #97).
-            themeSection("Dark themes", darkThemes, activeThemeName) { name ->
-                scope.launch { vm.setActiveTheme(name, systemIsDark) }
-            }
-            themeSection("Light themes", lightThemes, activeThemeName) { name ->
-                scope.launch { vm.setActiveTheme(name, systemIsDark) }
+            // One flat list, no section headings (issue #107). Tapping a card
+            // assigns that theme to the currently-active slot (issue #97);
+            // long-pressing opens the star / unstar context menu.
+            items(orderedThemes, key = { it.name }) { theme ->
+                ThemeCard(
+                    theme = theme,
+                    selected = theme.name == activeThemeName,
+                    favorite = theme.name in favorites,
+                    onClick = { scope.launch { vm.setActiveTheme(theme.name, systemIsDark) } },
+                    onToggleFavorite = { scope.launch { vm.toggleFavorite(theme.name) } },
+                )
             }
         }
-    }
-}
-
-/**
- * Appends a full-width section heading plus the section's theme cards to a
- * [LazyVerticalGrid]. Skipped entirely when [themes] is empty.
- *
- * @receiver the grid scope to populate.
- * @param label        the section heading ("Dark themes" / "Light themes").
- * @param themes       the themes in this section.
- * @param selectedName the *active* slot's currently-bound theme name; only its
- *   card is highlighted, in whichever section it sits (issue #97).
- * @param onPick       invoked with a theme name when its card is tapped.
- */
-private fun androidx.compose.foundation.lazy.grid.LazyGridScope.themeSection(
-    label: String,
-    themes: List<Theme>,
-    selectedName: String,
-    onPick: (String) -> Unit,
-) {
-    if (themes.isEmpty()) return
-    item(span = { GridItemSpan(maxLineSpan) }) {
-        // Same visual treatment as the top "Dark mode" header.
-        Text(
-            text = label,
-            color = SidebarTextBright,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
-        )
-    }
-    items(themes, key = { it.name }) { theme ->
-        ThemeCard(
-            theme = theme,
-            selected = theme.name == selectedName,
-            onClick = { onPick(theme.name) },
-        )
     }
 }
 
@@ -229,23 +234,36 @@ private fun AppearanceSegment(
 
 /**
  * One theme card: the theme name above its [ThemeThumbnail]. When [selected] the
- * thumbnail is encircled with an accent ring (the assigned-theme highlight).
+ * thumbnail is encircled with an accent ring (the assigned-theme highlight); when
+ * [favorite] a filled star badge sits in the thumbnail's top-right corner.
  *
- * @param theme    the theme to render.
- * @param selected whether this theme is bound to the active slot.
- * @param onClick  invoked when the card is tapped.
+ * Tapping the card assigns the theme; long-pressing opens a small context menu
+ * to star / unstar it (issue #107). The menu is anchored to the card.
+ *
+ * @param theme            the theme to render.
+ * @param selected         whether this theme is bound to the active slot.
+ * @param favorite         whether this theme is starred.
+ * @param onClick          invoked when the card is tapped.
+ * @param onToggleFavorite invoked when the context-menu star / unstar item is chosen.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ThemeCard(
     theme: Theme,
     selected: Boolean,
+    favorite: Boolean,
     onClick: () -> Unit,
+    onToggleFavorite: () -> Unit,
 ) {
     val shape = RoundedCornerShape(8.dp)
+    var menuOpen by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .clip(shape)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { menuOpen = true },
+            )
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -275,6 +293,30 @@ private fun ThemeCard(
                 resolved = theme.resolve(),
                 modifier = Modifier.fillMaxWidth().aspectRatio(1.5f),
             )
+            if (favorite) {
+                // Filled star badge, top-right, so favorites are recognisable at
+                // a glance (they're also hoisted to the top of the list).
+                Text(
+                    text = "★",
+                    color = SidebarAccent,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(3.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text(if (favorite) "Unstar theme" else "Star theme") },
+                    onClick = {
+                        menuOpen = false
+                        onToggleFavorite()
+                    },
+                )
+            }
         }
     }
 }

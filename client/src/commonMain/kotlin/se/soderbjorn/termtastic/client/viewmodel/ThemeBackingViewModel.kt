@@ -35,6 +35,7 @@ import se.soderbjorn.darkness.core.Theme
 import se.soderbjorn.darkness.core.ThemeGroup
 import se.soderbjorn.darkness.core.ThemeSnapshotV2
 import se.soderbjorn.darkness.core.allThemes
+import se.soderbjorn.darkness.core.orderThemesForPicker
 import se.soderbjorn.termtastic.client.TermtasticClient
 import se.soderbjorn.termtastic.client.fetchThemeConfig
 
@@ -100,7 +101,10 @@ class ThemeBackingViewModel(
 
     /**
      * The full pickable theme catalog (built-ins ∪ the user's custom themes),
-     * split into the dark and light sections the picker renders.
+     * split into the dark and light sections.
+     *
+     * Retained for compatibility; the mobile pickers now render a single list
+     * via [themesOrdered] (issue #107). Built-ins are always present.
      *
      * @return the grouped catalog; built-ins are always present, even when the
      *   user has no custom themes.
@@ -112,6 +116,29 @@ class ThemeBackingViewModel(
             light = all.filter { it.group == ThemeGroup.Light },
         )
     }
+
+    /**
+     * The full pickable catalog as a single list ordered for the post-#107
+     * picker: starred dark → starred light → unstarred dark → unstarred light
+     * (see [orderThemesForPicker]). This is what the Android / iOS sheets render
+     * now that the "Dark"/"Light" headings are gone.
+     *
+     * @return the ordered single list; built-ins are always present.
+     */
+    fun themesOrdered(): List<Theme> =
+        orderThemesForPicker(allThemes(_snapshot.value.customThemes), favorites)
+
+    /** Names of the user's starred / favorite themes. */
+    val favorites: Set<String> get() = _snapshot.value.favorites.toSet()
+
+    /**
+     * Whether [name] is currently starred. Convenience for the pickers' star
+     * affordance (filled vs hollow, "Star" vs "Unstar" menu label).
+     *
+     * @param name the theme name to test.
+     * @return `true` if the theme is favorited.
+     */
+    fun isFavorite(name: String): Boolean = name in _snapshot.value.favorites
 
     /**
      * Update the appearance preference and persist it. Emits the new snapshot
@@ -168,9 +195,25 @@ class ThemeBackingViewModel(
     }
 
     /**
+     * Toggle whether [name] is starred / favorited and persist the change. Emits
+     * the new snapshot immediately so the picker re-orders and repaints the star
+     * before the server round-trip. Invoked from the mobile long-press context
+     * menu (issue #107); the starred set syncs to every connected client.
+     *
+     * @param name the theme to star or unstar.
+     */
+    suspend fun toggleFavorite(name: String) {
+        val cur = _snapshot.value
+        val next = if (name in cur.favorites) cur.favorites - name else cur.favorites + name
+        _snapshot.value = cur.copy(favorites = next)
+        persist()
+    }
+
+    /**
      * Persist the canonical v2 snapshot: the per-app dual-slot selection +
-     * appearance under [PersistKeys.THEME_V2_SELECTION] and the shared custom
-     * themes under [PersistKeys.THEME_V2_CUSTOM], in one batch — identical to
+     * appearance under [PersistKeys.THEME_V2_SELECTION], the shared custom themes
+     * under [PersistKeys.THEME_V2_CUSTOM], and the per-app starred-theme names
+     * under [PersistKeys.THEME_V2_FAVORITES], in one batch — identical to
      * [AppBackingViewModel.persistThemeSnapshot].
      */
     private suspend fun persist() {
@@ -179,6 +222,7 @@ class ThemeBackingViewModel(
             mapOf(
                 PersistKeys.THEME_V2_SELECTION to snap.selectionJson(),
                 PersistKeys.THEME_V2_CUSTOM to snap.customThemesJson(),
+                PersistKeys.THEME_V2_FAVORITES to snap.favoritesJson(),
             ),
         )
     }

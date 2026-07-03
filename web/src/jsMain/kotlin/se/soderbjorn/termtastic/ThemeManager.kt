@@ -60,6 +60,8 @@ private object TermtasticThemeManagerHost : ThemeManagerHost {
         get() = appVm.stateFlow.value.darkThemeName
     override val customThemes: List<Theme>
         get() = appVm.stateFlow.value.customThemes
+    override val favoriteThemeNames: Set<String>
+        get() = appVm.stateFlow.value.favoriteThemeNames
 
     // [AppBackingViewModel]'s setters are suspend functions because they
     // can roundtrip to the server. We bridge into the toolkit's
@@ -82,6 +84,7 @@ private object TermtasticThemeManagerHost : ThemeManagerHost {
     }
     override fun saveCustomTheme(theme: Theme) { launch { appVm.saveCustomTheme(theme) } }
     override fun deleteCustomTheme(name: String) { launch { appVm.deleteCustomTheme(name) } }
+    override fun toggleFavorite(name: String) { launch { appVm.toggleThemeFavorite(name) } }
 
     // ── Per-app settings (font / size / titlebar / notifications) ─
     // Termtastic's terminal panes use the monospaced category; the
