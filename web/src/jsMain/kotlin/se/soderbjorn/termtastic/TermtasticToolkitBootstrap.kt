@@ -81,6 +81,16 @@ private const val PA_ICON_COPY =
  */
 internal const val REFORMAT_HOTKEY_ACTION_ID: String = "termtastic.terminal.reformat"
 
+/**
+ * Stable, namespaced id for the user-configurable "3D tab overview" toggle
+ * hotkey. Persistence key for custom chords (see [HotkeyBindings]) — renaming
+ * it would orphan saved rebindings — and the id referenced by the
+ * Keyboard-shortcuts sidebar row ([HotkeysSidebarContent]'s Tabs group).
+ *
+ * @see registerOverview3dHotkey
+ */
+internal const val OVERVIEW3D_HOTKEY_ACTION_ID: String = "termtastic.overview3d.toggle"
+
 /** Reformat (terminal action). */
 private const val PA_ICON_REFORMAT =
     """<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="1.5"/><polyline points="7 10 4 12 7 14"/><polyline points="17 10 20 12 17 14"/></svg>"""
@@ -339,10 +349,12 @@ private fun reformatActiveTerminal() {
  * capture-phase `window` listener, so the chord fires even while a terminal
  * has key focus and is not forwarded to the PTY.
  *
- * The default chord uses `key = "r"`: on macOS the browser reports the base
- * letter (not the Option glyph "®") for `KeyboardEvent.key` whenever Control
- * is also held, so ⌃⌥R matches. Idempotent — safe to call once at boot from
- * [bootViaToolkitShell].
+ * The default chord uses `key = "r"`. Depending on macOS version/layout,
+ * ⌥-composition can make `KeyboardEvent.key` report the Option glyph ("®")
+ * instead of the base letter even with Control held; the toolkit's
+ * `Hotkey.matches` handles this by falling back to the physical
+ * `KeyboardEvent.code` (`"KeyR"`) when Alt is held, so ⌃⌥R matches on all
+ * layouts. Idempotent — safe to call once at boot from [bootViaToolkitShell].
  *
  * @see reformatActiveTerminal
  */
@@ -354,6 +366,30 @@ private fun registerReformatHotkey() {
             defaults = listOf(Hotkey(key = "r", ctrl = true, alt = true)),
         ),
     ) { reformatActiveTerminal() }
+}
+
+/**
+ * Register the configurable **3D tab overview** toggle hotkey (default
+ * ⌃⌥O / Ctrl+Alt+O) with the toolkit's [HotkeyBindings].
+ *
+ * Same registration mechanics as [registerReformatHotkey]: going through
+ * [HotkeyBindings.registerAction] makes the chord user-changeable via the
+ * Keyboard-shortcuts sidebar, persists custom bindings through the
+ * server-managed `HOTKEY_BINDINGS` blob, and dispatches from a capture-phase
+ * `window` listener so the chord fires even while a terminal has key focus.
+ * Idempotent — called once at boot from [bootViaToolkitShell].
+ *
+ * @see toggleOverview3d
+ * @see OVERVIEW3D_HOTKEY_ACTION_ID
+ */
+private fun registerOverview3dHotkey() {
+    HotkeyBindings.registerAction(
+        HotkeyActionSpec(
+            id = OVERVIEW3D_HOTKEY_ACTION_ID,
+            label = "3D tab overview",
+            defaults = listOf(Hotkey(key = "o", ctrl = true, alt = true)),
+        ),
+    ) { toggleOverview3d() }
 }
 
 /* -------------------------------------------------------------------- */
@@ -975,6 +1011,14 @@ fun bootViaToolkitShell(root: HTMLElement) {
     // active terminal — the keyboard equivalent of the pane-header Reformat
     // button. See [registerReformatHotkey].
     registerReformatHotkey()
+
+    // Register Ctrl+Alt+O as a *configurable* hotkey that toggles the 3D
+    // tab overview (carousel ring of live tab thumbnails — Overview3D.kt),
+    // and pre-warm its WebGL renderer once startup has settled so the first
+    // open pays no context-creation / shader-compile cost. See
+    // [registerOverview3dHotkey] and [prewarmOverview3d].
+    registerOverview3dHotkey()
+    kotlinx.browser.window.setTimeout({ prewarmOverview3d() }, 1500)
 
     // Double-click a pane title to rename it (mirrors tab-label rename).
     // Document-level delegation, so it survives toolkit chrome rebuilds;

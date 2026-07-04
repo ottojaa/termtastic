@@ -3200,3 +3200,72 @@ body[data-tt-news-pulse="1"] .tt-news-topbar {
 }
 .agent-send:hover { background: var(--t-accent-soft, rgba(47, 212, 224, 0.15)); }
 .agent-send:disabled, .agent-input:disabled { opacity: 0.45; cursor: default; }
+
+/* ===== 3D tab overview (Overview3D.kt) ================================== */
+/* Full-screen task-switcher overlay hosting the three.js canvas. Sits above
+   panes/chrome but below termtastic's modal overlays (.pane-modal-overlay at
+   99998) and the quit dialog (100001), so a modal opened before the overview
+   still wins. The WebGL canvas is transparent (alpha: true) so this gradient
+   is the scene background — deliberately dark in both appearances: the
+   overview is "space", not chrome. */
+#overview3d-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99997;
+    background: radial-gradient(ellipse at 50% 42%,
+        rgba(22, 30, 44, 0.97) 0%,
+        rgba(8, 11, 17, 0.985) 62%,
+        rgba(3, 4, 7, 1) 100%);
+    outline: none;
+    opacity: 1;
+    transition: opacity 0.34s ease;
+}
+
+/* Dive-in activation: Overview3D.kt adds this class when a tab is chosen and
+   the camera starts flying into the card; duration matches DIVE_MS. */
+#overview3d-overlay.overview3d-closing {
+    opacity: 0;
+}
+
+#overview3d-overlay canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+/* Selected tab title, mirrored from the front card (see updateTitleReadout). */
+.overview3d-title {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 64px;
+    text-align: center;
+    font-family: Menlo, Monaco, 'Courier New', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--t-text, #e8eaed);
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+}
+
+.overview3d-hint {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 28px;
+    text-align: center;
+    font-family: Menlo, Monaco, 'Courier New', monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--t-text-dim, #9aa0aa);
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #overview3d-overlay {
+        transition: none;
+    }
+}

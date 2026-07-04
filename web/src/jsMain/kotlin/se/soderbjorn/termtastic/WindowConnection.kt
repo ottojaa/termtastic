@@ -52,6 +52,8 @@ fun handlePaneContentMessage(type: String?, parsed: dynamic): Boolean {
             state.dirListings[dirRelPath] = parsed.entries as Array<dynamic>
             val view = fileBrowserPaneViews[paneId]
             if (view != null) renderFileBrowserTree(paneId, view, state)
+            // Let the 3D overview (if open) repaint this pane's thumbnail.
+            onPaneContentUpdated?.invoke(paneId)
         }
         "fileBrowserContent" -> {
             val paneId = parsed.paneId as String
@@ -85,6 +87,8 @@ fun handlePaneContentMessage(type: String?, parsed: dynamic): Boolean {
             state.entries = parsed.entries
             val view = gitPaneViews[paneId]
             if (view != null) renderGitList(paneId, view, state)
+            // Let the 3D overview (if open) repaint this pane's thumbnail.
+            onPaneContentUpdated?.invoke(paneId)
         }
         "gitDiff" -> {
             val paneId = parsed.paneId as String

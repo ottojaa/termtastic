@@ -42,5 +42,15 @@ internal val fileBrowserPaneViews = HashMap<String, FileBrowserPaneView>()
 /** Git per-pane state (selection, diff mode, font size, …). */
 internal val gitPaneStates = HashMap<String, GitPaneState>()
 
+/**
+ * Optional listener notified with a `paneId` whenever that pane's
+ * file-browser directory listing or git file list is refreshed in
+ * [handlePaneContentMessage]. The 3D overview ([Overview3D]) installs this
+ * while open so it can paint / repaint non-terminal pane thumbnails as their
+ * data arrives (file-browser and git panes have no PTY transcript to mirror).
+ * `null` when the overview is closed, so there is no cost in the common case.
+ */
+internal var onPaneContentUpdated: ((String) -> Unit)? = null
+
 /** Git DOM handles per pane (file list, diff pane, search bar). */
 internal val gitPaneViews = HashMap<String, GitPaneView>()

@@ -192,6 +192,23 @@ private fun wrapLine(line: String, cols: Int): List<String> {
  *   [readLogicalLines].
  * @param fg foreground (text) CSS color.
  * @param bg background CSS color.
+ * @param scale supersampling multiplier applied to every glyph/layout metric
+ *   (font, line height, char width, padding). At `1.0` the output matches the
+ *   original small-canvas rendering (the link picker's use). The 3D overview
+ *   ([Overview3D]) sizes its canvases larger by the same factor and passes a
+ *   matching `scale` so the *content density* (columns/rows) is unchanged
+ *   while the pixel resolution — and hence text crispness on a large or
+ *   high-DPI display — goes up proportionally.
+ * @param topAnchored when `false` (default) the newest line sits at the bottom
+ *   and older lines fill upward, clipping off the top — the terminal-tail
+ *   behaviour the link picker and terminal tiles want. When `true` the first
+ *   line sits at the top and later lines fill downward, clipping off the
+ *   bottom — right for a file listing or git status, which read top-down. The
+ *   3D overview passes `true` for file-browser / git tiles.
+ * @param topInset extra space (px, already in device units) left clear at the
+ *   top when [topAnchored] — used by the overview to keep the first line from
+ *   being hidden behind the opaque title bar the caller paints afterward.
+ *   Ignored when not top-anchored (the tail already sits at the bottom).
  * @see LinkThumbnail
  */
 internal fun renderThumbnail(
@@ -199,6 +216,9 @@ internal fun renderThumbnail(
     logicalLines: List<String>,
     fg: String,
     bg: String,
+    scale: Double = 1.0,
+    topAnchored: Boolean = false,
+    topInset: Double = 0.0,
 ) {
     // Use a dynamic 2D context so the string-typed canvas state properties
     // (fillStyle, font, textBaseline) assign cleanly under Kotlin/JS.
@@ -207,12 +227,20 @@ internal fun renderThumbnail(
     val height = canvas.height
     if (width <= 0 || height <= 0) return
 
+    // All layout metrics scale together, so a larger canvas at a higher
+    // [scale] keeps the same column/row count but more pixels per glyph.
+    val fontPx = THUMBNAIL_FONT_PX * scale
+    val linePx = THUMBNAIL_LINE_PX * scale
+    val charPx = THUMBNAIL_CHAR_PX * scale
+    val padX = THUMBNAIL_PAD_X * scale
+    val padY = THUMBNAIL_PAD_Y * scale
+
     val d = ctx.asDynamic()
     d.fillStyle = bg
     d.fillRect(0.0, 0.0, width.toDouble(), height.toDouble())
 
-    val contentWidth = width - THUMBNAIL_PAD_X * 2
-    val cols = maxOf(1, (contentWidth / THUMBNAIL_CHAR_PX).toInt())
+    val contentWidth = width - padX * 2
+    val cols = maxOf(1, (contentWidth / charPx).toInt())
 
     // Flatten logical lines into visual rows (oldest-to-newest), re-wrapped to
     // the thumbnail's own column width.
@@ -222,25 +250,31 @@ internal fun renderThumbnail(
     }
     if (rows.isEmpty()) return
 
-    val availableHeight = height - THUMBNAIL_PAD_Y * 2
-    val maxVisible = maxOf(1, availableHeight / THUMBNAIL_LINE_PX)
-    // Keep only the trailing rows that fit (top clip, like a terminal tail).
+    // Reserve the caller's inset at the top only when top-anchored (so the
+    // first row clears an overlaid title bar); the bottom-anchored tail
+    // already sits clear of the top.
+    val inset = if (topAnchored) topInset else 0.0
+    val availableHeight = height - padY * 2 - inset
+    val maxVisible = maxOf(1, (availableHeight / linePx).toInt())
+    // Keep only the rows that fit: the leading rows (top clip off the bottom)
+    // when top-anchored, otherwise the trailing rows (like a terminal tail).
     val visible = if (rows.size > maxVisible) {
-        rows.subList(rows.size - maxVisible, rows.size)
+        if (topAnchored) rows.subList(0, maxVisible) else rows.subList(rows.size - maxVisible, rows.size)
     } else {
         rows
     }
 
-    d.font = "${THUMBNAIL_FONT_PX}px $THUMBNAIL_FONT_FAMILY"
+    d.font = "${fontPx}px $THUMBNAIL_FONT_FAMILY"
     d.fillStyle = fg
     d.textBaseline = "top"
 
-    // Bottom-anchor: newest visible row sits at the bottom, older rows above.
-    var y = (height - THUMBNAIL_PAD_Y - visible.size * THUMBNAIL_LINE_PX).toDouble()
-    if (y < THUMBNAIL_PAD_Y) y = THUMBNAIL_PAD_Y.toDouble()
+    // Top-anchor starts below the inset+padding; bottom-anchor puts the newest
+    // visible row at the bottom with older rows filling upward.
+    var y = if (topAnchored) padY + inset else height - padY - visible.size * linePx
+    if (y < padY) y = padY
     for (row in visible) {
-        d.fillText(row, THUMBNAIL_PAD_X.toDouble(), y)
-        y += THUMBNAIL_LINE_PX
+        d.fillText(row, padX, y)
+        y += linePx
     }
 }
 

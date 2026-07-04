@@ -138,6 +138,11 @@ private fun hotkeyGroups(): List<HotkeyGroupModel> = listOf(
                 desktop = tabSwitchHotkeyEntry().chord,
                 web = webTabSwitchHotkeyEntry().chord,
             ),
+            // App-specific (not a toolkit action): toggle the 3D tab
+            // overview (carousel ring of live tab thumbnails). Default
+            // ⌃⌥O; configurable + registered in `registerOverview3dHotkey`.
+            // See [OVERVIEW3D_HOTKEY_ACTION_ID].
+            actionRow("3D tab overview", OVERVIEW3D_HOTKEY_ACTION_ID),
         ),
     ),
     HotkeyGroupModel(
