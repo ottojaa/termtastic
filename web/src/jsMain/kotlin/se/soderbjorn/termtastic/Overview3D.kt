@@ -114,6 +114,14 @@ private const val TITLE_STRIP_PX = 26
 /** Logical height (px, ×[RES] physical) of a tile's pane-title bar. */
 private const val TILE_STRIP_PX = 18
 
+/**
+ * Minimum device-px glyph size for a full-fidelity terminal grid ([gridFontPx]).
+ * A tile whose exact grid would render smaller than this (a narrow pane holding
+ * a wide/tall terminal) is demoted to the re-wrapped, fixed-font thumbnail so
+ * its text stays legible. Read in [ThumbSource.repaint].
+ */
+private const val MIN_GRID_FONT_PX = 18.0
+
 /** Monospace font stack for thumbnail title bars / placeholders. */
 private const val THUMB_FONT = "Menlo, Monaco, 'Courier New', monospace"
 
@@ -258,13 +266,19 @@ private class ThumbView(
      *   `null` to paint the placeholder body.
      */
     fun paint(lines: List<String>?) {
+        val d = canvas.getContext("2d").asDynamic() ?: return
+        // Clip the whole body (not just the strip) to the rounded pane rect so
+        // the opaque background never squares off the corners outside the
+        // border curve; the border itself is stroked after the clip is popped
+        // so its outer glow can still bloom past the edge.
+        d.save()
+        clipToPaneRect(d)
         if (lines != null) {
             // Reserve the title-bar height so content never sits under it, and
             // pad the sides/bottom so text clears the border.
             val inset = if (stripPx > 0 && stripTitle != null) stripPx * res else 0.0
             renderThumbnail(canvas, lines, fg, bg, res, topAnchored, inset, contentPad)
         } else {
-            val d = canvas.getContext("2d").asDynamic() ?: return
             d.fillStyle = bg
             d.fillRect(0.0, 0.0, canvas.width.toDouble(), canvas.height.toDouble())
             if (placeholder != null) {
@@ -278,7 +292,8 @@ private class ThumbView(
                 d.textAlign = "left"
             }
         }
-        drawStrip()
+        drawStrip(d)
+        d.restore()
         drawPaneBorder()
         texture.needsUpdate = true
     }
@@ -292,39 +307,76 @@ private class ThumbView(
      * @param palette resolved colors ([buildTermPalette]).
      */
     fun paintGrid(term: Terminal, palette: TermPalette) {
+        val d = canvas.getContext("2d").asDynamic() ?: return
         val topInset = if (stripPx > 0 && stripTitle != null) stripPx * res else 0.0
+        d.save()
+        clipToPaneRect(d)
         renderTerminalGrid(canvas, term, palette, showCursor, topInset, contentPad)
-        drawStrip()
+        drawStrip(d)
+        d.restore()
         drawPaneBorder()
         texture.needsUpdate = true
+    }
+
+    /**
+     * The device-px font size [renderTerminalGrid] would use for this tile's
+     * live terminal, or `0.0` if it can't be sized. Lets [ThumbSource.repaint]
+     * skip full-fidelity for panes whose exact grid would render illegibly small
+     * (a narrow tile crammed with a wide terminal), falling back to the
+     * re-wrapped thumbnail instead. @see gridFontPx
+     */
+    fun gridFontPx(term: Terminal): Double {
+        val topInset = if (stripPx > 0 && stripTitle != null) stripPx * res else 0.0
+        return gridFontPx(canvas, term, topInset, contentPad)
+    }
+
+    /**
+     * Traces the rounded pane rect (the [drawPaneBorder] geometry) onto [d] and
+     * clips to it, when this tile carries a border. Shared by [paint] /
+     * [paintGrid] so the body fills and the border curve stay in lock-step.
+     *
+     * @param d the tile canvas 2D context (dynamic).
+     */
+    private fun clipToPaneRect(d: dynamic) {
+        if (!paneBorder) return
+        d.beginPath()
+        paneRectPath(d)
+        d.clip()
+    }
+
+    /**
+     * Appends the rounded pane-rect sub-path to [d] using the same inset and
+     * radius the border stroke uses, so [clipToPaneRect] and [drawPaneBorder]
+     * never disagree on where the corner curve sits.
+     *
+     * @param d the tile canvas 2D context (dynamic).
+     */
+    private fun paneRectPath(d: dynamic) {
+        val lw = (if (paneSelected) 3.0 else 2.0) * res
+        val inset = lw / 2.0 + res
+        val radius = 6.0 * res
+        d.roundRect(
+            inset, inset,
+            canvas.width.toDouble() - 2.0 * inset, canvas.height.toDouble() - 2.0 * inset,
+            radius,
+        )
     }
 
     /**
      * Draws the opaque themed title strip (background + accent underline +
      * title) across the top of the canvas, shared by [paint] and [paintGrid].
      * Active/selected panes get an accent-tinted header, matching how the real
-     * pane chrome distinguishes the focused pane. When the tile carries a
-     * rounded border ([paneBorder]) the strip fills are clipped to the same
-     * rounded-rect as [drawPaneBorder] so the header background follows the top
-     * corners instead of squaring off outside the curve.
+     * pane chrome distinguishes the focused pane. The caller has already clipped
+     * [d] to the rounded pane rect (see [clipToPaneRect]), so the header
+     * background follows the top corners instead of squaring off outside the
+     * curve.
+     *
+     * @param d the tile canvas 2D context (dynamic), pre-clipped by the caller.
      */
-    private fun drawStrip() {
+    private fun drawStrip(d: dynamic) {
         if (stripPx <= 0 || stripTitle == null) return
-        val d = canvas.getContext("2d").asDynamic() ?: return
         val w = canvas.width.toDouble()
         val h = stripPx * res
-        d.save()
-        // When the tile carries a rounded border, clip the strip fills to the
-        // same rounded-rect so the header background follows the top corners
-        // instead of squaring off outside the curve.
-        if (paneBorder) {
-            val lw = (if (paneSelected) 3.0 else 2.0) * res
-            val inset = lw / 2.0 + res
-            val radius = 6.0 * res
-            d.beginPath()
-            d.roundRect(inset, inset, w - 2.0 * inset, canvas.height.toDouble() - 2.0 * inset, radius)
-            d.clip()
-        }
         // Fully opaque base — terminal content must never show through.
         d.globalAlpha = 1.0
         d.fillStyle = bg
@@ -344,9 +396,9 @@ private class ThumbView(
         d.fillStyle = fg
         d.textAlign = "left"
         d.textBaseline = "middle"
-        // Extra left padding so the title clears the pane border.
-        d.fillText(stripTitle, contentPad + 8.0 * res, h / 2.0)
-        d.restore()
+        // Extra left padding so the title clears the pane border; nudged a hair
+        // below centre so the cap-line clears the top border curve.
+        d.fillText(stripTitle, contentPad + 8.0 * res, h / 2.0 + res)
     }
 
     /**
@@ -359,11 +411,7 @@ private class ThumbView(
     private fun drawPaneBorder() {
         if (!paneBorder) return
         val d = canvas.getContext("2d").asDynamic() ?: return
-        val w = canvas.width.toDouble()
-        val h = canvas.height.toDouble()
         val lw = (if (paneSelected) 3.0 else 2.0) * res
-        val inset = lw / 2.0 + res
-        val radius = 6.0 * res
         d.save()
         d.globalAlpha = 1.0
         d.lineWidth = lw
@@ -373,7 +421,7 @@ private class ThumbView(
             else -> { d.strokeStyle = fg; d.globalAlpha = 0.22; d.shadowBlur = 0.0 }
         }
         d.beginPath()
-        d.roundRect(inset, inset, w - 2.0 * inset, h - 2.0 * inset, radius)
+        paneRectPath(d)
         d.stroke()
         d.restore()
     }
@@ -466,7 +514,12 @@ private class ThumbSource(
     fun repaint() {
         var lines: List<String>? = null
         for (view in views) {
-            if (view.fullFidelity && ovPalette != null) {
+            // Full fidelity only when the exact grid stays legible; a narrow tile
+            // crammed with a wide/tall terminal would shrink the glyphs to
+            // nothing, so fall back to the re-wrapped (fixed-font) thumbnail.
+            val fullLegible = view.fullFidelity && ovPalette != null &&
+                view.gridFontPx(term) >= MIN_GRID_FONT_PX
+            if (fullLegible) {
                 runCatching { view.paintGrid(term, ovPalette!!) }
             } else {
                 if (lines == null) lines = runCatching { readLogicalLines(term) }.getOrDefault(emptyList())
@@ -713,7 +766,7 @@ private var ovWheelPrevMag = 0.0
  * next. Covers cleanly separated swipes where the momentum tail has fully
  * stopped before the next physical swipe.
  */
-private const val OV_WHEEL_GESTURE_GAP_MS = 150.0
+private const val OV_WHEEL_GESTURE_GAP_MS = 220.0
 
 /**
  * A wheel event whose magnitude both exceeds this floor and climbs
@@ -723,10 +776,17 @@ private const val OV_WHEEL_GESTURE_GAP_MS = 150.0
  * edge above a sane floor is only ever a new gesture — this is what lets two
  * quick back-to-back swipes each register even before momentum stops.
  */
-private const val OV_WHEEL_RISE_FLOOR = 12.0
+private const val OV_WHEEL_RISE_FLOOR = 22.0
 
 /** Factor by which a delta must exceed the prior one to count as a new push. */
-private const val OV_WHEEL_RISE_FACTOR = 1.5
+private const val OV_WHEEL_RISE_FACTOR = 2.2
+
+/**
+ * Accumulated wheel/swipe delta (either axis) needed to step one tab. Higher =
+ * a more deliberate swipe is required, so a light or bumpy trackpad flick no
+ * longer skips several tabs at once.
+ */
+private const val OV_WHEEL_STEP = 90.0
 
 /**
  * Set on every `mousemove`, consumed once per frame. Gates hover-driven pane
@@ -809,8 +869,8 @@ private fun ensureOverlay(): HTMLElement {
 
     // Wheel / trackpad swipe steps the selection along the dominant axis, so a
     // horizontal two-finger swipe (or a vertical scroll) rotates between tabs.
-    // A single swipe steps exactly one tab: once the ±60 threshold is crossed
-    // we latch and ignore the rest of that gesture's momentum tail. The latch
+    // A single swipe steps exactly one tab: once the ±[OV_WHEEL_STEP] threshold
+    // is crossed we latch and ignore the rest of that gesture's momentum tail. The latch
     // re-arms either after OV_WHEEL_GESTURE_GAP_MS of wheel silence, or the
     // moment a fresh finger push makes the delta magnitude climb back up out of
     // the decaying tail — so quick back-to-back swipes each register even
@@ -836,8 +896,8 @@ private fun ensureOverlay(): HTMLElement {
         ovWheelPrevMag = mag
         if (ovWheelLatched) return@addEventListener
         ovWheelAcc += delta
-        if (ovWheelAcc > 60.0) { stepSelection(1); ovWheelAcc = 0.0; ovWheelLatched = true }
-        if (ovWheelAcc < -60.0) { stepSelection(-1); ovWheelAcc = 0.0; ovWheelLatched = true }
+        if (ovWheelAcc > OV_WHEEL_STEP) { stepSelection(1); ovWheelAcc = 0.0; ovWheelLatched = true }
+        if (ovWheelAcc < -OV_WHEEL_STEP) { stepSelection(-1); ovWheelAcc = 0.0; ovWheelLatched = true }
     }, json("passive" to false))
 
     // Track the pointer for hover feedback (consumed in the render loop).
@@ -1116,7 +1176,7 @@ private fun buildCard(tab: TabConfig, fg: String, bg: String, accent: String): O
     val cardTexture = CanvasTexture(cardCanvas)
     cardTexture.colorSpace = "srgb"
     val cardView = ThumbView(
-        cardCanvas, cardTexture, tab.title, TITLE_STRIP_PX, 14, fg, bg, RES, accent,
+        cardCanvas, cardTexture, tab.title, TITLE_STRIP_PX, 12, fg, bg, RES, accent,
         // No "no terminal" placeholder on the card: a tab with only
         // file-browser/git panes would flash that text during the split
         // crossfade before its tiles fade in. A plain dark panel morphs cleanly
@@ -1218,7 +1278,7 @@ private fun buildPaneTile(
     // just eats the whole thumbnail). Threshold is in physical px.
     val stripPx = if (hPx >= 80 * RES) TILE_STRIP_PX else 0
     val view = ThumbView(
-        canvas, texture, pane.leaf.title, stripPx, 11, fg, bg, RES, accent, topAnchored, placeholder,
+        canvas, texture, pane.leaf.title, stripPx, 9, fg, bg, RES, accent, topAnchored, placeholder,
         paneBorder = true,
     )
 
@@ -1643,10 +1703,10 @@ private fun startRenderLoop(renderer: WebGLRenderer, scene: Scene, camera: Persp
         ovPointerMoved = false
 
         ovCards.forEachIndexed { i, card ->
-            // Gentle idle float so the scene never feels frozen. Kept shallow
-            // so the front card's bottom row of split panes never bobs off the
-            // lower edge of the viewport.
-            card.mesh.position.y = sin(now * 0.0012 + i * 1.3) * 0.04
+            // Gentle idle float so the scene never feels frozen. Biased upward
+            // (and shallower) so even at the bottom of the bob the front card's
+            // lowest split panes stay clear of the lower viewport edge.
+            card.mesh.position.y = 0.05 + sin(now * 0.0012 + i * 1.3) * 0.03
 
             // Glow = decaying PTY-activity breathing on *background* tabs only.
             // The front tab gets no glow: it's already obvious (forward + about

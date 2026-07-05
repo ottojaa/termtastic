@@ -210,6 +210,47 @@ private fun resolveBg(cell: dynamic, palette: TermPalette): String {
  *   running under it.
  * @see renderThumbnail
  */
+/**
+ * The device-px font [renderTerminalGrid] uses for one grid cell: the cell
+ * filled as much as monospace metrics allow (advance ≈ 0.6em), clamped to the
+ * cell height so tall cells don't overflow. Factored out so [gridFontPx] can
+ * predict the size without painting.
+ *
+ * @param cellW cell width in device px. @param cellH cell height in device px.
+ * @return the glyph font size in device px.
+ */
+private fun cellFontPx(cellW: Double, cellH: Double): Double =
+    minOf(cellH * 0.92, cellW / 0.6 * 0.92)
+
+/**
+ * Predicts the device-px glyph font [renderTerminalGrid] would use for [term]
+ * on a [canvas] of the given inset/padding, without painting anything. Lets
+ * [ThumbSource.repaint] demote a tile to the re-wrapped thumbnail when the exact
+ * grid would render illegibly small (a narrow tile crammed with a wide/tall
+ * terminal), instead of showing microscopic text.
+ *
+ * @param canvas the destination tile canvas (device px).
+ * @param term the live xterm.js terminal to be rendered.
+ * @param topInsetPx pixels reserved at the top for the title strip.
+ * @param padPx inner padding kept clear on the sides/bottom.
+ * @return the predicted glyph font size in device px, or `0.0` if unsizeable.
+ * @see renderTerminalGrid
+ */
+internal fun gridFontPx(
+    canvas: HTMLCanvasElement,
+    term: Terminal,
+    topInsetPx: Double,
+    padPx: Double,
+): Double {
+    val cols = (term.cols as? Number)?.toInt() ?: 0
+    val rows = (term.rows as? Number)?.toInt() ?: 0
+    if (cols <= 0 || rows <= 0) return 0.0
+    val gridW = canvas.width.toDouble() - padPx * 2
+    val gridH = canvas.height.toDouble() - (topInsetPx + padPx) - padPx
+    if (gridW <= 0 || gridH <= 0) return 0.0
+    return cellFontPx(gridW / cols, gridH / rows)
+}
+
 internal fun renderTerminalGrid(
     canvas: HTMLCanvasElement,
     term: Terminal,
@@ -248,7 +289,7 @@ internal fun renderTerminalGrid(
     // ~0.6em), clamped to the cell height so tall cells don't overflow. Use the
     // *live terminal's own* font family so the overview matches what the pane
     // actually renders, not the thumbnail font.
-    val fontPx = minOf(cellH * 0.92, cellW / 0.6 * 0.92)
+    val fontPx = cellFontPx(cellW, cellH)
     val fontFamily = (term.asDynamic().options?.fontFamily as? String)?.takeIf { it.isNotBlank() }
         ?: THUMBNAIL_FONT_FAMILY
     val viewportY = (buffer.viewportY as? Number)?.toInt() ?: 0
