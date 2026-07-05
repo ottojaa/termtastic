@@ -601,10 +601,7 @@ private fun buildNewsTopbarAction(): TopbarAction = TopbarAction(
  * @return the globe topbar action; its click toggles the overview open/closed.
  * @see toggleOverview3d
  */
-private fun buildOverview3dTopbarAction(): TopbarAction = TopbarAction(
-    id = "tt-topbar-overview3d",
-    label = "3D tab overview",
-    onActivate = { toggleOverview3d() },
+private fun buildOverview3dTopbarAction(): TopbarAction {
     // Pre-build the button through the toolkit's canonical
     // [buildTopbarIconButton] so it carries the `.dt-topbar-icon-button`
     // class — same sizing, vertical centering, currentColor tint, and hover
@@ -612,8 +609,40 @@ private fun buildOverview3dTopbarAction(): TopbarAction = TopbarAction(
     // The plain [TopbarAction] fallback renders a bare button with none of
     // that styling, which made the globe read as off-colour and mis-centred
     // with no hover. `element` takes precedence over `iconHtml` in the shell.
-    element = buildTopbarIconButton(ICON_GLOBE, "3D tab overview") { toggleOverview3d() },
-)
+    val button = buildTopbarIconButton(ICON_GLOBE, "3D tab overview") { toggleOverview3d() }
+    // Stash the element so [applyOverview3dChromeVisibility] can show/hide it
+    // live when the experimental "3D app switcher" flag toggles.
+    overview3dTopbarButton = button
+    return TopbarAction(
+        id = "tt-topbar-overview3d",
+        label = "3D tab overview",
+        onActivate = { toggleOverview3d() },
+        element = button,
+    )
+}
+
+/**
+ * The pre-built topbar globe button (from [buildOverview3dTopbarAction]),
+ * captured so [applyOverview3dChromeVisibility] can toggle its visibility
+ * without re-querying the DOM. `null` until the shell spec is built at boot.
+ */
+private var overview3dTopbarButton: HTMLElement? = null
+
+/**
+ * Show or hide the topbar 3D-overview globe button to match the current
+ * `experimental3dSwitcher` flag ([isExperimental3dSwitcherEnabled]).
+ *
+ * Called once after the shell mounts to seed the initial state, and again from
+ * the App Settings toggle's `onChange` so flipping the flag adds/removes the
+ * button live — no reload needed. The ⌥⌘→ hotkey is gated separately at the
+ * [toggleOverview3d] chokepoint, so it needs no DOM work here.
+ *
+ * @see isExperimental3dSwitcherEnabled
+ */
+internal fun applyOverview3dChromeVisibility() {
+    overview3dTopbarButton?.style?.display =
+        if (isExperimental3dSwitcherEnabled()) "" else "none"
+}
 
 /**
  * Apply a Working / Waiting / Clear pane-state override to the
@@ -1059,13 +1088,21 @@ fun bootViaToolkitShell(root: HTMLElement) {
     // button. See [registerReformatHotkey].
     registerReformatHotkey()
 
-    // Register Ctrl+Alt+O as a *configurable* hotkey that toggles the 3D
-    // tab overview (carousel ring of live tab thumbnails — Overview3D.kt),
-    // and pre-warm its WebGL renderer once startup has settled so the first
-    // open pays no context-creation / shader-compile cost. See
-    // [registerOverview3dHotkey] and [prewarmOverview3d].
+    // Register the *configurable* hotkey that toggles the 3D tab overview
+    // (carousel ring of live tab thumbnails — Overview3D.kt). The 3D switcher
+    // is an experimental feature gated behind the `experimental3dSwitcher`
+    // flag: the chord is always registered (so it appears in the Keyboard
+    // Shortcuts sidebar and works the instant the flag is enabled), but stays
+    // inert while the flag is off via the [toggleOverview3d] chokepoint.
+    // Seed the topbar globe button's visibility from the flag, and only pay
+    // the WebGL context-creation / shader-compile prewarm cost when the
+    // feature is actually enabled. See [registerOverview3dHotkey],
+    // [applyOverview3dChromeVisibility], and [prewarmOverview3d].
     registerOverview3dHotkey()
-    kotlinx.browser.window.setTimeout({ prewarmOverview3d() }, 1500)
+    applyOverview3dChromeVisibility()
+    if (isExperimental3dSwitcherEnabled()) {
+        kotlinx.browser.window.setTimeout({ prewarmOverview3d() }, 1500)
+    }
 
     // Double-click a pane title to rename it (mirrors tab-label rename).
     // Document-level delegation, so it survives toolkit chrome rebuilds;

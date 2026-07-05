@@ -210,6 +210,10 @@ private const val DISH_DEPTH = 0.34
  *   no content yet (non-terminal panes / tabs), or `null`.
  * @property paneBorder whether to stroke a pane outline into the canvas — true
  *   for pane tiles (they read as little windows), false for the whole-tab card.
+ * @property roundCorners clip the body + strip to the rounded pane rect without
+ *   drawing a border. Set on the whole-tab card so its opaque corners don't
+ *   square off *behind* the split tiles' own rounded corners; pane tiles get
+ *   this implicitly via [paneBorder].
  */
 private class ThumbView(
     val canvas: HTMLCanvasElement,
@@ -224,6 +228,7 @@ private class ThumbView(
     val topAnchored: Boolean = false,
     val placeholder: String? = null,
     val paneBorder: Boolean = false,
+    val roundCorners: Boolean = false,
 ) {
     /**
      * When `true`, this view paints its terminal's *exact* colored cell grid
@@ -267,12 +272,7 @@ private class ThumbView(
      */
     fun paint(lines: List<String>?) {
         val d = canvas.getContext("2d").asDynamic() ?: return
-        // Clip the whole body (not just the strip) to the rounded pane rect so
-        // the opaque background never squares off the corners outside the
-        // border curve; the border itself is stroked after the clip is popped
-        // so its outer glow can still bloom past the edge.
         d.save()
-        clipToPaneRect(d)
         if (lines != null) {
             // Reserve the title-bar height so content never sits under it, and
             // pad the sides/bottom so text clears the border.
@@ -293,8 +293,8 @@ private class ThumbView(
             }
         }
         drawStrip(d)
+        finishChrome(d)
         d.restore()
-        drawPaneBorder()
         texture.needsUpdate = true
     }
 
@@ -310,12 +310,35 @@ private class ThumbView(
         val d = canvas.getContext("2d").asDynamic() ?: return
         val topInset = if (stripPx > 0 && stripTitle != null) stripPx * res else 0.0
         d.save()
-        clipToPaneRect(d)
         renderTerminalGrid(canvas, term, palette, showCursor, topInset, contentPad)
         drawStrip(d)
+        finishChrome(d)
         d.restore()
-        drawPaneBorder()
         texture.needsUpdate = true
+    }
+
+    /**
+     * Rounds the tile's corners and (for bordered tiles) strokes the pane
+     * border, shared by [paint] and [paintGrid]. Order matters:
+     *  1. Stroke the border — its accent [shadowBlur] glow blooms both inward
+     *     and outward from the rounded outline.
+     *  2. Mask (destination-in) to the border's **outer** edge — this both
+     *     rounds the opaque body/strip corners (so the terminal background never
+     *     squares off) *and* clips the outward glow, which would otherwise hit
+     *     the square canvas edge (the border sits only ~1px from it) and paint a
+     *     lit rectangle around the pane. The inner glow survives, so the active
+     *     pane still reads as lit — just without a boxy halo.
+     * A borderless card ([roundCorners]) simply rounds to the pane rect.
+     *
+     * @param d the tile canvas 2D context (dynamic).
+     */
+    private fun finishChrome(d: dynamic) {
+        if (paneBorder) {
+            drawPaneBorder(d)
+            maskTo(d) { paneOuterRectPath(d) }
+        } else if (roundCorners) {
+            maskTo(d) { paneRectPath(d) }
+        }
     }
 
     /**
@@ -331,23 +354,31 @@ private class ThumbView(
     }
 
     /**
-     * Traces the rounded pane rect (the [drawPaneBorder] geometry) onto [d] and
-     * clips to it, when this tile carries a border. Shared by [paint] /
-     * [paintGrid] so the body fills and the border curve stay in lock-step.
+     * Erases everything already painted on [d] that falls *outside* the rounded
+     * sub-path traced by [path], leaving transparent corners — so the opaque
+     * terminal background / title strip (and any outward glow) can never square
+     * off past the curve. Uses `destination-in` compositing with a `fill()` of
+     * the rounded path rather than `clip()`, because a `clip()` of a `roundRect`
+     * sub-path was clipping to its square bounding box in this engine (while
+     * `stroke()`/`fill()` of the same path round correctly).
      *
      * @param d the tile canvas 2D context (dynamic).
+     * @param path traces the rounded keep-region onto [d] (no fill/stroke).
      */
-    private fun clipToPaneRect(d: dynamic) {
-        if (!paneBorder) return
+    private inline fun maskTo(d: dynamic, path: () -> Unit) {
+        d.globalCompositeOperation = "destination-in"
+        d.globalAlpha = 1.0
+        d.fillStyle = "#000"
         d.beginPath()
-        paneRectPath(d)
-        d.clip()
+        path()
+        d.fill()
+        d.globalCompositeOperation = "source-over"
     }
 
     /**
-     * Appends the rounded pane-rect sub-path to [d] using the same inset and
-     * radius the border stroke uses, so [clipToPaneRect] and [drawPaneBorder]
-     * never disagree on where the corner curve sits.
+     * Appends the rounded pane-rect sub-path (the border stroke's *centre-line*)
+     * to [d], using the same inset and radius the border stroke uses. Masking to
+     * this rounds a borderless card; the border itself strokes along it.
      *
      * @param d the tile canvas 2D context (dynamic).
      */
@@ -363,15 +394,33 @@ private class ThumbView(
     }
 
     /**
+     * Appends the rounded pane-rect sub-path at the border stroke's *outer* edge
+     * (half a line-width out from [paneRectPath]). Masking to this keeps the full
+     * border stroke while erasing the outward glow beyond it, so the glow can't
+     * paint a boxy halo where it meets the square canvas edge.
+     *
+     * @param d the tile canvas 2D context (dynamic).
+     */
+    private fun paneOuterRectPath(d: dynamic) {
+        val lw = (if (paneSelected) 3.0 else 2.0) * res
+        val inset = res
+        val radius = 6.0 * res + lw / 2.0
+        d.roundRect(
+            inset, inset,
+            canvas.width.toDouble() - 2.0 * inset, canvas.height.toDouble() - 2.0 * inset,
+            radius,
+        )
+    }
+
+    /**
      * Draws the opaque themed title strip (background + accent underline +
      * title) across the top of the canvas, shared by [paint] and [paintGrid].
      * Active/selected panes get an accent-tinted header, matching how the real
-     * pane chrome distinguishes the focused pane. The caller has already clipped
-     * [d] to the rounded pane rect (see [clipToPaneRect]), so the header
-     * background follows the top corners instead of squaring off outside the
-     * curve.
+     * pane chrome distinguishes the focused pane. Painted full-width; the caller
+     * ([finishChrome]) then masks the corners round, so the header background
+     * follows the curve instead of squaring off outside it.
      *
-     * @param d the tile canvas 2D context (dynamic), pre-clipped by the caller.
+     * @param d the tile canvas 2D context (dynamic).
      */
     private fun drawStrip(d: dynamic) {
         if (stripPx <= 0 || stripTitle == null) return
@@ -406,11 +455,12 @@ private class ThumbView(
      * content exactly and curves/foreshortens with the tile (unlike a separate
      * glow plane, which detaches under the tilt). The active pane gets a steady
      * accent glow, the selected pane a brighter/thicker one, others a faint
-     * neutral edge.
+     * neutral edge. The caller ([finishChrome]) masks to [paneOuterRectPath]
+     * afterward, trimming the outward glow so it can't box off the corners.
+     *
+     * @param d the tile canvas 2D context (dynamic).
      */
-    private fun drawPaneBorder() {
-        if (!paneBorder) return
-        val d = canvas.getContext("2d").asDynamic() ?: return
+    private fun drawPaneBorder(d: dynamic) {
         val lw = (if (paneSelected) 3.0 else 2.0) * res
         d.save()
         d.globalAlpha = 1.0
@@ -800,10 +850,18 @@ private var ovPointerMoved = false
  * target of the configurable ⌥⌘→ hotkey ([registerOverview3dHotkey] in
  * [TermtasticToolkitBootstrap]).
  *
+ * This is the single gate for the experimental **3D app switcher**: every
+ * entry point (hotkey, topbar globe button, Electron menu) routes here, so
+ * when [isExperimental3dSwitcherEnabled] is off the feature is fully inert
+ * regardless of a stale binding or hidden button. The toolbar button's
+ * *visibility* is handled separately by [applyOverview3dChromeVisibility].
+ *
  * @see openOverview3d
  * @see closeOverview3d
+ * @see isExperimental3dSwitcherEnabled
  */
 internal fun toggleOverview3d() {
+    if (!isExperimental3dSwitcherEnabled()) return
     if (ovOpen) closeOverview3d() else openOverview3d()
 }
 
@@ -1182,6 +1240,9 @@ private fun buildCard(tab: TabConfig, fg: String, bg: String, accent: String): O
         // crossfade before its tiles fade in. A plain dark panel morphs cleanly
         // into the tiles.
         placeholder = null,
+        // Round the card's own corners so, while it sits behind the split tiles,
+        // its opaque square corners never peek out past the tiles' rounded ones.
+        roundCorners = true,
     )
 
     // FrontSide (side 0): cards on the far half of the ring face away and are

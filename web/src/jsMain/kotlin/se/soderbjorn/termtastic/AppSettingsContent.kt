@@ -72,6 +72,9 @@ private const val KEY_EXPERIMENTAL_FILE_BROWSER = "experimentalFileBrowser"
 /** Persistence key for the experimental Git-view flag. */
 private const val KEY_EXPERIMENTAL_GIT_VIEW = "experimentalGitView"
 
+/** Persistence key for the experimental 3D tab/pane switcher flag. */
+private const val KEY_EXPERIMENTAL_OVERVIEW_3D = "experimental3dSwitcher"
+
 // The opt-in "use program-set terminal titles" flag persists under
 // TERMINAL_PROGRAM_TITLE_KEY from the shared clientServer module — the server
 // reads the same constant, so the contract is compiler-enforced.
@@ -169,6 +172,23 @@ fun isExperimentalFileBrowserEnabled(): Boolean =
  */
 fun isExperimentalGitViewEnabled(): Boolean =
     snapshotBoolean(KEY_EXPERIMENTAL_GIT_VIEW)
+
+/**
+ * Whether the experimental 3D tab/pane switcher (the carousel-ring overview)
+ * is enabled. When off (the default), the topbar globe button is hidden and
+ * the ⌥⌘→ hotkey is inert — both gate through this flag: the button via
+ * [applyOverview3dChromeVisibility] and the hotkey/menu via the
+ * [toggleOverview3d] chokepoint.
+ *
+ * Read live from [toolkitSettingsSnapshot] so flipping the toggle takes
+ * effect without a reload.
+ *
+ * @return `true` when the user has opted into the experimental switcher.
+ * @see KEY_EXPERIMENTAL_OVERVIEW_3D
+ * @see toggleOverview3d
+ */
+fun isExperimental3dSwitcherEnabled(): Boolean =
+    snapshotBoolean(KEY_EXPERIMENTAL_OVERVIEW_3D)
 
 /**
  * Whether panes should take the title the running program sets (OSC 0/2).
@@ -402,6 +422,18 @@ private fun buildExperimentalSection(): HTMLElement {
         onChange = { v ->
             updateSnapshotBoolean(KEY_EXPERIMENTAL_GIT_VIEW, v)
             putJsonBoolean(KEY_EXPERIMENTAL_GIT_VIEW, v)
+        },
+    ))
+    section.appendChild(buildToggleRow(
+        labelText = "Enable 3D app switcher",
+        initialValue = isExperimental3dSwitcherEnabled(),
+        onChange = { v ->
+            updateSnapshotBoolean(KEY_EXPERIMENTAL_OVERVIEW_3D, v)
+            putJsonBoolean(KEY_EXPERIMENTAL_OVERVIEW_3D, v)
+            // Show/hide the topbar globe button live; the ⌥⌘→ hotkey gates
+            // itself through the toggleOverview3d chokepoint, so it needs no
+            // work here.
+            applyOverview3dChromeVisibility()
         },
     ))
     section.appendChild(buildToggleRow(
