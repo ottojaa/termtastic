@@ -526,10 +526,11 @@ private fun buildGeneralSection(): HTMLElement {
             "Rotunda" to OVERVIEW_3D_STYLE_ROTUNDA,
             "Carousel ring" to OVERVIEW_3D_STYLE_CAROUSEL,
             "Exposé zoom" to OVERVIEW_3D_STYLE_EXPOSE,
-            "Flip stack (deck)" to OVERVIEW_3D_STYLE_FLIPSTACK,
-            "Corridor (gallery)" to OVERVIEW_3D_STYLE_CORRIDOR,
-            "Orbit (cosmos)" to OVERVIEW_3D_STYLE_ORBIT,
-            "Vertigo (tower)" to OVERVIEW_3D_STYLE_VERTIGO,
+            // Temporarily hidden until tested more closely:
+            // "Flip stack (deck)" to OVERVIEW_3D_STYLE_FLIPSTACK,
+            // "Corridor (gallery)" to OVERVIEW_3D_STYLE_CORRIDOR,
+            // "Orbit (cosmos)" to OVERVIEW_3D_STYLE_ORBIT,
+            // "Vertigo (tower)" to OVERVIEW_3D_STYLE_VERTIGO,
         ),
         initialValue = experimental3dSwitcherStyle(),
         onChange = { v ->
