@@ -7,9 +7,11 @@
  * textured plane (terminal grid, file listing, git status — every pane type),
  * selection state ([ovSelected] / [ovPaneSelected]), and the open / close /
  * render-loop / input-routing lifecycle. The *spatial arrangement and motion* is
- * pluggable via [Overview3DStyle]: [CarouselStyle] (the default turning ring),
- * [RotundaStyle] (inside a cylinder), and [ExposeStyle] (real-layout → grid
- * zoom), chosen at open time from [experimental3dSwitcherStyle]. Both keyboard
+ * pluggable via [Overview3DStyle]: [CarouselStyle] (the turning ring),
+ * [RotundaStyle] (inside a cylinder, the default), [ExposeStyle] (real-layout →
+ * grid zoom), [FlipStackStyle] (a riffled deck receding in depth), and
+ * [CorridorStyle] (a walkable gallery hall), chosen at open time from
+ * [experimental3dSwitcherStyle]. Both keyboard
  * and mouse/trackpad drive navigation (see [openOverview3d] and [ensureOverlay]).
  *
  * The carousel — described below — is the reference style; the same capture and
@@ -702,8 +704,9 @@ internal class OverviewCard(
 /* render-loop/event-routing lifecycle. A style only decides the *spatial*   */
 /* arrangement and motion: where the [OverviewCard]s and their [PaneTile]s   */
 /* sit in the scene, how they animate, how navigation maps, and what the     */
-/* camera does. Three ship — [CarouselStyle], [RotundaStyle], [ExposeStyle]  */
-/* — chosen at open time from [experimental3dSwitcherStyle].                 */
+/* camera does. Five ship — [CarouselStyle], [RotundaStyle], [ExposeStyle],  */
+/* [FlipStackStyle], [CorridorStyle] — chosen at open time from             */
+/* [experimental3dSwitcherStyle].                                            */
 /* ---------------------------------------------------------------------- */
 
 /**
@@ -1217,12 +1220,15 @@ private fun buildCards(tabs: List<TabConfig>, fg: String, bg: String, accent: St
  * unrecognised value.
  *
  * @param id one of [OVERVIEW_3D_STYLE_CAROUSEL] / [OVERVIEW_3D_STYLE_ROTUNDA] /
- *   [OVERVIEW_3D_STYLE_EXPOSE].
+ *   [OVERVIEW_3D_STYLE_EXPOSE] / [OVERVIEW_3D_STYLE_FLIPSTACK] /
+ *   [OVERVIEW_3D_STYLE_CORRIDOR].
  * @return the matching style object.
  */
 private fun styleFor(id: String): Overview3DStyle = when (id) {
     OVERVIEW_3D_STYLE_ROTUNDA -> RotundaStyle
     OVERVIEW_3D_STYLE_EXPOSE -> ExposeStyle
+    OVERVIEW_3D_STYLE_FLIPSTACK -> FlipStackStyle
+    OVERVIEW_3D_STYLE_CORRIDOR -> CorridorStyle
     else -> CarouselStyle
 }
 

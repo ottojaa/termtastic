@@ -84,8 +84,9 @@ private const val KEY_EXPERIMENTAL_OVERVIEW_3D = "experimental3dSwitcher"
 
 /**
  * Persistence key for which 3D-switcher *style* is active (carousel ring,
- * rotunda, or exposé zoom). Only consulted while [KEY_EXPERIMENTAL_OVERVIEW_3D]
- * is on. Read at open time by [openOverview3d]; see [experimental3dSwitcherStyle].
+ * rotunda, exposé zoom, flip stack, or corridor). Only consulted while
+ * [KEY_EXPERIMENTAL_OVERVIEW_3D] is on. Read at open time by [openOverview3d];
+ * see [experimental3dSwitcherStyle].
  */
 private const val KEY_EXPERIMENTAL_OVERVIEW_3D_STYLE = "experimental3dSwitcherStyle"
 
@@ -97,6 +98,12 @@ internal const val OVERVIEW_3D_STYLE_ROTUNDA = "rotunda"
 
 /** Persisted value for the exposé-zoom (real-layout → grid) style. */
 internal const val OVERVIEW_3D_STYLE_EXPOSE = "expose"
+
+/** Persisted value for the flip-stack ("deck") style — a riffled pile of cards. */
+internal const val OVERVIEW_3D_STYLE_FLIPSTACK = "flipstack"
+
+/** Persisted value for the corridor ("gallery") style — a walkable hall of panes. */
+internal const val OVERVIEW_3D_STYLE_CORRIDOR = "corridor"
 
 // The opt-in "use program-set terminal titles" flag persists under
 // TERMINAL_PROGRAM_TITLE_KEY from the shared clientServer module — the server
@@ -234,7 +241,8 @@ private fun snapshotString(key: String, default: String): String {
 
 /**
  * The user's chosen 3D-switcher style, one of [OVERVIEW_3D_STYLE_ROTUNDA]
- * (the default), [OVERVIEW_3D_STYLE_CAROUSEL], or [OVERVIEW_3D_STYLE_EXPOSE].
+ * (the default), [OVERVIEW_3D_STYLE_CAROUSEL], [OVERVIEW_3D_STYLE_EXPOSE],
+ * [OVERVIEW_3D_STYLE_FLIPSTACK], or [OVERVIEW_3D_STYLE_CORRIDOR].
  * Consulted by [openOverview3d] each time the overview opens, so changing the
  * dropdown takes effect on the next open without a reload. Only meaningful
  * while [isExperimental3dSwitcherEnabled] is true.
@@ -511,6 +519,8 @@ private fun buildGeneralSection(): HTMLElement {
             "Rotunda" to OVERVIEW_3D_STYLE_ROTUNDA,
             "Carousel ring" to OVERVIEW_3D_STYLE_CAROUSEL,
             "Exposé zoom" to OVERVIEW_3D_STYLE_EXPOSE,
+            "Flip stack (deck)" to OVERVIEW_3D_STYLE_FLIPSTACK,
+            "Corridor (gallery)" to OVERVIEW_3D_STYLE_CORRIDOR,
         ),
         initialValue = experimental3dSwitcherStyle(),
         onChange = { v ->
