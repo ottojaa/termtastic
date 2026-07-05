@@ -92,8 +92,26 @@ external class PerspectiveCamera(fov: Double, aspect: Double, near: Double, far:
     /** Position vector (dynamic — use `.set(x, y, z)`). */
     val position: dynamic
 
+    /**
+     * The camera's up vector (`Vector3`, dynamic — use `.set(x, y, z)`).
+     * Consulted by [lookAt] to decide the roll of the view. Most styles leave
+     * it at the default `(0, 1, 0)`; the [se.soderbjorn.termtastic.OrbitStyle]
+     * rolls it per-frame to *bank* the camera into its curved fly-throughs.
+     */
+    val up: dynamic
+
     /** Viewport aspect ratio; call [updateProjectionMatrix] after changing. */
     var aspect: Double
+
+    /**
+     * Vertical field of view in degrees; call [updateProjectionMatrix] after
+     * changing. Most styles keep the fixed opening fov, but the
+     * [se.soderbjorn.termtastic.VertigoStyle] animates it against the camera
+     * distance for the Hitchcock *dolly-zoom*, and the
+     * [se.soderbjorn.termtastic.OrbitStyle] widens it briefly as a warp punch
+     * at the fastest part of a fly-through.
+     */
+    var fov: Double
 
     /**
      * Points the camera at a world-space position.

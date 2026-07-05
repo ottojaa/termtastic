@@ -9,9 +9,10 @@
  * render-loop / input-routing lifecycle. The *spatial arrangement and motion* is
  * pluggable via [Overview3DStyle]: [CarouselStyle] (the turning ring),
  * [RotundaStyle] (inside a cylinder, the default), [ExposeStyle] (real-layout →
- * grid zoom), [FlipStackStyle] (a riffled deck receding in depth), and
- * [CorridorStyle] (a walkable gallery hall), chosen at open time from
- * [experimental3dSwitcherStyle]. Both keyboard
+ * grid zoom), [FlipStackStyle] (a riffled deck receding in depth),
+ * [CorridorStyle] (a walkable gallery hall), [OrbitStyle] (worlds in space with
+ * a curved fly-through), and [VertigoStyle] (a glass tower with a dolly-zoom),
+ * chosen at open time from [experimental3dSwitcherStyle]. Both keyboard
  * and mouse/trackpad drive navigation (see [openOverview3d] and [ensureOverlay]).
  *
  * The carousel — described below — is the reference style; the same capture and
@@ -147,6 +148,14 @@ private const val THUMB_FONT = "Menlo, Monaco, 'Courier New', monospace"
  * animate a landing camera over the same window.
  */
 internal const val DIVE_MS = 340.0
+
+/**
+ * The camera's default vertical field of view (degrees), matching the
+ * [PerspectiveCamera] constructed in [ensureRenderer]. Reset before every open
+ * (see [openOverview3d]) so a style that animates `fov` (the vertigo dolly-zoom,
+ * the orbit warp) can't leak a warped lens into the next style's open.
+ */
+internal const val OVERVIEW_BASE_FOV = 50.0
 
 /** World-units gap shaved off each pane tile so split panes read as tiles. */
 private const val TILE_GAP = 0.05
@@ -704,9 +713,9 @@ internal class OverviewCard(
 /* render-loop/event-routing lifecycle. A style only decides the *spatial*   */
 /* arrangement and motion: where the [OverviewCard]s and their [PaneTile]s   */
 /* sit in the scene, how they animate, how navigation maps, and what the     */
-/* camera does. Five ship — [CarouselStyle], [RotundaStyle], [ExposeStyle],  */
-/* [FlipStackStyle], [CorridorStyle] — chosen at open time from             */
-/* [experimental3dSwitcherStyle].                                            */
+/* camera does. Seven ship — [CarouselStyle], [RotundaStyle], [ExposeStyle], */
+/* [FlipStackStyle], [CorridorStyle], [OrbitStyle], [VertigoStyle] — chosen  */
+/* at open time from [experimental3dSwitcherStyle].                          */
 /* ---------------------------------------------------------------------- */
 
 /**
@@ -997,7 +1006,7 @@ private fun ensureRenderer(): WebGLRenderer {
     renderer.setPixelRatio(window.devicePixelRatio)
     ovRenderer = renderer
     ovScene = Scene()
-    ovCamera = PerspectiveCamera(50.0, 1.0, 0.1, 100.0)
+    ovCamera = PerspectiveCamera(OVERVIEW_BASE_FOV, 1.0, 0.1, 100.0)
     return renderer
 }
 
@@ -1151,7 +1160,12 @@ internal fun openOverview3d() {
     ovPaneSelected = focusedTileIndex(ovSelected)
 
     // Hand off to the chosen style: it arranges the cards/tiles in the scene
-    // and poses the camera. Everything above is shared across all styles.
+    // and poses the camera. Everything above is shared across all styles. Reset
+    // the lens + roll first so a prior style that animated them (the vertigo
+    // dolly-zoom's fov, the orbit bank's up vector) can't leak into this open.
+    camera.fov = OVERVIEW_BASE_FOV
+    camera.up.set(0.0, 1.0, 0.0)
+    camera.updateProjectionMatrix()
     val style = styleFor(experimental3dSwitcherStyle())
     ovActiveStyle = style
     style.build(scene, camera)
@@ -1221,7 +1235,8 @@ private fun buildCards(tabs: List<TabConfig>, fg: String, bg: String, accent: St
  *
  * @param id one of [OVERVIEW_3D_STYLE_CAROUSEL] / [OVERVIEW_3D_STYLE_ROTUNDA] /
  *   [OVERVIEW_3D_STYLE_EXPOSE] / [OVERVIEW_3D_STYLE_FLIPSTACK] /
- *   [OVERVIEW_3D_STYLE_CORRIDOR].
+ *   [OVERVIEW_3D_STYLE_CORRIDOR] / [OVERVIEW_3D_STYLE_ORBIT] /
+ *   [OVERVIEW_3D_STYLE_VERTIGO].
  * @return the matching style object.
  */
 private fun styleFor(id: String): Overview3DStyle = when (id) {
@@ -1229,6 +1244,8 @@ private fun styleFor(id: String): Overview3DStyle = when (id) {
     OVERVIEW_3D_STYLE_EXPOSE -> ExposeStyle
     OVERVIEW_3D_STYLE_FLIPSTACK -> FlipStackStyle
     OVERVIEW_3D_STYLE_CORRIDOR -> CorridorStyle
+    OVERVIEW_3D_STYLE_ORBIT -> OrbitStyle
+    OVERVIEW_3D_STYLE_VERTIGO -> VertigoStyle
     else -> CarouselStyle
 }
 
