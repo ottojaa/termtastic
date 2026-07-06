@@ -118,6 +118,12 @@ class PairingPayloadTest {
         assertEquals("[2001:db8::1]:9001", HostPort("2001:db8::1", 9001).toCandidateString(8443))
         assertEquals("[2001:db8::1]", HostPort("2001:db8::1", 8443).toCandidateString(8443))
         assertEquals("192.168.1.5:8443", HostPort("192.168.1.5", 8443).toCandidateString(null))
+        // An already-bracketed host must not be double-bracketed (regression).
+        assertEquals("[2001:db8::1]:9001", HostPort("[2001:db8::1]", 9001).toCandidateString(8443))
+        assertEquals(
+            HostPort("2001:db8::1", 9001),
+            HostPort.parseCandidate(HostPort("[2001:db8::1]", 9001).toCandidateString(8443), 8443),
+        )
     }
 
     /** Mirrors the payload's private percent-encoder for assertion strings. */

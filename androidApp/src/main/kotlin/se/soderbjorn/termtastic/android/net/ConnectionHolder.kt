@@ -20,6 +20,16 @@ import java.net.NetworkInterface
  * [TermtasticApp] rebuilds this whenever the user commits a new host/port
  * from the Connect screen.
  */
+/**
+ * Thrown by [ConnectionHolder.connectMulti] when no candidate endpoint could
+ * be reached (phase-1 failure that is not a pin mismatch). Distinguishes a
+ * reachability problem — the case where "check your Wi-Fi" advice is correct —
+ * from a phase-2 failure where the server WAS reached but rejected the device.
+ *
+ * @param cause the last underlying transport failure.
+ */
+class ServerUnreachableException(cause: Throwable) : Exception(cause)
+
 object ConnectionHolder {
     @Volatile
     private var currentClient: TermtasticClient? = null
@@ -49,27 +59,6 @@ object ConnectionHolder {
     val pendingApproval: StateFlow<Boolean>?
         get() = currentClient?.windowState?.pendingApproval
 
-    /**
-     * Tears down any existing client and creates a fresh one for [serverUrl].
-     *
-     * Called from [se.soderbjorn.termtastic.android.ui.HostsScreen] when the
-     * user taps a host to connect. Performs a two-phase handshake: first the
-     * WebSocket session (15 s timeout), then waits for the server's initial
-     * Config envelope (up to 5 min to allow for device-approval dialogs).
-     *
-     * @param serverUrl the server URL containing host and port.
-     * @param authToken the authentication token for this client.
-     * @param pinnedFingerprintHex lowercase hex SHA-256 of the server's leaf
-     *   cert (verify mode), or `null` to run TOFU capture on first connect.
-     *   The caller can read `client().observedFingerprint.value` afterwards
-     *   to persist the captured pin.
-     * @return the connected [TermtasticClient] instance.
-     * @throws Throwable if the connection or handshake fails. A
-     *   `javax.net.ssl.SSLHandshakeException` whose cause chain contains a
-     *   `CertificateException` starting with `"pin-mismatch:"` indicates the
-     *   server's cert no longer matches the stored pin; UI should surface
-     *   the cert-changed dialog (see [isPinMismatch]).
-     */
     /**
      * Try every candidate endpoint of a host entry in order and keep the
      * first that connects. Used by the hosts screen for saved entries —
@@ -104,14 +93,25 @@ object ConnectionHolder {
     ): CandidateConnection {
         disconnect()
         Log.i("ConnectionHolder", "connectMulti: ${candidates.size} candidate(s), defaultPort=$defaultPort")
-        val connection = CandidateConnector.connectFirstReachable(
-            candidates = candidates,
-            defaultPort = defaultPort,
-            authToken = authToken,
-            identity = androidIdentity(),
-            pinnedFingerprintHex = pinnedFingerprintHex,
-            pairingToken = pairingToken,
-        )
+        // Phase 1 — reach a candidate. A pin mismatch propagates unwrapped so
+        // the UI can show the cert-changed dialog; any other phase-1 failure
+        // means no candidate answered, which is a reachability problem, so we
+        // tag it as such. Phase-2 failures below are the opposite (we reached
+        // the server but it didn't send a config — an auth rejection), and
+        // must NOT be mislabelled as a network problem.
+        val connection = try {
+            CandidateConnector.connectFirstReachable(
+                candidates = candidates,
+                defaultPort = defaultPort,
+                authToken = authToken,
+                identity = androidIdentity(),
+                pinnedFingerprintHex = pinnedFingerprintHex,
+                pairingToken = pairingToken,
+            )
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException || isPinMismatch(t)) throw t
+            throw ServerUnreachableException(t)
+        }
         // Publish before the config wait so the approval-pending flow is
         // observable while the server-side dialog (if any) is up.
         currentClient = connection.client
@@ -143,6 +143,24 @@ object ConnectionHolder {
         version = BuildConfig.VERSION_NAME,
     )
 
+    /**
+     * Tears down any existing client and creates a fresh one for [serverUrl].
+     *
+     * Retained for the built-in demo path only (see
+     * [se.soderbjorn.termtastic.android.ui.HostsScreen]'s demo footer);
+     * real hosts go through [connectMulti]. Performs the same two-phase
+     * handshake: WebSocket session (15 s), then the first Config envelope
+     * (up to 5 min for a device-approval dialog).
+     *
+     * @param serverUrl the server URL containing host and port.
+     * @param authToken the authentication token for this client.
+     * @param pinnedFingerprintHex lowercase hex SHA-256 of the server's leaf
+     *   cert (verify mode), or `null` to run TOFU capture on first connect.
+     * @return the connected [TermtasticClient] instance.
+     * @throws Throwable if the connection or handshake fails (see
+     *   [isPinMismatch] for the cert-changed case).
+     * @see connectMulti
+     */
     suspend fun connect(
         serverUrl: ServerUrl,
         authToken: String,

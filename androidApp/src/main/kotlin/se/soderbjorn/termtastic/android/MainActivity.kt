@@ -118,6 +118,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun capturePairingUri(intent: Intent?) {
         if (intent?.action != Intent.ACTION_VIEW) return
+        // Ignore the original launch intent when Android redelivers it from the
+        // Recents screen (or any relaunch of the historical task): re-running a
+        // long-since-handled pairing would rewrite the host entry with a spent
+        // token and start a connect the user never asked for.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         val uri = intent.dataString ?: return
         if (uri.startsWith(PairingPayload.URI_PREFIX.removeSuffix("?"))) {
             PendingPairingUri.post(uri)

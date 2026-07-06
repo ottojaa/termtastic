@@ -814,6 +814,13 @@ object DeviceAuth {
         if (token.isNullOrBlank() || pairToken.isNullOrBlank()) return null
         if (!PairingTokens.consume(pairToken)) return null
         val hash = persistTrustedDevice(token, client, repo)
+        // A user re-pairing a device they had previously denied expresses clear
+        // intent to trust it; leaving the stale denied entry would show the
+        // device in both lists and silently reject it again if the trusted
+        // entry is later revoked. Clear it so trusted/denied stay disjoint.
+        if (unbanDeniedDevice(repo, hash)) {
+            log.info("DeviceAuth: cleared prior denial for paired device hashPrefix={}", hash.take(10))
+        }
         if (!isLoopback(client.remoteAddress) && !repo.isAllowRemoteConnections()) {
             repo.setAllowRemoteConnections(true)
             log.info(

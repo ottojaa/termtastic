@@ -11,6 +11,7 @@ package se.soderbjorn.termtastic.android
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * Process-wide single-slot mailbox for a pairing deep link. [MainActivity]
@@ -41,12 +42,4 @@ object PendingPairingUri {
      * @return the URI, or `null` if it was already consumed.
      */
     fun consume(): String? = _uri.getAndUpdate { null }
-}
-
-/** Atomic get-and-set helper; kept local to avoid a coroutines-version dependency. */
-private fun <T> MutableStateFlow<T>.getAndUpdate(transform: (T) -> T): T {
-    while (true) {
-        val current = value
-        if (compareAndSet(current, transform(current))) return current
-    }
 }

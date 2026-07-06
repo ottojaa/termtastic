@@ -42,7 +42,9 @@ data class HostPort(val host: String, val port: Int) {
      * @see parseCandidate
      */
     fun toCandidateString(defaultPort: Int? = null): String {
-        val h = if (host.contains(':')) "[$host]" else host
+        // Bracket only a bare IPv6 literal; leave an already-bracketed host
+        // alone so we never emit "[[…]]" (matches ServerUrl.hostForUrl).
+        val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
         return if (port == defaultPort) h else "$h:$port"
     }
 

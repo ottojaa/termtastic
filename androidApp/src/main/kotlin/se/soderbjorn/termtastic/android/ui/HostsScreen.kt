@@ -102,6 +102,7 @@ import se.soderbjorn.termtastic.android.data.AppLocalRepository
 import se.soderbjorn.termtastic.android.net.NetworkStatus
 import se.soderbjorn.termtastic.client.HostEntry
 import se.soderbjorn.termtastic.android.net.ConnectionHolder
+import se.soderbjorn.termtastic.android.net.ServerUnreachableException
 import se.soderbjorn.termtastic.android.net.NewsUpdatesController
 import se.soderbjorn.termtastic.client.ServerUrl
 import se.soderbjorn.termtastic.client.demo.DEMO_HOST
@@ -908,6 +909,11 @@ private fun DeleteHostDialog(
  * @return a user-facing message for the snackbar.
  */
 private fun connectFailureMessage(context: Context, e: Throwable): String = when {
+    // Network-blame only when we genuinely couldn't reach the server. A
+    // phase-2 failure (reached, but the server rejected the device / never
+    // sent a config) carries a descriptive message that we must not mask
+    // with "check your Wi-Fi" advice.
+    e !is ServerUnreachableException -> e.message ?: "Connection failed"
     NetworkStatus.isOnCellular(context) ->
         "You're on mobile data. This Mac is reachable on its own Wi-Fi network — " +
             "join that network and try again."

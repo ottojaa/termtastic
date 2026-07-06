@@ -42,39 +42,60 @@ struct HostEntryLocal: Identifiable, Equatable {
     var host: String
     var port: Int32
     var pinnedFingerprintHex: String?
+    /// Full candidate endpoint set from a QR pairing (empty for manual hosts);
+    /// carried verbatim so a round-trip through `toShared()` preserves it.
+    var candidates: [String]
+    /// One-time QR pairing token, or nil; also preserved on round-trip.
+    var pairingToken: String?
 
     init(
         id: String,
         label: String,
         host: String,
         port: Int32,
-        pinnedFingerprintHex: String? = nil
+        pinnedFingerprintHex: String? = nil,
+        candidates: [String] = [],
+        pairingToken: String? = nil
     ) {
         self.id = id
         self.label = label
         self.host = host
         self.port = port
         self.pinnedFingerprintHex = pinnedFingerprintHex
+        self.candidates = candidates
+        self.pairingToken = pairingToken
     }
 
     /// Map a shared KMP `HostEntry` (from `LocalState.hosts`) into the native value.
+    ///
+    /// `candidates` and `pairingToken` are carried through verbatim so an iOS
+    /// edit that round-trips a QR-paired entry through `toShared()` does not
+    /// silently drop them (iOS has no scanner yet, but it can still edit an
+    /// entry paired on another device sharing the same `local_state.json`).
     init(from entry: Client.HostEntry) {
         self.id = entry.id
         self.label = entry.label
         self.host = entry.host
         self.port = entry.port
         self.pinnedFingerprintHex = entry.pinnedFingerprintHex
+        self.candidates = entry.candidates
+        self.pairingToken = entry.pairingToken
     }
 
     /// Convert back to the shared KMP `HostEntry` for persistence through the
     /// repository's `addHost`/`updateHost`.
+    ///
+    /// Every parameter is passed explicitly: Kotlin default arguments do not
+    /// bridge to Swift, so the exported initializer requires all of them.
     func toShared() -> Client.HostEntry {
         Client.HostEntry(
             id: id,
             label: label,
             host: host,
             port: port,
-            pinnedFingerprintHex: pinnedFingerprintHex
+            pinnedFingerprintHex: pinnedFingerprintHex,
+            candidates: candidates,
+            pairingToken: pairingToken
         )
     }
 }
