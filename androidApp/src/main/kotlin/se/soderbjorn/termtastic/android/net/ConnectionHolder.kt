@@ -4,6 +4,8 @@ import android.util.Log
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeout
 import se.soderbjorn.termtastic.android.BuildConfig
+import se.soderbjorn.termtastic.client.CandidateConnection
+import se.soderbjorn.termtastic.client.CandidateConnector
 import se.soderbjorn.termtastic.client.ClientIdentity
 import se.soderbjorn.termtastic.client.ServerUrl
 import se.soderbjorn.termtastic.client.TermtasticClient
@@ -68,6 +70,79 @@ object ConnectionHolder {
      *   server's cert no longer matches the stored pin; UI should surface
      *   the cert-changed dialog (see [isPinMismatch]).
      */
+    /**
+     * Try every candidate endpoint of a host entry in order and keep the
+     * first that connects. Used by the hosts screen for saved entries —
+     * QR-paired entries carry several addresses, and even manually-added
+     * ones benefit from the same code path.
+     *
+     * Phase 1 (per candidate, inside [CandidateConnector]): WebSocket
+     * handshake with a 12 s budget. Phase 2 (winner only): wait for the
+     * initial Config envelope, up to 5 min so a server-side approval dialog
+     * can be answered. The current client is published before phase 2 so
+     * [pendingApproval] is observable while waiting.
+     *
+     * @param candidates ordered `host[:port]` strings; see
+     *   [se.soderbjorn.termtastic.client.HostEntry.candidates].
+     * @param defaultPort port for candidates without an explicit `:port`.
+     * @param authToken the device-auth token.
+     * @param pinnedFingerprintHex TLS pin (verify mode), or `null` for TOFU
+     *   capture on first connect.
+     * @param pairingToken one-time QR pairing token, or `null` outside the
+     *   pairing flow.
+     * @return the winning [CandidateConnection]; the caller persists its
+     *   endpoint as the entry's new preferred address.
+     * @throws Throwable when every candidate fails — pin-mismatch failures
+     *   take precedence (see [CandidateConnector.connectFirstReachable]).
+     */
+    suspend fun connectMulti(
+        candidates: List<String>,
+        defaultPort: Int,
+        authToken: String,
+        pinnedFingerprintHex: String? = null,
+        pairingToken: String? = null,
+    ): CandidateConnection {
+        disconnect()
+        Log.i("ConnectionHolder", "connectMulti: ${candidates.size} candidate(s), defaultPort=$defaultPort")
+        val connection = CandidateConnector.connectFirstReachable(
+            candidates = candidates,
+            defaultPort = defaultPort,
+            authToken = authToken,
+            identity = androidIdentity(),
+            pinnedFingerprintHex = pinnedFingerprintHex,
+            pairingToken = pairingToken,
+        )
+        // Publish before the config wait so the approval-pending flow is
+        // observable while the server-side dialog (if any) is up.
+        currentClient = connection.client
+        currentWindowSocket = connection.windowSocket
+        try {
+            withTimeout(300_000) {
+                connection.windowSocket.awaitInitialConfig()
+            }
+        } catch (t: Throwable) {
+            Log.w("ConnectionHolder", "connectMulti failed awaiting config", t)
+            disconnect()
+            throw t
+        }
+        return connection
+    }
+
+    /**
+     * Self-reported identity for this device. Android devices report type
+     * "Android" so the settings UI can tell them apart from iOS and browser
+     * tabs, and the running app version so the server can gate newer pane
+     * kinds (agent consoles, 1.5+) to clients that can render them. The
+     * hostname + first non-loopback IPv4 lookups are best-effort and
+     * advisory; a failure just means blanks.
+     */
+    private fun androidIdentity(): ClientIdentity = ClientIdentity(
+        type = "Android",
+        hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrNull(),
+        selfReportedIp = runCatching { firstNonLoopbackIpv4() }.getOrNull(),
+        version = BuildConfig.VERSION_NAME,
+    )
+
     suspend fun connect(
         serverUrl: ServerUrl,
         authToken: String,
@@ -78,18 +153,7 @@ object ConnectionHolder {
         val fresh = TermtasticClient(
             serverUrl = serverUrl,
             authToken = authToken,
-            // Android devices report type "Android" so the settings UI can tell
-            // them apart from iOS and browser tabs, and the running app version
-            // so the server can gate newer pane kinds (agent consoles, 1.5+) to
-            // clients that can render them. We do a best-effort hostname + first
-            // non-loopback IPv4 lookup here; both are advisory so a failure just
-            // means blanks.
-            identity = ClientIdentity(
-                type = "Android",
-                hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrNull(),
-                selfReportedIp = runCatching { firstNonLoopbackIpv4() }.getOrNull(),
-                version = BuildConfig.VERSION_NAME,
-            ),
+            identity = androidIdentity(),
             pinnedFingerprintHex = pinnedFingerprintHex,
         )
         val socket = fresh.openWindowSocket()
@@ -173,19 +237,12 @@ object ConnectionHolder {
      * [se.soderbjorn.termtastic.android.ui.HostsScreen] to decide between
      * showing a generic error snackbar and a cert-changed re-pair dialog.
      *
+     * The scan itself now lives in the shared [CandidateConnector] (so iOS
+     * gets it too); this delegate is kept for existing call sites.
+     *
      * @param t the throwable to inspect (typically the failure surfaced from
-     *   [connect]).
+     *   [connect] / [connectMulti]).
      * @return `true` if any link in the cause chain is a pin-mismatch.
      */
-    fun isPinMismatch(t: Throwable): Boolean {
-        var c: Throwable? = t
-        var depth = 0
-        while (c != null && depth < 16) {
-            val msg = c.message
-            if (msg != null && msg.startsWith("pin-mismatch:")) return true
-            c = c.cause
-            depth++
-        }
-        return false
-    }
+    fun isPinMismatch(t: Throwable): Boolean = CandidateConnector.isPinMismatch(t)
 }

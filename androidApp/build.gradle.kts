@@ -152,6 +152,10 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 
+    // QR scanner for device pairing (Apache-2.0, no Play Services). Its
+    // CaptureActivity owns the camera runtime-permission flow.
+    implementation(libs.zxing.android.embedded)
+
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)

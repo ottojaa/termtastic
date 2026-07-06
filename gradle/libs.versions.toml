@@ -24,6 +24,7 @@ pty4j = "0.13.8"
 jediterm = "3.49"
 sqldelight = "2.0.2"
 zxing = "3.5.3"
+zxingAndroidEmbedded = "4.3.0"
 flexmark = "0.64.8"
 jsoup = "1.17.2"
 androidx-navigation = "2.8.4"
@@ -52,6 +53,7 @@ compose-components-resources = { module = "org.jetbrains.compose.components:comp
 compose-uiToolingPreview = { module = "org.jetbrains.compose.ui:ui-tooling-preview", version.ref = "composeMultiplatform" }
 logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingAndroidEmbedded" }
 ktor-serverCore = { module = "io.ktor:ktor-server-core-jvm", version.ref = "ktor" }
 ktor-serverNetty = { module = "io.ktor:ktor-server-netty-jvm", version.ref = "ktor" }
 ktor-serverTestHost = { module = "io.ktor:ktor-server-test-host-jvm", version.ref = "ktor" }

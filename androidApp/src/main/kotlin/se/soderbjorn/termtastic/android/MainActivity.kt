@@ -9,6 +9,7 @@
  */
 package se.soderbjorn.termtastic.android
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,6 +25,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import se.soderbjorn.termtastic.PairingPayload
 import se.soderbjorn.termtastic.android.ui.TermtasticApp
 import se.soderbjorn.termtastic.client.storage.LocalStoreContext
 
@@ -82,6 +84,7 @@ class MainActivity : ComponentActivity() {
         // Provide the process-wide application context to the shared LocalStore
         // (the Android `actual` reads it lazily on first file access).
         LocalStoreContext.appContext = applicationContext
+        capturePairingUri(intent)
         setContent {
             val colorScheme = if (isSystemInDarkTheme()) TermtasticDarkColorScheme else TermtasticLightColorScheme
             MaterialTheme(colorScheme = colorScheme) {
@@ -92,6 +95,32 @@ class MainActivity : ComponentActivity() {
                     TermtasticApp(applicationContext = applicationContext)
                 }
             }
+        }
+    }
+
+    /**
+     * Deep-link entry while the app is already running: with
+     * `launchMode="singleTask"`, scanning a pairing QR with the system camera
+     * routes here instead of relaunching the activity.
+     *
+     * @param intent the new intent, possibly a `termtastic://pair` VIEW link.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        capturePairingUri(intent)
+    }
+
+    /**
+     * Post a `termtastic://pair` VIEW link into [PendingPairingUri], where
+     * the hosts screen picks it up. Anything else is ignored.
+     *
+     * @param intent the launching or newly-delivered intent.
+     */
+    private fun capturePairingUri(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val uri = intent.dataString ?: return
+        if (uri.startsWith(PairingPayload.URI_PREFIX.removeSuffix("?"))) {
+            PendingPairingUri.post(uri)
         }
     }
 }
