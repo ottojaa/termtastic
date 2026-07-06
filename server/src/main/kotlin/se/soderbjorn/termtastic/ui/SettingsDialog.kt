@@ -83,12 +83,11 @@ import androidx.compose.ui.window.rememberWindowState
 import org.slf4j.LoggerFactory
 import se.soderbjorn.termtastic.ClaudeUsageMonitor
 import se.soderbjorn.termtastic.auth.DeviceAuth
+import se.soderbjorn.termtastic.net.LocalAddresses
 import se.soderbjorn.termtastic.persistence.SettingsRepository
 import se.soderbjorn.termtastic.tls.CertStore
 import java.awt.GraphicsEnvironment
 import javax.swing.SwingUtilities
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -340,7 +339,7 @@ object SettingsDialog {
         SectionHeader("Network")
 
         val port = listeningPort
-        val addresses = remember { localIpv4Addresses() }
+        val addresses = remember { LocalAddresses.ipv4() }
 
         Text("Loopback: 127.0.0.1", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
         if (addresses.isEmpty()) {
@@ -791,25 +790,4 @@ object SettingsDialog {
         }
     }
 
-    /**
-     * Enumerate all non-loopback IPv4 addresses on the machine's network
-     * interfaces. Used by the Network section to show available LAN addresses.
-     *
-     * @return distinct list of IPv4 address strings
-     */
-    private fun localIpv4Addresses(): List<String> {
-        val result = mutableListOf<String>()
-        runCatching {
-            val nics = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
-            for (nic in nics) {
-                if (!nic.isUp || nic.isLoopback || nic.isVirtual) continue
-                for (addr in nic.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
-                        result.add(addr.hostAddress)
-                    }
-                }
-            }
-        }.onFailure { log.warn("Failed to enumerate network interfaces", it) }
-        return result.distinct()
-    }
 }
