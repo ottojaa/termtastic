@@ -304,7 +304,6 @@ object DeviceAuth {
     ): String {
         val hash = sha256Hex(token)
         val now = System.currentTimeMillis()
-        val current = loadDevices(repo)
         val added = TrustedDevice(
             tokenHash = hash,
             label = label,
@@ -314,7 +313,9 @@ object DeviceAuth {
             connections = emptyList(),
             scope = scope,
         )
-        saveDevices(repo, TrustedDevices(current.devices.filterNot { it.tokenHash == hash } + added))
+        updateTrusted(repo) { current ->
+            TrustedDevices(current.devices.filterNot { it.tokenHash == hash } + added)
+        }
         log.info("DeviceAuth: minted trusted token label={} scope={} hashPrefix={}", label, scope, hash.take(10))
         return hash
     }
@@ -328,13 +329,19 @@ object DeviceAuth {
      * @return true if a matching MCP token was found and updated.
      */
     fun setMcpTokenScope(repo: SettingsRepository, tokenHash: String, scope: String): Boolean {
-        val current = loadDevices(repo)
-        if (current.devices.none { it.tokenHash == tokenHash && it.label == MCP_LABEL }) return false
-        val updated = current.devices.map {
-            if (it.tokenHash == tokenHash && it.label == MCP_LABEL) it.copy(scope = scope) else it
+        var changed = false
+        updateTrusted(repo) { current ->
+            if (current.devices.none { it.tokenHash == tokenHash && it.label == MCP_LABEL }) {
+                return@updateTrusted current
+            }
+            changed = true
+            TrustedDevices(
+                current.devices.map {
+                    if (it.tokenHash == tokenHash && it.label == MCP_LABEL) it.copy(scope = scope) else it
+                },
+            )
         }
-        saveDevices(repo, TrustedDevices(updated))
-        return true
+        return changed
     }
 
     /**
@@ -365,17 +372,7 @@ object DeviceAuth {
                 MessageDigest.isEqual(it.tokenHash.toByteArray(), hash.toByteArray())
         } ?: return null
         val scope = existing.scope ?: return null
-        val now = System.currentTimeMillis()
-        val updated = known.devices.map {
-            if (it.tokenHash == existing.tokenHash) {
-                it.copy(
-                    lastSeenEpochMs = now,
-                    lastIp = client.remoteAddress,
-                    connections = mergeConnections(it.connections, client, now),
-                )
-            } else it
-        }
-        saveDevices(repo, TrustedDevices(updated))
+        touchTrustedDevice(repo, existing.tokenHash, client)
         return scope
     }
 
@@ -384,14 +381,16 @@ object DeviceAuth {
      * approval prompt. Returns true if a matching device was found and removed.
      */
     fun revokeTrustedDevice(repo: SettingsRepository, tokenHash: String): Boolean {
-        val current = loadDevices(repo)
-        val filtered = current.devices.filterNot { it.tokenHash == tokenHash }
-        if (filtered.size == current.devices.size) return false
-        saveDevices(repo, TrustedDevices(filtered))
+        var removed = false
+        updateTrusted(repo) { current ->
+            val filtered = current.devices.filterNot { it.tokenHash == tokenHash }
+            removed = filtered.size != current.devices.size
+            TrustedDevices(filtered)
+        }
         // Invalidate any cached APPROVED decision so a queued duplicate
         // connection within the short TTL window still has to re-prompt.
-        recentDecisions.remove(tokenHash)
-        return true
+        if (removed) recentDecisions.remove(tokenHash)
+        return removed
     }
 
     /** Snapshot of all denied devices, for the settings dialog. */
@@ -420,12 +419,14 @@ object DeviceAuth {
      * approval prompt. Returns true if a matching device was found and removed.
      */
     fun unbanDeniedDevice(repo: SettingsRepository, tokenHash: String): Boolean {
-        val current = loadDeniedDevices(repo)
-        val filtered = current.devices.filterNot { it.tokenHash == tokenHash }
-        if (filtered.size == current.devices.size) return false
-        saveDeniedDevices(repo, DeniedDevices(filtered))
-        recentDecisions.remove(tokenHash)
-        return true
+        var removed = false
+        updateDenied(repo) { current ->
+            val filtered = current.devices.filterNot { it.tokenHash == tokenHash }
+            removed = filtered.size != current.devices.size
+            DeniedDevices(filtered)
+        }
+        if (removed) recentDecisions.remove(tokenHash)
+        return removed
     }
 
     @Serializable
@@ -539,17 +540,7 @@ object DeviceAuth {
                 MessageDigest.isEqual(it.tokenHash.toByteArray(), hash.toByteArray())
         }
         if (existing != null) {
-            val now = System.currentTimeMillis()
-            val updated = known.devices.map {
-                if (it.tokenHash == existing.tokenHash) {
-                    it.copy(
-                        lastSeenEpochMs = now,
-                        lastIp = remoteAddress,
-                        connections = mergeConnections(it.connections, client, now),
-                    )
-                } else it
-            }
-            saveDevices(repo, TrustedDevices(updated))
+            touchTrustedDevice(repo, existing.tokenHash, client)
             return Decision.APPROVED
         }
         val denied = loadDeniedDevices(repo)
@@ -557,17 +548,7 @@ object DeviceAuth {
             MessageDigest.isEqual(it.tokenHash.toByteArray(), hash.toByteArray())
         }
         if (deniedMatch != null) {
-            val now = System.currentTimeMillis()
-            val updated = denied.devices.map {
-                if (it.tokenHash == deniedMatch.tokenHash) {
-                    it.copy(
-                        lastSeenEpochMs = now,
-                        lastIp = remoteAddress,
-                        connections = mergeConnections(it.connections, client, now),
-                    )
-                } else it
-            }
-            saveDeniedDevices(repo, DeniedDevices(updated))
+            touchDeniedDevice(repo, deniedMatch.tokenHash, client)
             log.info(
                 "DeviceAuth: silently rejecting previously-denied device from {} hashPrefix={}",
                 remoteAddress,
@@ -642,17 +623,7 @@ object DeviceAuth {
             // Touch lastSeen / lastIp and merge the current client into the
             // device's history so an out-of-band inspection of the DB can see
             // which devices are actually in use and from where.
-            val now = System.currentTimeMillis()
-            val updated = known.devices.map {
-                if (it.tokenHash == existing.tokenHash) {
-                    it.copy(
-                        lastSeenEpochMs = now,
-                        lastIp = remoteAddress,
-                        connections = mergeConnections(it.connections, client, now),
-                    )
-                } else it
-            }
-            saveDevices(repo, TrustedDevices(updated))
+            touchTrustedDevice(repo, existing.tokenHash, client)
             return Decision.APPROVED
         }
         // Persistent deny list: a token the user has explicitly denied stays
@@ -664,17 +635,7 @@ object DeviceAuth {
             MessageDigest.isEqual(it.tokenHash.toByteArray(), hash.toByteArray())
         }
         if (deniedMatch != null) {
-            val now = System.currentTimeMillis()
-            val updated = denied.devices.map {
-                if (it.tokenHash == deniedMatch.tokenHash) {
-                    it.copy(
-                        lastSeenEpochMs = now,
-                        lastIp = remoteAddress,
-                        connections = mergeConnections(it.connections, client, now),
-                    )
-                } else it
-            }
-            saveDeniedDevices(repo, DeniedDevices(updated))
+            touchDeniedDevice(repo, deniedMatch.tokenHash, client)
             log.info(
                 "DeviceAuth: silently rejecting previously-denied device from {} hashPrefix={}",
                 remoteAddress,
@@ -854,26 +815,28 @@ object DeviceAuth {
         repo: SettingsRepository,
     ): String {
         val hash = sha256Hex(token)
-        val current = loadDevices(repo)
-        if (current.devices.any { it.tokenHash == hash }) return hash
-        val now = System.currentTimeMillis()
-        val initialConnection = ClientConnection(
-            type = client.type,
-            hostname = client.hostname,
-            selfReportedIp = client.selfReportedIp,
-            remoteAddress = client.remoteAddress,
-            firstSeenEpochMs = now,
-            lastSeenEpochMs = now,
-        )
-        val added = TrustedDevice(
-            tokenHash = hash,
-            label = null,
-            firstSeenEpochMs = now,
-            lastSeenEpochMs = now,
-            lastIp = client.remoteAddress,
-            connections = listOf(initialConnection),
-        )
-        saveDevices(repo, TrustedDevices(current.devices + added))
+        updateTrusted(repo) { current ->
+            // Re-check under the lock so racing callers can't double-add.
+            if (current.devices.any { it.tokenHash == hash }) return@updateTrusted current
+            val now = System.currentTimeMillis()
+            val initialConnection = ClientConnection(
+                type = client.type,
+                hostname = client.hostname,
+                selfReportedIp = client.selfReportedIp,
+                remoteAddress = client.remoteAddress,
+                firstSeenEpochMs = now,
+                lastSeenEpochMs = now,
+            )
+            val added = TrustedDevice(
+                tokenHash = hash,
+                label = null,
+                firstSeenEpochMs = now,
+                lastSeenEpochMs = now,
+                lastIp = client.remoteAddress,
+                connections = listOf(initialConnection),
+            )
+            TrustedDevices(current.devices + added)
+        }
         return hash
     }
 
@@ -941,7 +904,6 @@ object DeviceAuth {
                 // Persist the denial so the next attempt from this token
                 // doesn't re-prompt. The entry is revocable from the settings
                 // dialog ("Unban") in case of a misclick.
-                val current = loadDeniedDevices(repo)
                 val initialConnection = ClientConnection(
                     type = client.type,
                     hostname = client.hostname,
@@ -957,7 +919,7 @@ object DeviceAuth {
                     lastIp = remoteAddress,
                     connections = listOf(initialConnection),
                 )
-                saveDeniedDevices(repo, DeniedDevices(current.devices + added))
+                updateDenied(repo) { current -> DeniedDevices(current.devices + added) }
                 log.info("DeviceAuth: persisted denial for hashPrefix={}", hash.take(10))
             }
             return@withLock Decision.REJECTED
@@ -1144,6 +1106,62 @@ object DeviceAuth {
         Row(modifier = Modifier.padding(vertical = 1.dp)) {
             Text("$label: ", fontSize = 13.sp)
             Text(value, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
+    }
+
+    // Every trusted/denied mutation is a load-modify-save on one of two SQLite
+    // keys. Serialize them through a single JVM monitor so concurrent connects
+    // — most sharply, a QR pairing landing while the desktop approval dialog is
+    // being answered — can't both read the same snapshot, append different
+    // devices, and have the second save clobber the first (a silently-dropped
+    // trusted device). The critical section is one SQLite read + write with no
+    // suspension, so a plain lock is safe on both the coroutine and event-loop
+    // threads that reach here, and it is always the innermost lock (callers may
+    // hold approvalMutex around it, never the reverse), so there is no cycle.
+    private val deviceStoreLock = Any()
+
+    /** Atomically load the trusted-device list, apply [transform], persist it. */
+    private fun updateTrusted(repo: SettingsRepository, transform: (TrustedDevices) -> TrustedDevices) {
+        synchronized(deviceStoreLock) { saveDevices(repo, transform(loadDevices(repo))) }
+    }
+
+    /** Atomically load the denied-device list, apply [transform], persist it. */
+    private fun updateDenied(repo: SettingsRepository, transform: (DeniedDevices) -> DeniedDevices) {
+        synchronized(deviceStoreLock) { saveDeniedDevices(repo, transform(loadDeniedDevices(repo))) }
+    }
+
+    /**
+     * Atomically bump lastSeen/lastIp and merge [client] into the trusted
+     * device with [tokenHash]. No-op if the device was concurrently revoked.
+     */
+    private fun touchTrustedDevice(repo: SettingsRepository, tokenHash: String, client: ClientInfo) {
+        val now = System.currentTimeMillis()
+        updateTrusted(repo) { current ->
+            TrustedDevices(
+                current.devices.map {
+                    if (it.tokenHash == tokenHash) it.copy(
+                        lastSeenEpochMs = now,
+                        lastIp = client.remoteAddress,
+                        connections = mergeConnections(it.connections, client, now),
+                    ) else it
+                },
+            )
+        }
+    }
+
+    /** Denied-list counterpart of [touchTrustedDevice]. */
+    private fun touchDeniedDevice(repo: SettingsRepository, tokenHash: String, client: ClientInfo) {
+        val now = System.currentTimeMillis()
+        updateDenied(repo) { current ->
+            DeniedDevices(
+                current.devices.map {
+                    if (it.tokenHash == tokenHash) it.copy(
+                        lastSeenEpochMs = now,
+                        lastIp = client.remoteAddress,
+                        connections = mergeConnections(it.connections, client, now),
+                    ) else it
+                },
+            )
         }
     }
 

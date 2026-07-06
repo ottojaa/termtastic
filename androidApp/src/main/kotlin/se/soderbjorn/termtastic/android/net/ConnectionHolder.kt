@@ -1,7 +1,9 @@
 package se.soderbjorn.termtastic.android.net
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import se.soderbjorn.termtastic.android.BuildConfig
 import se.soderbjorn.termtastic.client.CandidateConnection
@@ -135,13 +137,19 @@ object ConnectionHolder {
      * kinds (agent consoles, 1.5+) to clients that can render them. The
      * hostname + first non-loopback IPv4 lookups are best-effort and
      * advisory; a failure just means blanks.
+     *
+     * Runs on [Dispatchers.IO]: `getLocalHost()` does a reverse-DNS lookup
+     * that can block for seconds on a bad resolver, and connect callers run
+     * on the main dispatcher — resolving it here keeps that off the UI thread.
      */
-    private fun androidIdentity(): ClientIdentity = ClientIdentity(
-        type = "Android",
-        hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrNull(),
-        selfReportedIp = runCatching { firstNonLoopbackIpv4() }.getOrNull(),
-        version = BuildConfig.VERSION_NAME,
-    )
+    private suspend fun androidIdentity(): ClientIdentity = withContext(Dispatchers.IO) {
+        ClientIdentity(
+            type = "Android",
+            hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrNull(),
+            selfReportedIp = runCatching { firstNonLoopbackIpv4() }.getOrNull(),
+            version = BuildConfig.VERSION_NAME,
+        )
+    }
 
     /**
      * Tears down any existing client and creates a fresh one for [serverUrl].

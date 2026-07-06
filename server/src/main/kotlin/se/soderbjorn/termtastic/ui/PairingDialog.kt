@@ -18,6 +18,7 @@ package se.soderbjorn.termtastic.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,11 +27,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +53,8 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import se.soderbjorn.termtastic.HostPort
 import se.soderbjorn.termtastic.PairingPayload
@@ -83,19 +89,13 @@ internal fun PairingDialog(port: Int, onClose: () -> Unit) {
     }
 
     val fingerprint = DeviceAuth.serverCertFingerprintHex
-    val addresses = remember { LocalAddresses.ipv4() }
-    val payloadUri = remember(token, fingerprint, addresses, port) {
-        if (fingerprint == null || addresses.isEmpty()) null
-        else PairingPayload(
-            candidates = addresses.map { HostPort(it, port) },
-            defaultPort = port,
-            fingerprintHex = fingerprint,
-            token = token,
-            serverName = runCatching { InetAddress.getLocalHost().hostName }
-                .getOrNull()?.takeIf { it.isNotBlank() },
-        ).encode()
+    // Build addresses, payload, and QR off the Compose UI thread: a
+    // reverse-DNS getLocalHost() and the QR raster can each take seconds on a
+    // slow resolver, and doing them in composition would freeze the whole
+    // desktop app while the dialog opens. `null` = still computing → spinner.
+    val data by produceState<PairingData?>(initialValue = null, token, fingerprint, port) {
+        value = withContext(Dispatchers.IO) { buildPairingData(token, fingerprint, port) }
     }
-    val qr = remember(payloadUri) { payloadUri?.let(::renderQrBitmap) }
 
     val dialogState = rememberDialogState(
         size = DpSize(420.dp, 560.dp),
@@ -117,72 +117,122 @@ internal fun PairingDialog(port: Int, onClose: () -> Unit) {
                         .verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (qr == null) {
-                        PairingUnavailable(fingerprint == null)
-                    } else {
-                        Text(
-                            "Scan with the Termtastic app on your phone: " +
-                                "Hosts → Scan pairing code.",
-                            fontSize = 13.sp,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Box(
-                            modifier = Modifier.size(300.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Image(
-                                bitmap = qr,
-                                contentDescription = "Pairing QR code",
-                                filterQuality = FilterQuality.None,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
-                        Spacer(Modifier.height(12.dp))
-
-                        Text(
-                            "On this Wi-Fi",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.align(Alignment.Start),
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        addresses.forEach { address ->
-                            Text(
-                                "$address:$port",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp,
-                                modifier = Modifier.align(Alignment.Start),
-                            )
-                        }
-                        Text(
-                            "Your phone must be on the same Wi-Fi network as this computer.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            modifier = Modifier.align(Alignment.Start),
-                        )
-                        Spacer(Modifier.height(12.dp))
-
-                        Text(
-                            "Certificate SHA-256: ${prettyFingerprintShort(fingerprint!!)}",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            modifier = Modifier.align(Alignment.Start),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "This code is like a password — anyone who scans it can " +
-                                "connect. It expires in 5 minutes.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                    val current = data
+                    when {
+                        fingerprint == null -> PairingUnavailable(missingFingerprint = true)
+                        current == null -> CircularProgressIndicator()
+                        current.qr == null -> PairingUnavailable(missingFingerprint = false)
+                        else -> PairingContent(current, fingerprint, port)
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * Everything the dialog derives from off-thread work: the QR bitmap and the
+ * address list to display. `qr` is null when no payload could be built (no
+ * reachable address), which the dialog renders as [PairingUnavailable].
+ */
+private class PairingData(
+    val addresses: List<String>,
+    val qr: ImageBitmap?,
+)
+
+/**
+ * Do the blocking pairing setup — NIC enumeration, hostname reverse-DNS, and
+ * the QR raster — off the UI thread. Called from [PairingDialog]'s
+ * `produceState` on [Dispatchers.IO].
+ *
+ * @param token the minted pairing token to embed.
+ * @param fingerprint the server's TLS leaf fingerprint, or null if unknown.
+ * @param port the default port for the candidate endpoints.
+ * @return the address list plus a QR bitmap, or a null bitmap when no payload
+ *   could be built (missing fingerprint or no reachable address).
+ */
+private fun buildPairingData(token: String, fingerprint: String?, port: Int): PairingData {
+    val addresses = LocalAddresses.ipv4()
+    if (fingerprint == null || addresses.isEmpty()) return PairingData(addresses, null)
+    val uri = PairingPayload(
+        candidates = addresses.map { HostPort(it, port) },
+        defaultPort = port,
+        fingerprintHex = fingerprint,
+        token = token,
+        serverName = runCatching { InetAddress.getLocalHost().hostName }
+            .getOrNull()?.takeIf { it.isNotBlank() },
+    ).encode()
+    return PairingData(addresses, renderQrBitmap(uri))
+}
+
+/**
+ * The populated pairing body: QR, the "On this Wi-Fi" address list, the cert
+ * fingerprint, and the password-like warning.
+ *
+ * @param data the off-thread-built addresses + QR bitmap ([PairingData.qr]
+ *   is guaranteed non-null here).
+ * @param fingerprint the server's TLS leaf fingerprint (non-null here).
+ * @param port the default port shown alongside each address.
+ */
+@Composable
+private fun ColumnScope.PairingContent(data: PairingData, fingerprint: String, port: Int) {
+    Text(
+        "Scan with the Termtastic app on your phone: Hosts → Scan pairing code.",
+        fontSize = 13.sp,
+    )
+    Spacer(Modifier.height(12.dp))
+    Box(
+        modifier = Modifier.size(300.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            bitmap = data.qr!!,
+            contentDescription = "Pairing QR code",
+            filterQuality = FilterQuality.None,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+    Spacer(Modifier.height(12.dp))
+
+    Text(
+        "On this Wi-Fi",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.align(Alignment.Start),
+    )
+    Spacer(Modifier.height(4.dp))
+    data.addresses.forEach { address ->
+        Text(
+            "$address:$port",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            modifier = Modifier.align(Alignment.Start),
+        )
+    }
+    Text(
+        "Your phone must be on the same Wi-Fi network as this computer.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 12.sp,
+        modifier = Modifier.align(Alignment.Start),
+    )
+    Spacer(Modifier.height(12.dp))
+
+    Text(
+        "Certificate SHA-256: ${prettyFingerprintShort(fingerprint)}",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+        modifier = Modifier.align(Alignment.Start),
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "This code is like a password — anyone who scans it can connect. " +
+            "It expires in 5 minutes.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /**
@@ -214,10 +264,14 @@ private fun prettyFingerprintShort(hex: String): String {
 }
 
 /**
- * Rasterize [content] as a QR code [ImageBitmap]. Error-correction level M
- * with a 1-module quiet zone keeps the module count low enough to scan at
- * 300 dp for payloads around [PairingPayload.MAX_LENGTH] chars. Black on
- * white regardless of theme — scanner contrast beats aesthetics here.
+ * Rasterize [content] as a QR code [ImageBitmap] at its natural module
+ * resolution (requesting a 1×1 size makes zxing clamp up to exactly the
+ * module count + quiet zone — a few thousand pixels, not the former 640×640 /
+ * ~410k). The dialog upscales it with [FilterQuality.None], so nearest-
+ * neighbour keeps the modules crisp. Error-correction level M with a 1-module
+ * quiet zone stays scannable at 300 dp for payloads near
+ * [PairingPayload.MAX_LENGTH]. Black on white regardless of theme — scanner
+ * contrast beats aesthetics.
  *
  * @param content the encoded pairing URI.
  * @return the bitmap, or `null` if encoding failed (logged, never thrown).
@@ -227,12 +281,18 @@ private fun renderQrBitmap(content: String): ImageBitmap? = runCatching {
         EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
         EncodeHintType.MARGIN to 1,
     )
-    val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 640, 640, hints)
-    val image = BufferedImage(matrix.width, matrix.height, BufferedImage.TYPE_INT_RGB)
-    for (y in 0 until matrix.height) {
-        for (x in 0 until matrix.width) {
-            image.setRGB(x, y, if (matrix.get(x, y)) 0x000000 else 0xFFFFFF)
+    val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 1, 1, hints)
+    val w = matrix.width
+    val h = matrix.height
+    // Fill an int buffer and blit it in one setRGB call rather than w*h calls.
+    val pixels = IntArray(w * h)
+    for (y in 0 until h) {
+        val row = y * w
+        for (x in 0 until w) {
+            pixels[row + x] = if (matrix.get(x, y)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
         }
     }
+    val image = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
+    image.setRGB(0, 0, w, h, pixels, 0, w)
     image.toComposeImageBitmap()
 }.onFailure { log.warn("Failed to render pairing QR", it) }.getOrNull()

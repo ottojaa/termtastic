@@ -12,6 +12,8 @@ package se.soderbjorn.termtastic.auth
 
 import se.soderbjorn.termtastic.persistence.SettingsRepository
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -109,6 +111,36 @@ class DeviceAuthPairingTest {
 
         assertEquals(DeviceAuth.Decision.APPROVED, decision)
         assertEquals(2, DeviceAuth.listTrustedDevices(repo).size)
+    }
+
+    @Test
+    fun `concurrent pairings all persist without losing devices`() {
+        val repo = tempRepo()
+        val n = 24
+        // Loopback so tryPairingTokenApproval skips the allow-remote flip and
+        // every repo access funnels through the locked trusted-list writer —
+        // isolating the load-modify-save race this guards against.
+        val tokens = (0 until n).map { PairingTokens.mint() }
+        val ready = CountDownLatch(n)
+        val go = CountDownLatch(1)
+        val threads = (0 until n).map { i ->
+            thread {
+                ready.countDown()
+                go.await()
+                DeviceAuth.checkFastPath(
+                    token = "device-token-concurrent-$i",
+                    client = loopbackClient(),
+                    repo = repo,
+                    pairToken = tokens[i],
+                )
+            }
+        }
+        ready.await()
+        go.countDown() // release all threads at once for maximum contention
+        threads.forEach { it.join() }
+
+        // Every pairing must have survived; a lost-update race would drop some.
+        assertEquals(n, DeviceAuth.listTrustedDevices(repo).size)
     }
 
     @Test
