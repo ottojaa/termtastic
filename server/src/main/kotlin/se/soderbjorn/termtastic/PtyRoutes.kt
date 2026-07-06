@@ -41,7 +41,7 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
     webSocket("/pty/{id}") {
         val token = call.readAuthToken()
         val info = call.readClientInfo()
-        when (DeviceAuth.authorize(token, info, settingsRepo)) {
+        when (DeviceAuth.authorize(token, info, settingsRepo, call.readPairingToken())) {
             DeviceAuth.Decision.APPROVED -> Unit
             DeviceAuth.Decision.REJECTED -> {
                 close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "device not approved"))

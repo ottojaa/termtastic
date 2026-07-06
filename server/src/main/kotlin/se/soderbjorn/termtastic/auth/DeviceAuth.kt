@@ -100,6 +100,15 @@ object DeviceAuth {
     private val recentDecisions = HashMap<String, CachedDecision>()
     private const val RECENT_DECISION_TTL_MS: Long = 10_000
 
+    // Prompt cooldown per remote IP: after the user denies a non-loopback
+    // device, further unknown tokens from the same address are rejected
+    // without a dialog for a short window, so a port scanner cycling random
+    // tokens can't turn into desktop dialog spam. Keyed by observed remote
+    // address → denial epoch-millis; all access happens inside
+    // [approvalMutex] and entries are evicted alongside [recentDecisions].
+    private val recentIpDenials = HashMap<String, Long>()
+    private const val IP_DENIAL_COOLDOWN_MS: Long = 30_000
+
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
 
     private const val TRUSTED_DEVICES_KEY = "auth.trusted_devices.v1"
@@ -488,17 +497,39 @@ object DeviceAuth {
      * WebSocket handler) should call this first, notify the client if the
      * result is `null`, and only then call [authorize] for the blocking
      * prompt.
+     *
+     * @param pairToken optional one-time QR pairing token; when it spends
+     *   successfully the device is trusted immediately, before the network
+     *   gate (scanning the QR *is* the user's opt-in — see
+     *   [tryPairingTokenApproval]).
      */
     fun checkFastPath(
         token: String?,
         client: ClientInfo,
         repo: SettingsRepository,
+        pairToken: String? = null,
     ): Decision? {
+        // Pairing runs before the network gate: a valid pairing token both
+        // proves user intent and (for remote peers) switches allow-remote on.
+        tryPairingTokenApproval(token, pairToken, client, repo)?.let { return it }
         val remoteAddress = client.remoteAddress
         if (!isLoopback(remoteAddress) && !repo.isAllowRemoteConnections()) {
             return Decision.REJECTED
         }
-        if (token.isNullOrBlank()) return null
+        if (token.isNullOrBlank()) {
+            // A remote peer without a device token has nothing an approval
+            // could persist. Reject silently instead of prompting so port
+            // scanners and stray browsers can't pop dialogs on the desktop.
+            // (Loopback keeps the prompt path — the token-less curl/dev flow.)
+            if (!isLoopback(remoteAddress)) {
+                log.info(
+                    "DeviceAuth: rejecting token-less non-loopback connection from {} without prompting",
+                    remoteAddress,
+                )
+                return Decision.REJECTED
+            }
+            return null
+        }
         val hash = sha256Hex(token)
         val known = loadDevices(repo)
         // MCP tokens are a distinct trust class: they never authorize the
@@ -548,11 +579,24 @@ object DeviceAuth {
         return null
     }
 
+    /**
+     * The blocking authorization gate every HTTP route and WebSocket handler
+     * runs through. Resolves trusted/denied tokens silently and prompts the
+     * interactive approval dialog for unknown ones.
+     *
+     * @param pairToken optional one-time QR pairing token; when it spends
+     *   successfully the device is trusted immediately, before the network
+     *   gate — see [tryPairingTokenApproval].
+     */
     suspend fun authorize(
         token: String?,
         client: ClientInfo,
         repo: SettingsRepository,
+        pairToken: String? = null,
     ): Decision {
+        // Pairing runs before the network gate: a valid pairing token both
+        // proves user intent and (for remote peers) switches allow-remote on.
+        tryPairingTokenApproval(token, pairToken, client, repo)?.let { return it }
         val remoteAddress = client.remoteAddress
         // Network-scope gate: if the user hasn't opted into non-localhost
         // connections, reject anything that isn't clearly loopback before we
@@ -566,6 +610,15 @@ object DeviceAuth {
             return Decision.REJECTED
         }
         if (token.isNullOrBlank()) {
+            // See checkFastPath: token-less remote peers are rejected without
+            // a prompt; the loopback curl/dev flow keeps its dialog.
+            if (!isLoopback(remoteAddress)) {
+                log.info(
+                    "DeviceAuth: rejecting token-less non-loopback connection from {} without prompting",
+                    remoteAddress,
+                )
+                return Decision.REJECTED
+            }
             log.info("DeviceAuth: incoming request from {} has no token cookie", remoteAddress)
             return promptOrReject(tokenToPersist = null, client, repo)
         }
@@ -713,10 +766,89 @@ object DeviceAuth {
         // token in Settings before the first browser connect must not break
         // the first-localhost-device onboarding shortcut.
         if (known.devices.any { it.label != MCP_LABEL } || denied.devices.isNotEmpty()) return null
-        val hash = sha256Hex(token)
         // …but an MCP token itself must never ride the shortcut into the
         // interactive trust class: a known hash (of any label) is excluded.
-        if (known.devices.any { it.tokenHash == hash }) return null
+        if (known.devices.any { it.tokenHash == sha256Hex(token) }) return null
+        val hash = persistTrustedDevice(token, client, repo)
+        log.info(
+            "DeviceAuth: auto-approved first localhost device (clean slate) from {} hashPrefix={}",
+            client.remoteAddress,
+            hash.take(10),
+        )
+        return Decision.APPROVED
+    }
+
+    /**
+     * QR pairing shortcut: when the connect carries both a device token and
+     * a live one-time pairing token, spend the pairing token and trust the
+     * device on the spot — no approval dialog. Possession of an un-expired
+     * pairing token means the user was just looking at this server's pairing
+     * QR, which is a stronger trust ceremony than clicking a dialog button.
+     *
+     * For a non-loopback peer this also switches the allow-remote setting on
+     * when it was off: the user opened "Pair a device" precisely to connect
+     * this phone, and the QR is only reachable from the desktop's own screen.
+     * The change is logged and shows up in the settings dialog; the toggle
+     * remains the master off-switch afterwards (only a *fresh* pairing token
+     * can switch it back on).
+     *
+     * Caller context: the very first statement of [checkFastPath] and
+     * [authorize], deliberately ahead of the network-scope gate. A failed
+     * spend (expired, reused, or foreign token) returns `null` and the
+     * caller falls through to the normal flow — reconnects that re-send a
+     * consumed token then simply hit the trusted-device lookup and pass.
+     *
+     * @param token the device-auth token to persist as trusted.
+     * @param pairToken the raw pairing token from the QR scan, or `null`.
+     * @param client the connecting client's metadata for history/logging.
+     * @param repo the settings repository to persist trust state into.
+     * @return [Decision.APPROVED] when the pairing token spent, else `null`.
+     * @see PairingTokens
+     */
+    private fun tryPairingTokenApproval(
+        token: String?,
+        pairToken: String?,
+        client: ClientInfo,
+        repo: SettingsRepository,
+    ): Decision? {
+        if (token.isNullOrBlank() || pairToken.isNullOrBlank()) return null
+        if (!PairingTokens.consume(pairToken)) return null
+        val hash = persistTrustedDevice(token, client, repo)
+        if (!isLoopback(client.remoteAddress) && !repo.isAllowRemoteConnections()) {
+            repo.setAllowRemoteConnections(true)
+            log.info(
+                "DeviceAuth: auto-enabled allow-remote connections (pairing token from non-loopback {})",
+                client.remoteAddress,
+            )
+        }
+        log.info(
+            "DeviceAuth: pairing token consumed; trusted device from {} hashPrefix={}",
+            client.remoteAddress,
+            hash.take(10),
+        )
+        return Decision.APPROVED
+    }
+
+    /**
+     * Persist [token] as a trusted interactive device, appending to the
+     * existing list (a no-op when the hash is already present, so racing
+     * callers can't duplicate an entry). Shared by every non-dialog trust
+     * path: the clean-slate loopback shortcut, QR pairing approval, and the
+     * dialog's own approve branch.
+     *
+     * @param token the raw device token; only its SHA-256 is stored.
+     * @param client the connecting client, recorded as the first connection.
+     * @param repo the settings repository to persist into.
+     * @return the token's SHA-256 hash (the settings-dialog list key).
+     */
+    private fun persistTrustedDevice(
+        token: String,
+        client: ClientInfo,
+        repo: SettingsRepository,
+    ): String {
+        val hash = sha256Hex(token)
+        val current = loadDevices(repo)
+        if (current.devices.any { it.tokenHash == hash }) return hash
         val now = System.currentTimeMillis()
         val initialConnection = ClientConnection(
             type = client.type,
@@ -734,13 +866,8 @@ object DeviceAuth {
             lastIp = client.remoteAddress,
             connections = listOf(initialConnection),
         )
-        saveDevices(repo, TrustedDevices(listOf(added)))
-        log.info(
-            "DeviceAuth: auto-approved first localhost device (clean slate) from {} hashPrefix={}",
-            client.remoteAddress,
-            hash.take(10),
-        )
-        return Decision.APPROVED
+        saveDevices(repo, TrustedDevices(current.devices + added))
+        return hash
     }
 
     private suspend fun promptOrReject(
@@ -752,8 +879,9 @@ object DeviceAuth {
         val hash = tokenToPersist?.let { sha256Hex(it) }
         val now = System.currentTimeMillis()
 
-        // Evict expired cache entries so the map doesn't grow without bound.
+        // Evict expired cache entries so the maps don't grow without bound.
         recentDecisions.entries.removeAll { it.value.expiresAtMs <= now }
+        recentIpDenials.entries.removeAll { it.value + IP_DENIAL_COOLDOWN_MS <= now }
 
         // A previous waiter inside this same mutex session may have just
         // persisted this exact token as trusted (common at boot, when
@@ -774,6 +902,17 @@ object DeviceAuth {
             }
         }
 
+        // Per-IP prompt cooldown: a non-loopback address the user denied
+        // moments ago is rejected outright instead of re-prompting.
+        if (!isLoopback(remoteAddress) && recentIpDenials.containsKey(remoteAddress)) {
+            log.info(
+                "DeviceAuth: rejecting {} without prompting (address denied within the last {} s)",
+                remoteAddress,
+                IP_DENIAL_COOLDOWN_MS / 1000,
+            )
+            return@withLock Decision.REJECTED
+        }
+
         if (GraphicsEnvironment.isHeadless()) {
             log.warn(
                 "Rejecting connection from {}: no token or unknown token, and JVM is headless so no approval dialog can be shown",
@@ -784,6 +923,9 @@ object DeviceAuth {
         val approved = showApprovalDialog(client)
         if (!approved) {
             log.info("User denied device from {}", remoteAddress)
+            if (!isLoopback(remoteAddress)) {
+                recentIpDenials[remoteAddress] = now
+            }
             if (hash != null) {
                 recentDecisions[hash] = CachedDecision(
                     Decision.REJECTED,
@@ -821,24 +963,7 @@ object DeviceAuth {
             log.info("User approved cookie-less connection from {} (not persisted)", remoteAddress)
             return@withLock Decision.APPROVED
         }
-        val devices = loadDevices(repo)
-        val initialConnection = ClientConnection(
-            type = client.type,
-            hostname = client.hostname,
-            selfReportedIp = client.selfReportedIp,
-            remoteAddress = remoteAddress,
-            firstSeenEpochMs = now,
-            lastSeenEpochMs = now,
-        )
-        val added = TrustedDevice(
-            tokenHash = hash,
-            label = null,
-            firstSeenEpochMs = now,
-            lastSeenEpochMs = now,
-            lastIp = remoteAddress,
-            connections = listOf(initialConnection),
-        )
-        saveDevices(repo, TrustedDevices(devices.devices + added))
+        persistTrustedDevice(tokenToPersist, client, repo)
         recentDecisions[hash] = CachedDecision(
             Decision.APPROVED,
             now + RECENT_DECISION_TTL_MS,
