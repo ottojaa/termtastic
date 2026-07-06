@@ -63,7 +63,10 @@ final class ConnectionHolder {
             serverUrl: serverUrl,
             authToken: authToken,
             identity: identity,
-            pinnedFingerprintHex: pinnedFingerprintHex
+            pinnedFingerprintHex: pinnedFingerprintHex,
+            // One-time QR pairing token; the iOS scanner flow is a follow-up,
+            // so iOS never has one to send yet.
+            pairingToken: nil
         )
         let socket = fresh.openWindowSocket()
         // Watch for PendingApproval so we can update the UI while

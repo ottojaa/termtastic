@@ -36,7 +36,7 @@ data class ServerUrl(
      * @param path the endpoint path, e.g. `"/api/ui-settings"`.
      * @return the complete URL string.
      */
-    fun httpUrl(path: String): String = "$httpScheme://$host:$port${ensureSlash(path)}"
+    fun httpUrl(path: String): String = "$httpScheme://${hostForUrl()}:$port${ensureSlash(path)}"
 
     /**
      * Build a fully qualified WebSocket URL for the given server [path].
@@ -44,7 +44,16 @@ data class ServerUrl(
      * @param path the endpoint path, e.g. `"/window"`.
      * @return the complete URL string.
      */
-    fun wsUrl(path: String): String = "$wsScheme://$host:$port${ensureSlash(path)}"
+    fun wsUrl(path: String): String = "$wsScheme://${hostForUrl()}:$port${ensureSlash(path)}"
+
+    /**
+     * The [host] as it must appear in a URL authority: raw IPv6 literals are
+     * wrapped in brackets (`[2001:db8::1]`) so the `:port` suffix parses;
+     * IPv4 literals and hostnames pass through unchanged. Already-bracketed
+     * input is left alone.
+     */
+    private fun hostForUrl(): String =
+        if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
 
     private fun ensureSlash(path: String): String = if (path.startsWith("/")) path else "/$path"
 }

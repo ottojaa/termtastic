@@ -211,6 +211,48 @@ class LocalRepository(
     }
 
     /**
+     * Append a host entry created from a scanned pairing QR and persist it.
+     * Unlike [addHost], the entry is born with the server's TLS pin (verify
+     * mode from the very first connect — no TOFU window), the full candidate
+     * endpoint list to try in order, and the one-time pairing token that the
+     * next connect spends to skip the desktop approval dialog.
+     *
+     * Called by the Android hosts screen's `handlePairingUri` after a
+     * successful QR scan or `termtastic://pair` deep link.
+     *
+     * @param label user-visible display name (the payload's server name or a
+     *   placeholder).
+     * @param host preferred endpoint host to try first.
+     * @param port preferred endpoint port.
+     * @param pinnedFingerprintHex lowercase hex SHA-256 of the server's leaf
+     *   cert from the pairing payload.
+     * @param candidates every advertised endpoint as `host[:port]` strings.
+     * @param pairingToken the single-use pairing token from the payload.
+     * @return the newly-created [HostEntry].
+     * @see se.soderbjorn.termtastic.PairingPayload
+     */
+    suspend fun addPairedHost(
+        label: String,
+        host: String,
+        port: Int,
+        pinnedFingerprintHex: String,
+        candidates: List<String>,
+        pairingToken: String,
+    ): HostEntry {
+        val entry = HostEntry(
+            id = randomUuid(),
+            label = label,
+            host = host,
+            port = port,
+            pinnedFingerprintHex = pinnedFingerprintHex,
+            candidates = candidates,
+            pairingToken = pairingToken,
+        )
+        mutate { it.copy(hosts = it.hosts + entry) }
+        return entry
+    }
+
+    /**
      * Replace an existing host entry, matching on [HostEntry.id]. Used both for
      * edits and to record a captured TLS pin after a TOFU first-connect.
      *
