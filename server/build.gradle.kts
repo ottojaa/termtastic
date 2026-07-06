@@ -80,6 +80,9 @@ dependencies {
     implementation(libs.sqldelight.coroutinesExtensions)
     implementation(libs.flexmark.all)
     implementation(libs.jsoup)
+    // QR bitmap generation for the device-pairing dialog (pure Java, no
+    // javase/AWT-helper artifact needed — we rasterize the BitMatrix ourselves).
+    implementation(libs.zxing.core)
     implementation(libs.compose.runtime)
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)

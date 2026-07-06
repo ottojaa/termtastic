@@ -6,7 +6,8 @@
  * controls are split across two tabs so the MCP configuration doesn't
  * clutter the everyday network/device controls:
  *  - **General** tab:
- *    - Network settings (allow remote connections, display listening port/IPs).
+ *    - Connections (listening port/IPs, allow-remote toggle, "Pair a
+ *      device" QR dialog — see [PairingDialog]).
  *    - Claude Code usage polling toggle.
  *    - Trusted device management (list, revoke).
  *    - Denied device management (list, unban).
@@ -235,6 +236,13 @@ object SettingsDialog {
         var selectedTab by remember { mutableStateOf(0) }
         val tabs = listOf("General", "MCP")
 
+        // Bumped when a flow outside this window may have mutated settings —
+        // currently the pairing dialog, whose QR approval can switch
+        // allow-remote on. Paired with isShowing so both reopening the
+        // window and closing the pairing dialog force a fresh repo read.
+        var settingsRefresh by remember { mutableStateOf(0) }
+        val refreshKey: Any = Pair(isShowing, settingsRefresh)
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -292,16 +300,16 @@ object SettingsDialog {
                 ) {
                     when (selectedTab) {
                         1 -> {
-                            McpSection(repo, isShowing)
+                            McpSection(repo, refreshKey)
                         }
                         else -> {
-                            NetworkSection(repo)
+                            ConnectionsSection(repo, refreshKey, onPairingDialogClosed = { settingsRefresh++ })
                             Spacer(Modifier.height(16.dp))
                             ClaudeUsageSection(repo)
                             Spacer(Modifier.height(16.dp))
-                            TrustedDevicesSection(repo, isShowing)
+                            TrustedDevicesSection(repo, refreshKey)
                             Spacer(Modifier.height(16.dp))
-                            DeniedDevicesSection(repo, isShowing)
+                            DeniedDevicesSection(repo, refreshKey)
                         }
                     }
                 }
@@ -334,9 +342,28 @@ object SettingsDialog {
         Spacer(Modifier.height(8.dp))
     }
 
+    /**
+     * Render the "Connections" section: how this server can be reached
+     * (addresses + port), the allow-remote master switch, and the "Pair a
+     * device" entry point to the QR pairing dialog.
+     *
+     * Called from [SettingsContent] on the General tab.
+     *
+     * @param repo settings repository backing the allow-remote toggle.
+     * @param refreshKey changing this value re-reads settings state from the
+     *   repo — needed because a completed pairing can flip allow-remote on
+     *   from outside this window (see [onPairingDialogClosed]).
+     * @param onPairingDialogClosed invoked when the pairing dialog closes so
+     *   the parent can bump the refresh counter.
+     * @see PairingDialog
+     */
     @Composable
-    private fun NetworkSection(repo: SettingsRepository) {
-        SectionHeader("Network")
+    private fun ConnectionsSection(
+        repo: SettingsRepository,
+        refreshKey: Any,
+        onPairingDialogClosed: () -> Unit,
+    ) {
+        SectionHeader("Connections")
 
         val port = listeningPort
         val addresses = remember { LocalAddresses.ipv4() }
@@ -361,25 +388,42 @@ object SettingsDialog {
 
         Spacer(Modifier.height(8.dp))
 
-        var allowRemote by remember { mutableStateOf(repo.isAllowRemoteConnections()) }
-        val toggleAllowRemote = {
-            allowRemote = !allowRemote
-            repo.setAllowRemoteConnections(allowRemote)
-            log.info("Settings: allow-remote toggled to {}", allowRemote)
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.clickable(onClick = toggleAllowRemote),
+        // Keyed on refreshKey: a pairing completed while this window is open
+        // can turn allow-remote on from outside this composable, and the
+        // checkbox must reflect that once the pairing dialog closes.
+        var allowRemote by remember(refreshKey) { mutableStateOf(repo.isAllowRemoteConnections()) }
+        SettingToggleRow(
+            title = "Allow connections from other devices",
+            description = "Lets phones and other computers on the network connect " +
+                "to this server. When off, only this computer can connect. " +
+                "Pairing a device turns this on automatically.",
+            checked = allowRemote,
         ) {
-            Checkbox(
-                checked = allowRemote,
-                onCheckedChange = {
-                    allowRemote = it
-                    repo.setAllowRemoteConnections(it)
-                    log.info("Settings: allow-remote toggled to {}", it)
+            allowRemote = it
+            repo.setAllowRemoteConnections(it)
+            log.info("Settings: allow-remote toggled to {}", it)
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        var showPairing by remember { mutableStateOf(false) }
+        Button(onClick = { showPairing = true }) {
+            Text("Pair a device")
+        }
+        Text(
+            "Shows a QR code the Termtastic mobile app can scan to connect " +
+                "instantly — no addresses to type, no approval dialog.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+        )
+        if (showPairing) {
+            PairingDialog(
+                port = port ?: se.soderbjorn.termtastic.SERVER_TLS_PORT,
+                onClose = {
+                    showPairing = false
+                    onPairingDialogClosed()
                 },
             )
-            Text("Allow connections from other devices", fontSize = 14.sp)
         }
 
         HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
@@ -390,32 +434,20 @@ object SettingsDialog {
         SectionHeader("Claude Code")
 
         var pollUsage by remember { mutableStateOf(repo.isClaudeUsagePollEnabled()) }
-        val togglePollUsage = {
-            pollUsage = !pollUsage
-            repo.setClaudeUsagePollEnabled(pollUsage)
+        SettingToggleRow(
+            title = "Poll Claude Code usage data",
+            description = "Periodically runs the local claude CLI to read your " +
+                "plan usage and shows it in the client's status bar. Uses no " +
+                "network beyond what the CLI itself does.",
+            checked = pollUsage,
+        ) {
+            pollUsage = it
+            repo.setClaudeUsagePollEnabled(it)
             val monitor = usageMonitor
             if (monitor != null) {
-                if (pollUsage) monitor.start() else monitor.stop()
+                if (it) monitor.start() else monitor.stop()
             }
-            log.info("Settings: claude-usage-poll toggled to {}", pollUsage)
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.clickable(onClick = togglePollUsage),
-        ) {
-            Checkbox(
-                checked = pollUsage,
-                onCheckedChange = {
-                    pollUsage = it
-                    repo.setClaudeUsagePollEnabled(it)
-                    val monitor = usageMonitor
-                    if (monitor != null) {
-                        if (it) monitor.start() else monitor.stop()
-                    }
-                    log.info("Settings: claude-usage-poll toggled to {}", it)
-                },
-            )
-            Text("Poll Claude Code usage data", fontSize = 14.sp)
+            log.info("Settings: claude-usage-poll toggled to {}", it)
         }
 
         HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
