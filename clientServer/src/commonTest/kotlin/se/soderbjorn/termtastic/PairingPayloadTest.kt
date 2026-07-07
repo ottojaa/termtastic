@@ -96,6 +96,21 @@ class PairingPayloadTest {
     }
 
     @Test
+    fun tooManyCandidatesRejected() {
+        fun uriWith(n: Int): String {
+            val hosts = (1..n).joinToString(",") { "10.0.0.$it" }
+            return "${PairingPayload.URI_PREFIX}v=1&h=$hosts&p=8443&fp=$fp&t=$token"
+        }
+        // Exactly the cap parses; one past it is treated as malformed (null),
+        // which bounds the host:port probe sweep a hostile QR could induce.
+        assertEquals(
+            PairingPayload.MAX_CANDIDATES,
+            PairingPayload.parse(uriWith(PairingPayload.MAX_CANDIDATES))!!.candidates.size,
+        )
+        assertNull(PairingPayload.parse(uriWith(PairingPayload.MAX_CANDIDATES + 1)))
+    }
+
+    @Test
     fun candidateParsingVariants() {
         assertEquals(HostPort("192.168.1.5", 8443), HostPort.parseCandidate("192.168.1.5", 8443))
         assertEquals(HostPort("192.168.1.5", 9001), HostPort.parseCandidate("192.168.1.5:9001", 8443))

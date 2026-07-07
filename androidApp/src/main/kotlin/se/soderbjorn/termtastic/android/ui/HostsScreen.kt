@@ -909,6 +909,14 @@ private fun DeleteHostDialog(
  * @return a user-facing message for the snackbar.
  */
 private fun connectFailureMessage(context: Context, e: Throwable): String = when {
+    // A device-auth rejection reaches the server but is turned away before the
+    // first config (expired/foreign pairing token, allow-remote off, or a
+    // revoked device). Its raw exception text is developer-facing ("…before
+    // sending a config… check the server's log for…"), so translate the known
+    // case into something the user can act on.
+    isDeviceAuthRejection(e) ->
+        "The Mac declined this connection. Re-pair or approve this device in " +
+            "the Mac's Termtastic settings (Connections → Pair a device)."
     // Network-blame only when we genuinely couldn't reach the server. A
     // phase-2 failure (reached, but the server rejected the device / never
     // sent a config) carries a descriptive message that we must not mask
@@ -922,6 +930,19 @@ private fun connectFailureMessage(context: Context, e: Throwable): String = when
             "network as your computer."
     else -> e.message ?: "Connection failed"
 }
+
+/**
+ * Whether [e] is the post-handshake device-auth rejection thrown by
+ * [se.soderbjorn.termtastic.client.WindowSocket.awaitInitialConfig] when the
+ * server accepts the socket but closes it before the first config. Matched on
+ * the exception's distinctive phrase rather than its type so [connectMulti]'s
+ * phase-2 failure keeps a friendly, actionable message.
+ *
+ * @param e the connect failure surfaced to [connectFailureMessage].
+ * @return true when the failure is a device-auth rejection.
+ */
+private fun isDeviceAuthRejection(e: Throwable): Boolean =
+    e.message?.contains("before sending a config") == true
 
 /** Small 16dp terminal-pane glyph, inlined from TreeScreen's PaneIcon (non-floating variant). */
 @Composable

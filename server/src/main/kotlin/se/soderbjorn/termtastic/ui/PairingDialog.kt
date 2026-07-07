@@ -233,6 +233,14 @@ private fun ColumnScope.PairingContent(data: PairingData, fingerprint: String, p
         fontSize = 12.sp,
         modifier = Modifier.fillMaxWidth(),
     )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Pairing turns on \"Allow connections from other devices\" in " +
+            "settings, if it isn't already.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 12.sp,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /**

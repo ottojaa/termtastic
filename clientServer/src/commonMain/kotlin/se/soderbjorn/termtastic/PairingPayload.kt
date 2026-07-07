@@ -159,6 +159,16 @@ data class PairingPayload(
         const val MAX_LENGTH = 280
 
         /**
+         * Hard cap on candidate endpoints [parse] accepts. A legitimate server
+         * emits only a handful (LAN IPv4s today; VPN + global IPv6 in the
+         * follow-up), so anything beyond this is treated as malformed. It
+         * bounds the work a *hostile* QR could induce: each candidate costs the
+         * phone up to a ~12 s WebSocket handshake attempt, so an unbounded list
+         * would turn a scan into an arbitrary host:port probe sweep.
+         */
+        const val MAX_CANDIDATES = 12
+
+        /**
          * Parses a scanned/deep-linked URI back into a [PairingPayload].
          * Unknown query parameters are ignored so older apps tolerate future
          * additive fields; anything structurally wrong yields null rather
@@ -180,7 +190,9 @@ data class PairingPayload(
             if (params["v"] != VERSION.toString()) return null
             val defaultPort = params["p"]?.let(::parsePortOrNull) ?: return null
             val hRaw = params["h"]?.takeIf { it.isNotEmpty() } ?: return null
-            val candidates = hRaw.split(',').map { entry ->
+            val entries = hRaw.split(',')
+            if (entries.size > MAX_CANDIDATES) return null
+            val candidates = entries.map { entry ->
                 val decoded = percentDecode(entry) ?: return null
                 HostPort.parseCandidate(decoded, defaultPort) ?: return null
             }

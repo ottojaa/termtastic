@@ -60,9 +60,11 @@ internal fun ApplicationCall.readAuthToken(): String? {
  *  1. `pairToken` query parameter (WebSocket upgrades can't set headers)
  *  2. `X-Termtastic-Pair-Token` header (REST requests)
  *
- * Threaded into [DeviceAuth.checkFastPath]/[DeviceAuth.authorize] by every
- * auth call site so a freshly-scanned device is trusted on its very first
- * request, whichever endpoint that happens to hit.
+ * Threaded into [DeviceAuth.checkFastPath]/[DeviceAuth.authorize] by the
+ * `/window` and `/pty` auth call sites — a freshly-scanned device's first
+ * request is always the `/window` upgrade, so those are the endpoints that
+ * need it. The `/agent` and `/mcp` routes don't carry a pairing token: they
+ * are only ever reached by an already-trusted device.
  *
  * @return the raw pairing token, or `null` when absent.
  * @see se.soderbjorn.termtastic.auth.PairingTokens

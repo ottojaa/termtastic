@@ -83,6 +83,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import org.slf4j.LoggerFactory
 import se.soderbjorn.termtastic.ClaudeUsageMonitor
+import se.soderbjorn.termtastic.SERVER_TLS_PORT
 import se.soderbjorn.termtastic.auth.DeviceAuth
 import se.soderbjorn.termtastic.net.LocalAddresses
 import se.soderbjorn.termtastic.persistence.SettingsRepository
@@ -418,7 +419,7 @@ object SettingsDialog {
         )
         if (showPairing) {
             PairingDialog(
-                port = port ?: se.soderbjorn.termtastic.SERVER_TLS_PORT,
+                port = port ?: SERVER_TLS_PORT,
                 onClose = {
                     showPairing = false
                     onPairingDialogClosed()
