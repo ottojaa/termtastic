@@ -40,7 +40,7 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.developer-tools",
-      "bundleVersion": "8",
+      "bundleVersion": "9",
       "bundleShortVersion": "1.6.0",
       "identity": "Robert Söderbjörn (CCJP95ZXG4)",
       "hardenedRuntime": true,
