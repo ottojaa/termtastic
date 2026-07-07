@@ -131,14 +131,24 @@ fun fitPreservingScroll(term: Terminal, fit: FitAddon) {
  * strip at the bottom that no reformat could ever clear, because the reformat
  * clamps that row away).
  *
+ * When the raw proposal is unavailable, a one-shot cell-metrics re-measure is
+ * attempted before giving up ([remeasureCellMetrics]): a terminal `open()`ed
+ * while detached (a pane in a tab that has never been activated) caches 0×0
+ * cell metrics, and `proposeDimensions()` returns `undefined` on those — so
+ * the first tab activation's refit silently left the grid at the 80×24 boot
+ * default inside a smaller box, clipping the bottom rows beyond the reach of
+ * any scrolling.
+ *
  * @param term the xterm.js [Terminal] instance
  * @param fit the [FitAddon] to use for dimension calculation
  * @return the clamped `(cols, rows)` target, or `null` when no usable proposal
  *   is available (terminal not attached/measurable yet).
- * @see safeFit @see updateOobOverlay
+ * @see safeFit @see updateOobOverlay @see remeasureCellMetrics
  */
 fun proposeSafeDimensions(term: Terminal, fit: FitAddon): Pair<Int, Int>? {
-    val proposed = fit.asDynamic().proposeDimensions() ?: return null
+    val proposed = fit.asDynamic().proposeDimensions()
+        ?: (if (remeasureCellMetrics(term)) fit.asDynamic().proposeDimensions() else null)
+        ?: return null
     val targetCols = (proposed.cols as? Number)?.toInt() ?: return null
     var targetRows = (proposed.rows as? Number)?.toInt() ?: return null
     if (targetCols < 1 || targetRows < 1) return null
@@ -158,6 +168,53 @@ fun proposeSafeDimensions(term: Terminal, fit: FitAddon): Pair<Int, Int>? {
     }
     return targetCols to targetRows
 }
+
+/**
+ * Force xterm to re-measure its cached cell metrics, returning whether usable
+ * (non-zero) metrics are available afterwards.
+ *
+ * xterm measures its character cell once at `Terminal.open()` and only
+ * re-measures on explicit triggers (font option change, renderer swap). Every
+ * pane living in a tab that has never been activated is `open()`ed on a
+ * detached container (`mountPaneContent` builds all pane bodies up front; the
+ * toolkit attaches them on first tab activation), so the measurement runs on
+ * an element outside the render tree and caches **0×0**. The fit addon's
+ * `proposeDimensions()` refuses to propose on zero metrics, so the first
+ * activation's refit did nothing and the grid stayed at the 80×24 default —
+ * taller than the pane box, with the bottom rows clipped below the fold and
+ * unreachable by scrolling (xterm believes it is already at the bottom).
+ *
+ * Called only by [proposeSafeDimensions], and only after `proposeDimensions()`
+ * has returned `undefined`. Bails without measuring when the terminal is
+ * still detached or hidden (`offsetParent == null`) — measuring there would
+ * just re-cache 0×0 — or when the cached metrics are already non-zero (the
+ * proposal failed for some other reason a re-measure cannot help). The
+ * measure itself goes through xterm's internal `_charSizeService`, whose
+ * change event synchronously refreshes the renderer dimensions that
+ * `proposeDimensions()` reads.
+ *
+ * @param term the xterm.js [Terminal] instance to re-measure
+ * @return `true` when the terminal now has non-zero cell metrics and a fit
+ *   retry is worthwhile; `false` when re-measuring is impossible or futile.
+ * @see proposeSafeDimensions
+ */
+private fun remeasureCellMetrics(term: Terminal): Boolean = runCatching {
+    val el = term.asDynamic().element as? HTMLElement ?: return false
+    // Hidden/detached: the measure span has no box, so measuring now would
+    // only re-cache zeros. Let a later (visible) fit attempt retry instead.
+    if (el.offsetParent == null) return false
+    val core = term.asDynamic()._core ?: return false
+    // NB: dynamic receivers compile member calls verbatim — `cell.get(name)`
+    // would be a real `.get()` call on a plain JS object (TypeError). Use
+    // bracket indexing for the by-name reads instead.
+    fun cellDim(name: String): Double {
+        val cell = core._renderService?.dimensions?.css?.cell ?: return 0.0
+        return (cell[name] as? Number)?.toDouble() ?: 0.0
+    }
+    if (cellDim("width") > 0.0 && cellDim("height") > 0.0) return false
+    core._charSizeService.measure()
+    cellDim("width") > 0.0 && cellDim("height") > 0.0
+}.getOrDefault(false)
 
 /**
  * Safely fits the terminal to its container, with extra validation to prevent
