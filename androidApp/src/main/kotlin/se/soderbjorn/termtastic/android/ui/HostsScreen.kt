@@ -8,13 +8,21 @@
  * [se.soderbjorn.termtastic.android.net.ConnectionHolder] and, on success,
  * navigates to the [TreeScreen] overview.
  *
+ * The screen is also the QR pairing entry point: the top-bar scanner (and the
+ * `termtastic://pair` deep link relayed through
+ * [se.soderbjorn.termtastic.android.PendingPairingUri]) parses a
+ * [se.soderbjorn.termtastic.PairingPayload], saves or updates the host entry,
+ * and connects immediately — scan → connected, with no approval dialog.
+ *
  * @see se.soderbjorn.termtastic.android.data.AppLocalRepository
  * @see se.soderbjorn.termtastic.android.net.ConnectionHolder
+ * @see se.soderbjorn.termtastic.PairingPayload
  * @see TreeScreen
  */
 package se.soderbjorn.termtastic.android.ui
 
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +42,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,15 +86,23 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.HorizontalDivider
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.launch
+import se.soderbjorn.termtastic.HostPort
+import se.soderbjorn.termtastic.PairingPayload
 import se.soderbjorn.termtastic.SERVER_TLS_PORT
+import se.soderbjorn.termtastic.android.PendingPairingUri
 import se.soderbjorn.termtastic.android.data.AppLocalRepository
+import se.soderbjorn.termtastic.android.net.NetworkStatus
 import se.soderbjorn.termtastic.client.HostEntry
 import se.soderbjorn.termtastic.android.net.ConnectionHolder
+import se.soderbjorn.termtastic.android.net.ServerUnreachableException
 import se.soderbjorn.termtastic.android.net.NewsUpdatesController
 import se.soderbjorn.termtastic.client.ServerUrl
 import se.soderbjorn.termtastic.client.demo.DEMO_HOST
@@ -161,6 +179,125 @@ fun HostsScreen(
     val newsUpdatesVm = remember { NewsUpdatesController.ensureStarted(applicationContext) }
     val newsUpdatesState by newsUpdatesVm.stateFlow.collectAsState()
 
+    // Connect to a saved host entry: walks its candidate endpoints in order
+    // (a paired entry carries every address the server advertised) and, on
+    // success, persists the winner in one write — preferred host/port
+    // promoted, TOFU pin captured if this was a pinless first connect, spent
+    // pairing token cleared. Failures produce connectivity-aware messages
+    // instead of a generic timeout.
+    val connectToEntry: (HostEntry) -> Unit = { entry ->
+        connectingId = entry.id
+        scope.launch {
+            runCatching {
+                val token = repository.getOrCreateAuthToken()
+                val preferred = HostPort(entry.host, entry.port).toCandidateString()
+                val connection = ConnectionHolder.connectMulti(
+                    candidates = listOf(preferred) + (entry.candidates - preferred),
+                    defaultPort = entry.port,
+                    authToken = token,
+                    pinnedFingerprintHex = entry.pinnedFingerprintHex,
+                    pairingToken = entry.pairingToken,
+                )
+                val pin = entry.pinnedFingerprintHex
+                    ?: connection.client.observedFingerprint.value
+                val updated = entry.copy(
+                    host = connection.endpoint.host,
+                    port = connection.endpoint.port,
+                    pinnedFingerprintHex = pin,
+                    pairingToken = null,
+                )
+                if (updated != entry) repository.updateHost(updated)
+            }.onSuccess {
+                connectingId = null
+                onConnected()
+            }.onFailure { e ->
+                connectingId = null
+                if (ConnectionHolder.isPinMismatch(e)) {
+                    pinMismatchEntry = entry
+                } else {
+                    val msg = connectFailureMessage(applicationContext, e)
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = msg,
+                            actionLabel = "Dismiss",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle a scanned QR / deep-linked pairing URI: parse, dedupe against
+    // existing entries (same server = same cert fingerprint or overlapping
+    // endpoints — the re-pair path also refreshes a rotated cert's pin), save,
+    // and connect straight away.
+    val handlePairingUri: (String) -> Unit = { uri ->
+        val payload = PairingPayload.parse(uri)
+        if (payload == null) {
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    message = "That doesn't look like a Termtastic pairing code",
+                    actionLabel = "Dismiss",
+                )
+            }
+        } else {
+            scope.launch {
+                val candidateStrings = payload.candidates.map { it.toCandidateString() }
+                val preferred = payload.candidates.first()
+                val existing = repository.ensureLoaded().hosts.firstOrNull { host ->
+                    host.pinnedFingerprintHex == payload.fingerprintHex ||
+                        HostPort(host.host, host.port).toCandidateString() in candidateStrings ||
+                        host.candidates.any { it in candidateStrings }
+                }
+                val entry = if (existing != null) {
+                    existing.copy(
+                        host = preferred.host,
+                        port = preferred.port,
+                        pinnedFingerprintHex = payload.fingerprintHex,
+                        candidates = candidateStrings,
+                        pairingToken = payload.token,
+                    ).also { repository.updateHost(it) }
+                } else {
+                    repository.addPairedHost(
+                        label = payload.serverName ?: "Paired Mac",
+                        host = preferred.host,
+                        port = preferred.port,
+                        pinnedFingerprintHex = payload.fingerprintHex,
+                        candidates = candidateStrings,
+                        pairingToken = payload.token,
+                    )
+                }
+                connectToEntry(entry)
+            }
+        }
+    }
+
+    // QR scanner (zxing-android-embedded); its CaptureActivity owns the
+    // camera runtime-permission prompt.
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.let(handlePairingUri)
+    }
+    val startScan: () -> Unit = {
+        scanLauncher.launch(
+            ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setPrompt("Scan the pairing code shown on your Mac")
+                setBeepEnabled(false)
+                setOrientationLocked(false)
+            },
+        )
+    }
+
+    // Pairing deep link (system camera / browser → termtastic://pair): the
+    // activity posts it into PendingPairingUri; consume() clears the slot so
+    // recompositions and config changes can't pair twice.
+    val pendingPairing by PendingPairingUri.uri.collectAsState()
+    LaunchedEffect(pendingPairing) {
+        if (pendingPairing != null) {
+            PendingPairingUri.consume()?.let(handlePairingUri)
+        }
+    }
+
     // Connect to the built-in demo "server": the magic demo host makes the
     // shared client run against its in-process simulation, so this never
     // touches the network and completes instantly. No auth, no TLS pin, no
@@ -210,6 +347,13 @@ fun HostsScreen(
                         shouldPulse = newsUpdatesState.hasNews,
                         muted = !newsUpdatesState.hasContent,
                     )
+                    IconButton(onClick = startScan) {
+                        Icon(
+                            Icons.Filled.QrCodeScanner,
+                            contentDescription = "Scan pairing code",
+                            tint = SidebarAccent,
+                        )
+                    }
                     IconButton(onClick = { editTarget = EditTarget.Add }) {
                         Icon(
                             Icons.Filled.Add,
@@ -244,6 +388,7 @@ fun HostsScreen(
                 when {
                     list == null -> Unit // first composition
                     list.isEmpty() -> EmptyState(
+                        onScan = startScan,
                         onAdd = { editTarget = EditTarget.Add },
                     )
                     else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -253,47 +398,7 @@ fun HostsScreen(
                                 connecting = connectingId == entry.id,
                                 pendingApproval = pendingApproval && connectingId == entry.id,
                                 enabled = connectingId == null,
-                                onConnect = {
-                                    connectingId = entry.id
-                                    scope.launch {
-                                        runCatching {
-                                            val token = repository.getOrCreateAuthToken()
-                                            val client = ConnectionHolder.connect(
-                                                serverUrl = ServerUrl(
-                                                    host = entry.host,
-                                                    port = entry.port,
-                                                ),
-                                                authToken = token,
-                                                pinnedFingerprintHex = entry.pinnedFingerprintHex,
-                                            )
-                                            // TOFU: if this was a first-connect (no pin
-                                            // stored yet) and the handshake captured a
-                                            // leaf fingerprint, persist it so the next
-                                            // connect runs in strict-verify mode.
-                                            if (entry.pinnedFingerprintHex == null) {
-                                                client.observedFingerprint.value?.let { fp ->
-                                                    repository.updateHost(entry.copy(pinnedFingerprintHex = fp))
-                                                }
-                                            }
-                                        }.onSuccess {
-                                            connectingId = null
-                                            onConnected()
-                                        }.onFailure { e ->
-                                            connectingId = null
-                                            if (ConnectionHolder.isPinMismatch(e)) {
-                                                pinMismatchEntry = entry
-                                            } else {
-                                                val msg = e.message ?: "Connection failed"
-                                                scope.launch {
-                                                    snackbarHostState.showSnackbar(
-                                                        message = msg,
-                                                        actionLabel = "Dismiss",
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
+                                onConnect = { connectToEntry(entry) },
                                 onEdit = { editTarget = EditTarget.Edit(entry) },
                                 onDelete = { deleteTarget = entry },
                             )
@@ -368,15 +473,18 @@ fun HostsScreen(
 /**
  * Placeholder UI shown when no hosts have been saved yet.
  *
- * Displays a friendly message and a button to add the first host. The entry
+ * Pairing by QR is the primary path (scan → connected, no typing, no
+ * approval dialog); manual entry is demoted to a secondary action. The entry
  * point into the built-in demo lives in the bottom-pinned [DemoFooter], which
  * is shown in this state too, so first-time users can still explore the app
  * without owning a server.
  *
- * @param onAdd callback invoked when the "Add host" button is tapped.
+ * @param onScan callback invoked when the "Scan pairing code" button is tapped.
+ * @param onAdd callback invoked when the secondary "Add manually" action is tapped.
  */
 @Composable
 private fun EmptyState(
+    onScan: () -> Unit,
     onAdd: () -> Unit,
 ) {
     Column(
@@ -385,7 +493,7 @@ private fun EmptyState(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(
-            Icons.Filled.Add,
+            Icons.Filled.QrCodeScanner,
             contentDescription = null,
             modifier = Modifier.size(48.dp),
             tint = SidebarTextSecondary.copy(alpha = 0.6f),
@@ -398,19 +506,28 @@ private fun EmptyState(
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "Add a server to get started",
+            "On your Mac: Termtastic settings → Connections → Pair a device, " +
+                "then scan the code here.",
             style = MaterialTheme.typography.bodyMedium,
             color = SidebarTextSecondary,
+            textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(16.dp))
         FilledTonalButton(
-            onClick = onAdd,
+            onClick = onScan,
             colors = ButtonDefaults.filledTonalButtonColors(
                 containerColor = SidebarAccent,
                 contentColor = SidebarBackground,
             ),
         ) {
-            Text("Add host")
+            Text("Scan pairing code")
+        }
+        Spacer(Modifier.height(4.dp))
+        TextButton(
+            onClick = onAdd,
+            colors = ButtonDefaults.textButtonColors(contentColor = SidebarTextSecondary),
+        ) {
+            Text("Add manually")
         }
     }
 }
@@ -637,7 +754,12 @@ private fun HostEditDialog(
                     value = host,
                     onValueChange = { host = it },
                     label = { Text("Host") },
-                    supportingText = { Text("Hostname or IP address of your Mac running Termtastic") },
+                    supportingText = {
+                        Text(
+                            "Hostname or IP address of your Mac running Termtastic. " +
+                                "Your phone must be on the same Wi-Fi network.",
+                        )
+                    },
                     singleLine = true,
                     colors = themedTextFieldColors(),
                     modifier = Modifier.fillMaxWidth(),
@@ -772,6 +894,55 @@ private fun DeleteHostDialog(
         },
     )
 }
+
+/**
+ * Build a connection-failure message that explains the likely cause instead
+ * of echoing a transport error. The server is only reachable on its own
+ * network, so the phone's current transport is the single most useful hint:
+ * a phone on mobile data can't reach a LAN host at all, and a phone on the
+ * wrong Wi-Fi looks identical to a dead server.
+ *
+ * Called from the hosts screen's connect failure path (non-pin-mismatch).
+ *
+ * @param context used to query [NetworkStatus]; any context works.
+ * @param e the connect failure, used verbatim when the transport is unknown.
+ * @return a user-facing message for the snackbar.
+ */
+private fun connectFailureMessage(context: Context, e: Throwable): String = when {
+    // A device-auth rejection reaches the server but is turned away before the
+    // first config (expired/foreign pairing token, allow-remote off, or a
+    // revoked device). Its raw exception text is developer-facing ("…before
+    // sending a config… check the server's log for…"), so translate the known
+    // case into something the user can act on.
+    isDeviceAuthRejection(e) ->
+        "The Mac declined this connection. Re-pair or approve this device in " +
+            "the Mac's Termtastic settings (Connections → Pair a device)."
+    // Network-blame only when we genuinely couldn't reach the server. A
+    // phase-2 failure (reached, but the server rejected the device / never
+    // sent a config) carries a descriptive message that we must not mask
+    // with "check your Wi-Fi" advice.
+    e !is ServerUnreachableException -> e.message ?: "Connection failed"
+    NetworkStatus.isOnCellular(context) ->
+        "You're on mobile data. This Mac is reachable on its own Wi-Fi network — " +
+            "join that network and try again."
+    NetworkStatus.isOnWifi(context) ->
+        "Couldn't reach the Mac. Make sure this phone is on the same Wi-Fi " +
+            "network as your computer."
+    else -> e.message ?: "Connection failed"
+}
+
+/**
+ * Whether [e] is the post-handshake device-auth rejection thrown by
+ * [se.soderbjorn.termtastic.client.WindowSocket.awaitInitialConfig] when the
+ * server accepts the socket but closes it before the first config. Matched on
+ * the exception's distinctive phrase rather than its type so [connectMulti]'s
+ * phase-2 failure keeps a friendly, actionable message.
+ *
+ * @param e the connect failure surfaced to [connectFailureMessage].
+ * @return true when the failure is a device-auth rejection.
+ */
+private fun isDeviceAuthRejection(e: Throwable): Boolean =
+    e.message?.contains("before sending a config") == true
 
 /** Small 16dp terminal-pane glyph, inlined from TreeScreen's PaneIcon (non-floating variant). */
 @Composable

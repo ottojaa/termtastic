@@ -135,13 +135,17 @@ class RealWindowSocket internal constructor(
         // re-dereference `client` after Swift may have already torn it down
         // in its connect-failure cleanup.
         val url = client.wsUrlWithAuth(path)
+        // Never log the query string: it carries the auth token and, since QR
+        // pairing, the one-time pairing token. Logcat is app-private, but these
+        // are secrets and don't belong in any log line.
+        val safeUrl = redactUrlQuery(url)
         runJob = client.scope.launch {
             var attempt = 0
             while (!closed) {
                 try {
-                    println("WindowSocket: opening $url (attempt ${attempt + 1})")
+                    println("WindowSocket: opening $safeUrl (attempt ${attempt + 1})")
                     val session = client.httpClient.webSocketSession(url)
-                    println("WindowSocket: handshake complete for $url")
+                    println("WindowSocket: handshake complete for $safeUrl")
                     _activeSession.value = session
                     _connected.value = true
                     lastTrafficAtMillis = Clock.System.now().toEpochMilliseconds()
@@ -190,7 +194,7 @@ class RealWindowSocket internal constructor(
                         .joinToString(" -> ") {
                             "${it::class.simpleName}(${it.message ?: "no-message"})"
                         }
-                    println("WindowSocket: connection to $url failed: $causes")
+                    println("WindowSocket: connection to $safeUrl failed: $causes")
                     println("WindowSocket: stack trace:\n${t.stackTraceToString()}")
                     if (!sessionReady.isCompleted) {
                         // First connection failed — propagate to awaitInitialConfig.
@@ -280,4 +284,18 @@ class RealWindowSocket internal constructor(
         runCatching { _activeSession.value?.close() }
         runJob?.cancel()
     }
+}
+
+/**
+ * Strips the query string from a WebSocket URL for logging, replacing it with
+ * `?<redacted>` when present. The `/window` URL carries the auth token and the
+ * one-time pairing token as query parameters (WebSocket upgrades can't set
+ * headers), neither of which should ever land in a log line.
+ *
+ * @param url the full connection URL.
+ * @return the URL with any query string replaced by `?<redacted>`.
+ */
+private fun redactUrlQuery(url: String): String {
+    val q = url.indexOf('?')
+    return if (q < 0) url else url.substring(0, q) + "?<redacted>"
 }
