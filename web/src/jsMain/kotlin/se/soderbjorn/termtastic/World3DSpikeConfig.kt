@@ -199,30 +199,6 @@ internal const val REFORMAT_JIGGLE_MS = 160
 internal const val SCALE_EASE = 0.16
 
 /**
- * DEBUG (wormhole size-bang hunt): a pane's projected on-screen width must change by more
- * than this fraction frame-over-frame for `[wh-panesize]` to log it — filters sub-pixel
- * eased drift while still catching a fast-but-gradual grow (a 2× spread over ~0.5s is only
- * ~2.5%/frame, so the threshold is deliberately low). Remove with the other `[wh-*]` probes.
- */
-internal const val FRONT_SIZE_LOG_FRAC = 0.02
-
-/**
- * DEBUG (wormhole size-bang hunt): a size change must ALSO exceed this many pixels to log,
- * on top of [FRONT_SIZE_LOG_FRAC]. Kills the flood from tiny far/edge-on side panes (whose
- * few-px projected width wobbles >2% on a 1px bob) while still catching a real grow. Remove
- * with the other `[wh-*]` probes.
- */
-internal const val DBG_SIZE_MIN_PX = 15.0
-
-/**
- * DEBUG (wormhole size-bang hunt): a single-frame camera move above this many world
- * units is treated as a *snap* (discontinuity) and logged by `[wh-cammove]`. Well above
- * the per-frame velocity of any eased flight, so normal tours stay quiet. Remove with
- * the other `[wh-*]` probes once fixed.
- */
-internal const val CAM_SNAP_LOG_STEP = 120.0
-
-/**
  * Much slower per-frame lerp used **only while a zoom preset glides** (⇧+ fit /
  * ⇧− floor / `0` 1:1 reset, gated by [spikeZoomGlide]). A preset moves the target
  * a long way in one jump — up to [ZOOM_MIN]↔fit — and at [SCALE_EASE] the exponential ease

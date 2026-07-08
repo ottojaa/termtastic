@@ -54,16 +54,6 @@ internal fun startSpikeLoop() {
     val css = spikeCss3d ?: return
     val scene = spikeCssScene ?: return
 
-    // [wh] debug state: previous-frame snapshots so the detectors below can log only
-    // *changes* (a grow/shrink or a camera move) instead of flooding every frame.
-    var dbgPrevCamX = 0.0; var dbgPrevCamY = 0.0; var dbgPrevCamZ = 0.0
-    var dbgCamInit = false
-    val dbgPrevProj = HashMap<String, Double>()
-    val dbgPrevRect = HashMap<String, Double>()
-    val dbgPrevBaseCw = HashMap<String, Int>()
-    var dbgFrame = 0
-    var dbgPoseWindow = 0
-
     fun frame() {
         if (!spikeOpen) return
 
@@ -81,30 +71,6 @@ internal fun startSpikeLoop() {
                 ((nowMs - spikeLastFrameMs) / SPIKE_FRAME_MS).coerceIn(0.0, SPIKE_DT_MAX_FRAMES)
             }
             spikeLastFrameMs = nowMs
-        }
-
-        // [wh-beat] unconditional heartbeat: every 15 frames log the front pane's real rendered
-        // rect + drivers. Proves the loop is still alive AFTER the wormhole hand-off (if the beats
-        // stop at the flip, the RAF chain froze — a different bug) and traces the birthed pane's
-        // on-screen size through and past landing regardless of any jump threshold.
-        dbgFrame++
-        if (dbgFrame % 15 == 0) {
-            spikePanes.getOrNull(frontIndex())?.let { fp ->
-                // Reliable 3D drivers (camera pose from last frame, pane pos, distance) alongside
-                // the DOM rect — so a PERSISTENT bang (pane stays big) is fully attributable: a
-                // small camDist means the camera never came home; a high paneZ means the pane is
-                // parked near the camera; a high objScale means zoom/scale. rect is the on-screen
-                // truth; camDist/paneZ/camZ say WHY.
-                val cxx = camera.position.x as Double; val cyy = camera.position.y as Double; val czz = camera.position.z as Double
-                val pxx = fp.obj.position.x as Double; val pyy = fp.obj.position.y as Double; val pzz = fp.obj.position.z as Double
-                val cd = sqrt((pxx - cxx) * (pxx - cxx) + (pyy - cyy) * (pyy - cyy) + (pzz - czz) * (pzz - czz))
-                window.asDynamic().console.warn(
-                    "[wh-beat] f=$dbgFrame front=${fp.paneId} rect=${fp.wrapper.getBoundingClientRect().width.toInt()} " +
-                        "objScale=${((fp.obj.scale.x as Double) * 100).toInt() / 100.0} baseCw=${fp.baseCw} " +
-                        "camDist=${cd.toInt()} paneZ=${pzz.toInt()} camZ=${czz.toInt()} " +
-                        "camFlown=$spikeCamFlown spawn=${fp.spawnPhase.toInt()}",
-                )
-            }
         }
 
         // Camera: fly it if flying, ease it home if returning, else hold the pose —
@@ -226,20 +192,6 @@ internal fun startSpikeLoop() {
                 // 1:1 default; otherwise stay parked at the flown target (the shelf).
                 if (spikeCamTourLandPristine) {
                     spikeCamFlown = false
-                    // [wh-camjump] hand-off snapshot: the flown Z the return Bézier ended on
-                    // vs the pristine defaultZ the next frame snaps to, PLUS the front pane's
-                    // real size drivers (its world Z and actual obj.scale). getBoundingClientRect
-                    // is blind to the CSS3D perspective, so we log the drivers, not a measured
-                    // width — the per-frame [wh-frontsize] below turns them into a projected size.
-                    spikePanes.getOrNull(frontIndex())?.let { fp ->
-                        window.asDynamic().console.warn(
-                            "[wh-camjump] flip camZ=${spikeCamZ.toInt()} defaultZ=${defaultZ.toInt()} " +
-                                "innerH=${window.innerHeight} zoom=$spikeZoomTarget front=${fp.paneId} " +
-                                "lscale=${(fp.lscale * 100).toInt() / 100.0} birth=${(fp.birth * 100).toInt() / 100.0} " +
-                                "objScale=${((fp.obj.scale.x as Double) * 100).toInt() / 100.0} " +
-                                "paneZ=${(fp.obj.position.z as Double).toInt()} baseCw=${fp.baseCw}",
-                        )
-                    }
                 }
             }
         }
@@ -253,30 +205,6 @@ internal fun startSpikeLoop() {
             camera.up.set(spikeCamUx, spikeCamUy, spikeCamUz)
             camera.position.set(spikeCamX, spikeCamY, spikeCamZ)
             camera.lookAt(spikeCamX + spikeCamFx, spikeCamY + spikeCamFy, spikeCamZ + spikeCamFz)
-        }
-
-        // [wh-cammove] camera-position detector: log a single-frame move larger than a
-        // smooth eased flight would ever produce (a *snap*/discontinuity — e.g. the
-        // flown→pristine hand-off), so a camera jump that bangs the front pane's size is
-        // caught with the pose it jumped from → to. Normal in-flight frames move far less
-        // than the threshold, so this stays quiet except on real discontinuities.
-        run {
-            val cx = camera.position.x as Double
-            val cy = camera.position.y as Double
-            val cz = camera.position.z as Double
-            if (dbgCamInit) {
-                val dx = cx - dbgPrevCamX; val dy = cy - dbgPrevCamY; val dz = cz - dbgPrevCamZ
-                val step = sqrt(dx * dx + dy * dy + dz * dz)
-                if (step > CAM_SNAP_LOG_STEP) {
-                    window.asDynamic().console.warn(
-                        "[wh-cammove] snap step=${step.toInt()} " +
-                            "(${dbgPrevCamX.toInt()},${dbgPrevCamY.toInt()},${dbgPrevCamZ.toInt()})" +
-                            "->(${cx.toInt()},${cy.toInt()},${cz.toInt()}) " +
-                            "flown=$spikeCamFlown returning=$spikeCamReturning defaultZ=${defaultZ.toInt()}",
-                    )
-                }
-            }
-            dbgPrevCamX = cx; dbgPrevCamY = cy; dbgPrevCamZ = cz; dbgCamInit = true
         }
 
         // Ease scrolls + advance shared phases every frame — unconditionally, so
@@ -363,13 +291,6 @@ internal fun startSpikeLoop() {
                 val ease = if (i == fi && spikeZoomGlide) ZOOM_PRESET_EASE else SCALE_EASE
                 val ns = if (spikeSelectionMode && i == fi) 1.0 else curS + (targetScale - curS) * ease
                 if (i == fi && spikeZoomGlide && abs(targetScale - ns) < 0.001) spikeZoomGlide = false
-                if (abs(ns - curS) > 0.06) {
-                    window.asDynamic().console.warn(
-                        "[wh-scalejump] ${p.paneId} ${(curS * 100).toInt() / 100.0}->${(ns * 100).toInt() / 100.0} " +
-                            "tgt=${(targetScale * 100).toInt() / 100.0} norm=${(p.normScale * 100).toInt() / 100.0} " +
-                            "fi=${i == fi} sel=$spikeSelectionMode glide=$spikeZoomGlide camFlown=$spikeCamFlown birth=${(p.birth * 100).toInt() / 100.0}",
-                    )
-                }
                 p.lscale = ns
                 // Birth/death: a just-created pane grows in from 0; a removed one
                 // shrinks out (disposed by the sweep below once birth ≈ 0).
@@ -734,98 +655,6 @@ internal fun startSpikeLoop() {
             window.asDynamic().console.error("[world3d-spike] frame error", t)
         }
 
-        // [wh-pose] per-frame camera+pane pose across the landing flip. Arms in the last ~15% of
-        // the return and runs ~30 frames past it, so the frame where camFlown goes true->false is
-        // captured with the pose BEFORE and AFTER. The 2× one-frame pane pop lives here: compare
-        // the last flown frame to the first pristine frame — whichever of cam(x,y,z) / up / pane
-        // rotation jumps is the discontinuity that un-foreshortens the pane.
-        if (spikeCamReturning && spikeCamReturnT > 0.85) dbgPoseWindow = 30
-        if (dbgPoseWindow > 0) {
-            dbgPoseWindow--
-            spikePanes.getOrNull(frontIndex())?.let { fp ->
-                val o = fp.obj
-                fun i(v: Any?) = (v as Double).toInt()
-                fun h(v: Any?) = ((v as Double) * 100).toInt() / 100.0
-                window.asDynamic().console.warn(
-                    "[wh-pose] t=${(spikeCamReturnT * 1000).toInt() / 1000.0} camFlown=$spikeCamFlown returning=$spikeCamReturning " +
-                        "cam=(${i(camera.position.x)},${i(camera.position.y)},${i(camera.position.z)}) " +
-                        "up=(${h(camera.up.x)},${h(camera.up.y)},${h(camera.up.z)}) " +
-                        "pane=(${i(o.position.x)},${i(o.position.y)},${i(o.position.z)}) " +
-                        "rot=(${h(o.rotation.x)},${h(o.rotation.y)},${h(o.rotation.z)}) objScale=${h(o.scale.x)}",
-                )
-            }
-        }
-
-        // [wh-panesize] on-screen-size detector for EVERY pane (not just the front). getBounding-
-        // ClientRect is blind to the CSS3D perspective, so compute the width the camera actually
-        // PROJECTS from first principles:
-        //   proj = baseCw × objScale × perspDistance(innerH) / camDist
-        // (a plane at the 1:1 reference distance perspDistance shows at baseCw). Logs any pane
-        // whose projected width changes beyond FRONT_SIZE_LOG_FRAC frame-over-frame, with every
-        // driver — objScale, paneZ, camZ, camDist. Scanning all panes catches a bang on a NON-
-        // front pane; the small threshold catches a fast-but-gradual grow (a 2× over ~0.5s is
-        // only ~2.5%/frame). `*` marks the front pane. Pure math, no layout read.
-        run {
-            val pd = perspDistance(window.innerHeight)
-            val cx = camera.position.x as Double
-            val cy = camera.position.y as Double
-            val cz = camera.position.z as Double
-            val fi2 = frontIndex()
-            spikePanes.forEachIndexed { i, p ->
-                val px = p.obj.position.x as Double
-                val py = p.obj.position.y as Double
-                val pz = p.obj.position.z as Double
-                val os = p.obj.scale.x as Double
-                val dx = px - cx; val dy = py - cy; val dz = pz - cz
-                val camDist = sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(1.0)
-                val proj = p.baseCw * os * pd / camDist
-                val prev = dbgPrevProj[p.paneId]
-                if (prev != null && prev > 1.0 &&
-                    kotlin.math.abs(proj - prev) / prev > FRONT_SIZE_LOG_FRAC &&
-                    kotlin.math.abs(proj - prev) > DBG_SIZE_MIN_PX
-                ) {
-                    window.asDynamic().console.warn(
-                        "[wh-panesize] ${p.paneId}${if (i == fi2) "*" else ""} proj ${prev.toInt()}->${proj.toInt()} " +
-                            "objScale=${(os * 100).toInt() / 100.0} baseCw=${p.baseCw} camDist=${camDist.toInt()} " +
-                            "paneZ=${pz.toInt()} camZ=${cz.toInt()} lscale=${(p.lscale * 100).toInt() / 100.0} " +
-                            "birth=${(p.birth * 100).toInt() / 100.0} spawn=${p.spawnPhase.toInt()}",
-                    )
-                }
-                dbgPrevProj[p.paneId] = proj
-            }
-        }
-
-        // [wh-domsize] GROUND-TRUTH size probe for EVERY pane, mechanism-agnostic. Measures the
-        // wrapper's actual rendered rect (getBoundingClientRect — what's really on screen) plus
-        // its CSS-box offsetWidth and the baseCw field. This is the net that catches a grow
-        // driven from OUTSIDE the render loop / these files: if offsetWidth or baseCw jumps
-        // without a [wh-present], some other code (a ResizeObserver refit, a fit-addon reflow, a
-        // 2D-layout mount) resized the DOM. If rect jumps but offsetWidth/baseCw hold, it's the
-        // 3D transform (scale/camera). Logs `rect | off | baseCw`. `*` = front pane.
-        run {
-            val fi3 = frontIndex()
-            spikePanes.forEachIndexed { i, p ->
-                val rectW = p.wrapper.getBoundingClientRect().width
-                val offW = (p.wrapper.asDynamic().offsetWidth as? Number)?.toDouble() ?: -1.0
-                val prevR = dbgPrevRect[p.paneId]
-                val prevB = dbgPrevBaseCw[p.paneId]
-                val rectJump = prevR != null && prevR > 1.0 &&
-                    kotlin.math.abs(rectW - prevR) / prevR > FRONT_SIZE_LOG_FRAC &&
-                    kotlin.math.abs(rectW - prevR) > DBG_SIZE_MIN_PX
-                val baseJump = prevB != null && prevB != p.baseCw
-                if (rectJump || baseJump) {
-                    window.asDynamic().console.warn(
-                        "[wh-domsize] ${p.paneId}${if (i == fi3) "*" else ""} " +
-                            "rect ${(prevR ?: 0.0).toInt()}->${rectW.toInt()} off=${offW.toInt()} " +
-                            "baseCw=${prevB ?: p.baseCw}->${p.baseCw} " +
-                            "objScale=${((p.obj.scale.x as Double) * 100).toInt() / 100.0} " +
-                            "birth=${(p.birth * 100).toInt() / 100.0} spawn=${p.spawnPhase.toInt()}",
-                    )
-                }
-                dbgPrevRect[p.paneId] = rectW
-                dbgPrevBaseCw[p.paneId] = p.baseCw
-            }
-        }
         spikeRaf = window.requestAnimationFrame { frame() }
     }
     // Fresh loop start: clear the frame-delta baseline so the first frame steps by exactly

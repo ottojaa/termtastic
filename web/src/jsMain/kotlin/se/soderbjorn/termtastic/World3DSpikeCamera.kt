@@ -157,16 +157,6 @@ internal fun flyCamTo(
 
     spikeCamReturnT = 0.0
     spikeCamReturning = true
-
-    // [wh-flyto] DEBUG: log every deliberate camera flight — start pose, target, aim,
-    // frame length, whether it lands pristine, and any followed pane. Pairs with the
-    // per-frame [wh-cammove] snap detector and the [wh-camjump] hand-off probe so the
-    // whole camera trajectory around a spawn is traceable. Remove with the other [wh-*].
-    window.asDynamic().console.warn(
-        "[wh-flyto] (${spikeCamReturnStartX.toInt()},${spikeCamReturnStartY.toInt()},${spikeCamReturnStartZ.toInt()})" +
-            "->(${tx.toInt()},${ty.toInt()},${tz.toInt()}) look=(${lookX.toInt()},${lookY.toInt()},${lookZ.toInt()}) " +
-            "frames=${frames.toInt()} pristine=$landPristine follow=$followPaneId",
-    )
 }
 
 /**
