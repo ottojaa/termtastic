@@ -93,22 +93,45 @@ private val BUNDLED_FONTS = listOf(
 )
 
 /**
+ * Strips the scheme (and any trailing slash) from [url] for display, so a link
+ * reads as e.g. `www.lunamux.dev` rather than `https://www.lunamux.dev`. The
+ * full [url] is still used as the link target.
+ *
+ * @param url the absolute http(s) URL to prettify.
+ * @return the URL without its `http(s)://` prefix or trailing slash.
+ */
+private fun displayUrl(url: String): String =
+    url.removePrefix("https://").removePrefix("http://").removeSuffix("/")
+
+/**
  * Builds a single external link anchor for the About dialog, used for the
  * project website link.
  *
- * Called by [showAboutDialog]. The anchor opens in a new tab/window and uses
- * `rel="noopener noreferrer"` for safety.
+ * Called by [showAboutDialog]. Clicking the link routes through
+ * [openExternalUrl] so it always opens in the user's default browser (via the
+ * Electron `openExternalUrl` bridge) rather than in a bare internal Electron
+ * window; the anchor's own navigation is suppressed with `preventDefault`. The
+ * `href`/`target`/`rel` attributes are still set so the link is real and
+ * keyboard-accessible, and so the plain-web build (no Electron bridge) falls
+ * back to a normal new-tab open.
  *
- * @param url the URL to link to; also used verbatim as the visible link text.
+ * @param url the URL to link to.
+ * @param text the visible link text; defaults to [url]. Pass a prettified value
+ *   (e.g. from [displayUrl]) to show the link without its scheme.
  * @return the anchor element ready to append to a link row.
+ * @see openExternalUrl
  */
-private fun buildLink(url: String): HTMLAnchorElement {
+private fun buildLink(url: String, text: String = url): HTMLAnchorElement {
     val link = document.createElement("a") as HTMLAnchorElement
     link.className = "about-link"
     link.href = url
     link.target = "_blank"
     link.rel = "noopener noreferrer"
-    link.textContent = url
+    link.textContent = text
+    link.addEventListener("click", { ev: Event ->
+        ev.preventDefault()
+        openExternalUrl(url)
+    })
     return link
 }
 
@@ -184,7 +207,7 @@ private fun buildMainTab(): HTMLElement {
     // Website link.
     val linkRow = document.createElement("p") as HTMLElement
     linkRow.className = "about-link-row"
-    linkRow.appendChild(buildLink(WEBSITE_URL))
+    linkRow.appendChild(buildLink(WEBSITE_URL, displayUrl(WEBSITE_URL)))
     panel.appendChild(linkRow)
 
     return panel
@@ -337,12 +360,7 @@ private fun buildLicensingTab(): HTMLElement {
     val footer = document.createElement("p") as HTMLElement
     footer.className = "about-footer"
     footer.appendChild(document.createTextNode("Full license texts are in the "))
-    val noticeLink = document.createElement("a") as HTMLAnchorElement
-    noticeLink.className = "about-link"
-    noticeLink.href = NOTICE_URL
-    noticeLink.target = "_blank"
-    noticeLink.rel = "noopener noreferrer"
-    noticeLink.textContent = "NOTICE"
+    val noticeLink = buildLink(NOTICE_URL, "NOTICE")
     footer.appendChild(noticeLink)
     footer.appendChild(document.createTextNode(" file."))
     panel.appendChild(footer)

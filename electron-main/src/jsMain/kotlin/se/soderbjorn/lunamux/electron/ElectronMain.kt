@@ -854,6 +854,22 @@ private fun createWindow() {
 
     val w = BrowserWindow(opts)
     mainWindow = w
+    // Route every renderer-initiated new window (a `target="_blank"` anchor or a
+    // `window.open` call — e.g. the in-app About dialog's website/NOTICE links)
+    // to the user's default browser via shell.openExternal, and DENY Electron's
+    // default of spawning a bare internal BrowserWindow. Without this, such links
+    // open inside a chrome-less Electron window instead of the real browser. The
+    // Help-menu links already call shell.openExternal directly; this covers every
+    // link the renderer itself surfaces.
+    w.webContents.asDynamic().setWindowOpenHandler({ details: dynamic ->
+        val url = details?.url as? String
+        if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
+            shell.openExternal(url)
+        }
+        val decision = js("({})")
+        decision.action = "deny"
+        decision
+    })
     // Intercept the window close button so it goes through the same
     // quit-confirmation modal as Cmd-Q. On macOS this is a deliberate
     // departure from the platform default (where closing the last
