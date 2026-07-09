@@ -267,7 +267,7 @@ private const val STOP_TOUR_LABEL = "■ Stop demo tour"
  * Web demo only ([isDemoClient] and not [isElectronClient], checked by the
  * caller [buildShortcutsLegend]) — in the Electron demo the tour stays a
  * hotkey-only secret.
- * For its first ~15 s the button pulses gently (a slow scale + green-glow
+ * For its first ~15 s the button pulses gently (a slow scale + accent-glow
  * swell) to draw the visitor's eye, then holds still
  * ([spikeDemoTourPulseTimer]); starting the tour ends the pulse early
  * ([updateDemoTourButton]). A small dim line under the button notes the tour
@@ -276,6 +276,11 @@ private const val STOP_TOUR_LABEL = "■ Stop demo tour"
  * @param parent the bottom-left chrome column to append the button to.
  */
 private fun buildDemoTourButton(parent: HTMLElement) {
+    // Wear the current theme's accent (matching the rest of the ring chrome —
+    // title underlines, beacon glow) instead of a hardcoded green, so the
+    // button reads as part of the themed world rather than a stray element.
+    val accent = spikeChrome().accent
+
     // The attention pulse needs @keyframes, which inline `style=` cannot
     // declare — so the keyframes ride in a <style> that lives and dies with
     // the chrome column.
@@ -283,13 +288,13 @@ private fun buildDemoTourButton(parent: HTMLElement) {
     val pulse = document.createElement("style") as HTMLElement
     pulse.textContent = "@keyframes tt-demo-tour-pulse{" +
         "0%,100%{transform:scale(1);box-shadow:0 6px 24px rgba(0,0,0,0.45);}" +
-        "50%{transform:scale(1.04);box-shadow:0 0 14px rgba(75,208,139,0.45),0 6px 24px rgba(0,0,0,0.45);}}"
+        "50%{transform:scale(1.04);box-shadow:0 0 14px $accent,0 6px 24px rgba(0,0,0,0.45);}}"
     parent.appendChild(pulse)
 
     val btn = document.createElement("button") as HTMLElement
     btn.textContent = PLAY_TOUR_LABEL
     btn.style.cssText = "pointer-events:auto;cursor:pointer;padding:12px 22px;border-radius:12px;" +
-        "border:1px solid #1f5f42;background:#0f2018e6;color:#4bd08b;" +
+        "border:1px solid $accent;background:#0d1420e6;color:$accent;" +
         "font:700 15px ui-monospace,Menlo,monospace;box-shadow:0 6px 24px rgba(0,0,0,0.45);" +
         "animation:tt-demo-tour-pulse 3s ease-in-out infinite;"
     btn.addEventListener("click", {
