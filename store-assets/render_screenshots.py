@@ -38,10 +38,20 @@ BG = (10, 20, 32)           # --bg #0a1420 : deep navy base
 GREEN = (77, 200, 245)      # accent #4dc8f5   : primary cyan (body / phosphor)
 GHI = (165, 216, 255)       # number #a5d8ff   : bright accent (headline)
 GDIM = (95, 117, 144)       # --text-dim #5f7590: secondary / comments
-MONO_CANDIDATES = [
-    "/System/Library/Fonts/SFNSMono.ttf",
-    "/System/Library/Fonts/Menlo.ttc",
-    "/Library/Fonts/JetBrainsMono-Regular.ttf",
+# Brand monospaced font. We ship JetBrains Mono — the SAME family the Lunamux
+# desktop/mobile apps use by default — so the store art matches the product UI.
+# Vendored under ./fonts/ (OFL) for deterministic, machine-independent rendering;
+# the system copies are used only as a fallback.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MONO_REGULAR_CANDIDATES = [
+    os.path.join(_HERE, "fonts", "JetBrainsMono-Regular.ttf"),
+    os.path.expanduser("~/Library/Fonts/JetBrainsMono-Regular.ttf"),
+    "/System/Library/Fonts/SFNSMono.ttf",   # last-resort fallback
+]
+MONO_BOLD_CANDIDATES = [
+    os.path.join(_HERE, "fonts", "JetBrainsMono-Bold.ttf"),
+    os.path.expanduser("~/Library/Fonts/JetBrainsMono-Bold.ttf"),
+    "/System/Library/Fonts/SFNSMono.ttf",   # last-resort fallback (variable → Bold below)
 ]
 
 # --- store output targets ---
@@ -52,28 +62,35 @@ STORES = [
 ]
 
 
-def _mono_path():
-    """Return the first available monospaced font path.
+def _first_existing(candidates):
+    """Return the first path in ``candidates`` that exists on disk.
 
+    @param candidates ordered list of font paths (vendored first, system fallback last).
     @return absolute font path string; raises if none found.
     """
-    for p in MONO_CANDIDATES:
+    for p in candidates:
         if os.path.exists(p):
             return p
-    raise SystemExit("No monospaced font found; edit MONO_CANDIDATES.")
+    raise SystemExit("No monospaced font found; add JetBrains Mono under ./fonts/.")
 
 
-_MONO = _mono_path()
+_MONO_REGULAR = _first_existing(MONO_REGULAR_CANDIDATES)
+_MONO_BOLD = _first_existing(MONO_BOLD_CANDIDATES)
 
 
 def font(size, bold=True):
-    """Load the brand monospaced font at a pixel size.
+    """Load the brand monospaced font (JetBrains Mono) at a pixel size.
+
+    JetBrains Mono ships as separate static Regular/Bold files, so the weight is
+    chosen by picking the matching file. If only a variable fallback (SF Mono) is
+    present, ``set_variation_by_name`` promotes it to Bold where possible.
 
     @param size integer pixel size.
-    @param bold whether to request the Bold variation (SF Mono is variable).
+    @param bold whether to use the Bold weight (headlines/wordmark) vs Regular.
     @return a PIL ImageFont.
     """
-    f = ImageFont.truetype(_MONO, int(size))
+    path = _MONO_BOLD if bold else _MONO_REGULAR
+    f = ImageFont.truetype(path, int(size))
     try:
         f.set_variation_by_name("Bold" if bold else "Regular")
     except Exception:

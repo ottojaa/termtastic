@@ -1,11 +1,25 @@
-# Termtastic — store screenshot generator
+# Lunamux — store asset generator
 
 Generates the full set of store screenshots for **both** the Apple App Store and
 the Google Play Store from a single JSON config, so the whole listing stays
 consistent and is trivial to regenerate when the app changes.
 
 Each entry renders your raw screenshots inside clean device frames on the branded
-green background — no photo editing, no per-image fiddling.
+deep-navy / cyan background — no photo editing, no per-image fiddling.
+
+Two companion generators reuse the exact same palette/fonts:
+
+```bash
+python3 render_screenshots.py                    # phone/Mac screenshots (both stores)
+python3 render_feature_graphic.py                # Google Play feature graphic (1024x500)
+python3 render_feature_graphic.py sources/mac/07.png   # …with a different right-hand panel
+```
+
+The **Google Play app icon** (512x512) is just a downscale of the 1024 master:
+
+```bash
+sips -s format png -z 512 512 ../electron/icons/icon.png --out out/google-play/app-icon-512.png
+```
 
 ## Layout & frames
 
@@ -28,7 +42,8 @@ python3 render_screenshots.py            # uses ./screenshots.json
 # or: python3 render_screenshots.py path/to/other.json
 ```
 
-Requires Python 3 with Pillow (`pip3 install pillow`). Uses the system SF Mono font.
+Requires Python 3 with Pillow (`pip3 install pillow`). Renders in **JetBrains Mono**
+— the same font the Lunamux apps use by default — vendored under `fonts/` (OFL).
 
 Outputs land in:
 
@@ -68,17 +83,21 @@ out/google-play/01-hero.jpg … 07-code.jpg    (upload to Play Console, phone)
 
 ```
 store-assets/
-├── render_screenshots.py     # the generator
-├── screenshots.json          # your config (edit this)
+├── render_screenshots.py      # the screenshot generator
+├── render_feature_graphic.py  # the feature-graphic generator (reuses render_screenshots helpers)
+├── screenshots.json           # your config (edit this)
 ├── README.md
-├── feature-graphic.png       # Google Play feature graphic (1024×500, static asset)
+├── fonts/                     # vendored JetBrains Mono (OFL) — the app's default font
 ├── sources/
-│   ├── mac/                   # Mac screenshots (green theme, landscape)
+│   ├── mac/                   # Mac screenshots (cyan theme, landscape)
 │   ├── android/              # Pixel screenshots (1344×2992)
 │   └── ios/                  # iPhone screenshots (1320×2868) — see note below
 └── out/
     ├── app-store/            # generated — upload to App Store Connect
     └── google-play/          # generated — upload to Play Console
+        ├── 01-hero.jpg …     #   phone screenshots
+        ├── feature-graphic.png  # 1024×500 feature graphic
+        └── app-icon-512.png     # 512×512 hi-res app icon
 ```
 
 ## Adding / updating screenshots
