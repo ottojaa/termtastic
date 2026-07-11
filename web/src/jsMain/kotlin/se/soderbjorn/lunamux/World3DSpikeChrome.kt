@@ -903,16 +903,20 @@ private fun acquireAndRecord(api: dynamic) {
             mandatory.chromeMediaSourceId = id
             // Without explicit dimensions Chromium's desktop capturer falls back to
             // a low default cap (~1280x720) and ignores the window's Retina pixel
-            // size, producing a soft, low-res recording. Pin min/max to the window's
-            // native device-pixel resolution so we capture at full sharpness, and
-            // request 60fps for smooth camera flights.
+            // size, producing a soft, low-res recording. We therefore raise the cap —
+            // but only as a *maximum*, never a pinned exact size: the desktop window
+            // source is the whole native window (custom title bar + rounded chrome),
+            // whose aspect ratio differs from the DOM viewport, so forcing an exact
+            // innerWidth/innerHeight size (min==max) makes the capturer center-crop to
+            // fit, chopping the top (title bar) and bottom off. A generous max ceiling
+            // set to the display's full device-pixel resolution (always >= this
+            // window) lets the capturer deliver the entire window at native resolution
+            // with its true aspect — sharp and uncropped. minWidth/minHeight are left
+            // unset so aspect ratio is preserved rather than forced.
             val dpr = (window.asDynamic().devicePixelRatio as? Number)?.toDouble() ?: 1.0
-            val nativeW = kotlin.math.round(window.innerWidth * dpr).toInt()
-            val nativeH = kotlin.math.round(window.innerHeight * dpr).toInt()
-            mandatory.minWidth = nativeW
-            mandatory.maxWidth = nativeW
-            mandatory.minHeight = nativeH
-            mandatory.maxHeight = nativeH
+            val screen = window.screen
+            mandatory.maxWidth = kotlin.math.round(screen.width * dpr).toInt()
+            mandatory.maxHeight = kotlin.math.round(screen.height * dpr).toInt()
             mandatory.maxFrameRate = 60
             val video: dynamic = js("({})")
             video.mandatory = mandatory
@@ -947,6 +951,9 @@ private fun beginRecorder(stream: dynamic) {
     try {
         spikeRecordingChunks = js("[]")
         val recorder: dynamic = makeMediaRecorder(stream)
+        // Remember the container the recorder actually settled on (MP4 or WebM) so
+        // finalizeRecording builds the Blob and names the file to match.
+        spikeRecordingMimeType = (recorder.mimeType as? String)?.takeIf { it.isNotEmpty() }
         recorder.ondataavailable = { e: dynamic ->
             val data = e.data
             if (data != null && ((data.size as? Int) ?: 0) > 0) spikeRecordingChunks.push(data)
@@ -971,16 +978,18 @@ private fun beginRecorder(stream: dynamic) {
         spikeMediaRecorder = null
         spikeRecordingStream = null
         spikeRecordingChunks = null
+        spikeRecordingMimeType = null
         spikeRecording = false
         showSpikeToast("Recording failed")
     }
 }
 
 /**
- * Constructs a `MediaRecorder` for [stream], preferring VP9 then VP8 in a WebM
- * container and falling back to the browser's default when neither MIME type is
- * reported as supported. Kotlin/JS can't `new` a `dynamic`, so the constructor is
- * invoked through a small JS factory.
+ * Constructs a `MediaRecorder` for [stream], preferring an **MP4/H.264** container so
+ * the resulting file plays inline in Slack and on iOS/Safari (WebM/VP9 does not), then
+ * falling back to WebM VP9 → VP8 → the browser default when MP4 recording isn't
+ * reported as supported (older Chromium/Electron builds only emit WebM). Kotlin/JS
+ * can't `new` a `dynamic`, so the constructor is invoked through a small JS factory.
  *
  * @param stream the `MediaStream` to record.
  * @return a started-capable `MediaRecorder` instance (dynamic).
@@ -992,7 +1001,15 @@ private fun makeMediaRecorder(stream: dynamic): dynamic {
     val isSupported: dynamic = js(
         "(function(m){ try { return !!(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)); } catch (e) { return false; } })"
     )
+    // Prefer MP4/H.264 (Slack- and iOS-friendly, plays inline), then WebM. The avc1
+    // profiles are probed high→main→baseline; `isTypeSupported` needs a concrete
+    // profile string, so bare `video/mp4` is only a last MP4 resort.
     val mime: String? = when {
+        isSupported("video/mp4;codecs=avc1.640028") == true -> "video/mp4;codecs=avc1.640028"
+        isSupported("video/mp4;codecs=avc1.4d0028") == true -> "video/mp4;codecs=avc1.4d0028"
+        isSupported("video/mp4;codecs=avc1.42E01E") == true -> "video/mp4;codecs=avc1.42E01E"
+        isSupported("video/mp4;codecs=h264") == true -> "video/mp4;codecs=h264"
+        isSupported("video/mp4") == true -> "video/mp4"
         isSupported("video/webm;codecs=vp9") == true -> "video/webm;codecs=vp9"
         isSupported("video/webm;codecs=vp8") == true -> "video/webm;codecs=vp8"
         isSupported("video/webm") == true -> "video/webm"
@@ -1003,7 +1020,9 @@ private fun makeMediaRecorder(stream: dynamic): dynamic {
     // (~0.2 bits/px/frame at 60fps), clamped to an 8–32 Mbps band. The 32 Mbps
     // ceiling is the sizing knob: 32 Mbps ≈ 4 MB/s ≈ 240 MB/min, so a
     // near-fullscreen 16" M2 flight lands ~480 MB for a 2-minute clip (under
-    // 500 MB) while VP9 keeps it essentially artifact-free at that bitrate.
+    // 500 MB) while H.264 (or VP9) stays essentially artifact-free at that bitrate.
+    // Bitrate is codec-independent, so the size target holds whichever container
+    // makeMediaRecorder ends up choosing.
     val dpr = (window.asDynamic().devicePixelRatio as? Number)?.toDouble() ?: 1.0
     val pixels = (window.innerWidth * dpr) * (window.innerHeight * dpr)
     val target = (pixels * 60.0 * 0.2).toLong()
@@ -1027,14 +1046,22 @@ internal fun stopWindowRecording() {
 
 /**
  * Finalizes a stopped recording: stops the capture stream's tracks, assembles the
- * collected [spikeRecordingChunks] into a single `video/webm` Blob, ships its
- * bytes to the Electron main process to write to the Desktop, and confirms with a
- * [showSpikeToast] ("Recording saved to Desktop" or "Recording failed"). Clears
- * all recording state. Invoked from the recorder's `onstop` (see [beginRecorder]).
+ * collected [spikeRecordingChunks] into a single Blob typed to the recorder's chosen
+ * container ([spikeRecordingMimeType] — MP4 when supported, else WebM), ships its
+ * bytes and the matching file extension to the Electron main process to write to the
+ * Desktop, and confirms with a [showSpikeToast] ("Recording saved to Desktop" or
+ * "Recording failed"). Clears all recording state. Invoked from the recorder's
+ * `onstop` (see [beginRecorder]).
  */
 private fun finalizeRecording() {
     val stream = spikeRecordingStream
     val chunks = spikeRecordingChunks
+    // The container the recorder chose (MP4 or WebM) drives both the Blob type and
+    // the saved file's extension; default to WebM if it was never captured.
+    val mime = spikeRecordingMimeType ?: "video/webm"
+    val isMp4 = mime.contains("mp4")
+    val baseType = if (isMp4) "video/mp4" else "video/webm"
+    val ext = if (isMp4) "mp4" else "webm"
     // Release the OS capture as soon as we stop, so window capture doesn't linger.
     if (stream != null) {
         try {
@@ -1047,6 +1074,7 @@ private fun finalizeRecording() {
     spikeMediaRecorder = null
     spikeRecordingStream = null
     spikeRecordingChunks = null
+    spikeRecordingMimeType = null
     spikeRecording = false
 
     val api = window.asDynamic().electronApi
@@ -1054,16 +1082,16 @@ private fun finalizeRecording() {
         showSpikeToast("Recording failed")
         return
     }
-    val makeBlob: dynamic = js("(function(parts){ return new Blob(parts, { type: 'video/webm' }); })")
+    val makeBlob: dynamic = js("(function(parts, type){ return new Blob(parts, { type: type }); })")
     val toBytes: dynamic = js("(function(buf){ return new Uint8Array(buf); })")
-    val blob: dynamic = makeBlob(chunks)
+    val blob: dynamic = makeBlob(chunks, baseType)
     if (((blob.size as? Int) ?: 0) <= 0) {
         showSpikeToast("Recording failed")
         return
     }
     val bufP: dynamic = blob.arrayBuffer()
     bufP.then({ buf: dynamic ->
-        val saveP: dynamic = api.saveWindowRecording(toBytes(buf))
+        val saveP: dynamic = api.saveWindowRecording(toBytes(buf), ext)
         saveP.then({ result: dynamic ->
             val path = (result as? String) ?: ""
             if (path.startsWith("!")) showSpikeToast("Recording failed")

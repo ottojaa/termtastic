@@ -1346,14 +1346,18 @@ fun main() {
     }
 
     // IPC: write a finished screen recording to the user's Desktop as
-    // `Lunamux <stamp>.webm`, returning the saved absolute path (or a
+    // `Lunamux <stamp>.<ext>`, returning the saved absolute path (or a
     // "!"-prefixed error string, matching `save-window-screenshot`). The renderer
     // assembles the `MediaRecorder` chunks into a Blob, hands us its bytes as a
-    // `Uint8Array` (Node's `writeFileSync` accepts a TypedArray directly), and
-    // this handler persists them. Backing the `saveWindowRecording` bridge.
-    ipcMain.handle("save-window-recording") { _, data ->
+    // `Uint8Array` (Node's `writeFileSync` accepts a TypedArray directly) plus the
+    // container extension it recorded (`mp4` when the platform supports H.264, else
+    // `webm`), and this handler persists them. The extension is whitelisted so a
+    // stray value can't pick an arbitrary file type. Backing the
+    // `saveWindowRecording` bridge.
+    ipcMain.handle("save-window-recording") { _, data, ext ->
         try {
-            val fullPath = NodePath.join(app.getPath("desktop"), "Lunamux ${screenshotStamp()}.webm")
+            val safeExt = if ((ext as? String) == "mp4") "mp4" else "webm"
+            val fullPath = NodePath.join(app.getPath("desktop"), "Lunamux ${screenshotStamp()}.$safeExt")
             NodeFs.asDynamic().writeFileSync(fullPath, data)
             fullPath
         } catch (t: Throwable) {

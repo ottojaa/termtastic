@@ -515,6 +515,16 @@ internal var spikeRecordingStream: dynamic = null
 /** Accumulated `MediaRecorder` `Blob` chunks for the in-flight recording (a JS array), or `null`. */
 internal var spikeRecordingChunks: dynamic = null
 
+/**
+ * The MIME type the in-flight recorder actually chose (e.g. `video/mp4;codecs=avc1…`
+ * or `video/webm;codecs=vp9`), captured from `MediaRecorder.mimeType` in
+ * [beginRecorder]. [finalizeRecording] uses it to build the Blob with the right type
+ * and to pick the saved file's extension (`.mp4` vs `.webm`). `null` when not recording.
+ * MP4/H.264 is preferred so recordings play inline in Slack (WebM/VP9 does not).
+ * @see makeMediaRecorder @see finalizeRecording
+ */
+internal var spikeRecordingMimeType: String? = null
+
 /** Whether a screen recording is currently in progress. Guards the `⇧R` toggle. @see toggleWindowRecording */
 internal var spikeRecording: Boolean = false
 

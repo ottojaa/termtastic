@@ -129,20 +129,24 @@ contextBridge.exposeInMainWorld("electronApi", {
     ipcRenderer.invoke("get-window-recording-source-id"),
 
   /**
-   * Writes a finished screen recording to the user's Desktop as a `.webm`.
-   * Counterpart to {@link getWindowRecordingSourceId}: the renderer records the
-   * window with `MediaRecorder`, assembles the chunks into a Blob, and passes
-   * the raw bytes here for the main process to persist (the renderer has no
-   * filesystem access under context isolation).
+   * Writes a finished screen recording to the user's Desktop. Counterpart to
+   * {@link getWindowRecordingSourceId}: the renderer records the window with
+   * `MediaRecorder`, assembles the chunks into a Blob, and passes the raw bytes
+   * here for the main process to persist (the renderer has no filesystem access
+   * under context isolation). The renderer also passes the container extension so
+   * the file is named to match the codec it actually recorded — `mp4` (H.264,
+   * plays inline in Slack) when the platform supports it, else `webm`.
    *
    * Called by the 3D world's record toggle (`⇧R`) when stopping a recording.
    *
-   * @param {Uint8Array} bytes - The complete `video/webm` payload.
+   * @param {Uint8Array} bytes - The complete video payload.
+   * @param {string} [ext] - File extension without a dot (`"mp4"` or `"webm"`);
+   *   the main process defaults to `webm` and only honours a known extension.
    * @returns {Promise<string>} Resolves to the saved absolute path on success,
    *   or a string starting with `"!"` carrying an error message on failure.
    */
-  saveWindowRecording: (bytes) =>
-    ipcRenderer.invoke("save-window-recording", bytes),
+  saveWindowRecording: (bytes, ext) =>
+    ipcRenderer.invoke("save-window-recording", bytes, ext),
 
   /**
    * Reports this app's macOS Screen Recording (TCC) authorization status, so the
