@@ -505,7 +505,7 @@ internal var spikeActiveToastTimers: MutableList<Int> = mutableListOf()
 /**
  * The live `MediaRecorder` while the 3D world is being screen-recorded, else
  * `null`. Recording captures the composited window (World3D is a CSS3DRenderer
- * with no WebGL canvas to `captureStream()`), toggled by `⇧R`. @see toggleWindowRecording
+ * with no WebGL canvas to `captureStream()`), toggled by `⌥R`. @see toggleWindowRecording
  */
 internal var spikeMediaRecorder: dynamic = null
 
@@ -544,12 +544,12 @@ internal var spikeRecordingStartMs: Double? = null
  */
 internal var spikeMovieNarrationLog: MutableList<Pair<Double, String>> = mutableListOf()
 
-/** Whether a screen recording is currently in progress. Guards the `⇧R` toggle. @see toggleWindowRecording */
+/** Whether a screen recording is currently in progress. Guards the `⌥R` toggle. @see toggleWindowRecording */
 internal var spikeRecording: Boolean = false
 
 /**
- * Whether the pre-recording 3-2-1 countdown is currently on screen (after `⇧R`
- * but before capture actually begins). Guards the `⇧R` toggle so a second press
+ * Whether the pre-recording 3-2-1 countdown is currently on screen (after `⌥R`
+ * but before capture actually begins). Guards the `⌥R` toggle so a second press
  * during the countdown neither starts a parallel countdown nor is mistaken for a
  * stop — recording hasn't started yet. Its pending timer handles live in
  * [spikeRecordingCountdownTimers] so the countdown can be torn down on close.

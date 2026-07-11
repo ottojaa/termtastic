@@ -211,7 +211,7 @@ internal val SPIKE_SHORTCUT_SECTIONS: List<SpikeShortcutSection> = listOf(
         SpikeShortcut("selection", "⌥ ⌘ S", "Selection mode"),
         SpikeShortcut("signal", "w", "Cycle signal: off → working → needs-input"),
         SpikeShortcut("screenshot", "P", "Screenshot to Desktop"),
-        SpikeShortcut("recording", "⇧R", "Record to Desktop (toggle)"),
+        SpikeShortcut("recording", "⌥R", "Record to Desktop (toggle)"),
         SpikeShortcut("settings", "⌥ ⌘ ,", "3D settings"),
         SpikeShortcut("legend", "k", "Hide shortcuts"),
         SpikeShortcut("close", "⎋", "Close world"),
@@ -258,7 +258,7 @@ internal val SPIKE_FLY_SHORTCUT_SECTIONS: List<SpikeShortcutSection> = listOf(
     )),
     SpikeShortcutSection("SYSTEM", listOf(
         SpikeShortcut("screenshot", "P", "Screenshot to Desktop"),
-        SpikeShortcut("recording", "⇧R", "Record to Desktop (toggle)"),
+        SpikeShortcut("recording", "⌥R", "Record to Desktop (toggle)"),
         SpikeShortcut("settings", "⌥ ⌘ ,", "3D settings"),
         SpikeShortcut("fly-legend", "k", "Hide shortcuts"),
         SpikeShortcut("fly-close", "⎋", "Close world"),
@@ -748,7 +748,7 @@ internal fun captureWindowScreenshot() {
 
 /**
  * Toggles **screen recording** of the 3D world, saving a `.webm` to the Desktop
- * when stopped. Wired to the `⇧R` shortcut in both command center and free flight
+ * when stopped. Wired to the `⌥R` shortcut in both command center and free flight
  * ([buildKeyHandler]). First press starts recording (no toast, so the start isn't
  * captured in the video); second press stops it, writes the file, and confirms
  * with a [showSpikeToast].
@@ -816,7 +816,7 @@ private fun startWindowRecording(api: dynamic) {
  * first frame of the recording.
  *
  * [spikeRecordingCountingDown] is held true for the whole count so [toggleWindowRecording]
- * ignores a stray second `⇧R`, and every timer is tracked in
+ * ignores a stray second `⌥R`, and every timer is tracked in
  * [spikeRecordingCountdownTimers] so [cancelRecordingCountdown] can abort it if the
  * world closes mid-count. Reuses the [showSpikeToast] pill styling for a consistent look.
  * Called by [startWindowRecording] once Screen Recording is authorized.
@@ -828,7 +828,7 @@ private fun startWindowRecording(api: dynamic) {
 private fun runRecordingCountdown(api: dynamic) {
     val overlay = spikeOverlay ?: return
     // Clear any lingering confirmation pill and mark the countdown active so a
-    // second ⇧R can't start a parallel count or be read as a stop.
+    // second ⌥R can't start a parallel count or be read as a stop.
     dismissSpikeToast()
     spikeRecordingCountingDown = true
     spikeRecordingCountdownTimers = mutableListOf()
@@ -862,7 +862,7 @@ private fun runRecordingCountdown(api: dynamic) {
 /**
  * Aborts an in-flight pre-recording countdown: cancels its pending timers, drops the
  * countdown flag, and removes the countdown pill from the overlay. A no-op when no
- * countdown is running. Called from [closeWorld3dSpike] so a `⇧R` count started right
+ * countdown is running. Called from [closeWorld3dSpike] so a `⌥R` count started right
  * before the world closes can't fire [acquireAndRecord] into a torn-down overlay.
  *
  * @see runRecordingCountdown
@@ -886,7 +886,7 @@ internal fun cancelRecordingCountdown() {
  * @param api the `window.electronApi` bridge.
  */
 private fun acquireAndRecord(api: dynamic) {
-    // Optimistically mark recording so a fast second ⇧R can't spawn a parallel
+    // Optimistically mark recording so a fast second ⌥R can't spawn a parallel
     // recorder while the source id / stream promises are still resolving.
     spikeRecording = true
     val sourceP: dynamic = api.getWindowRecordingSourceId()
@@ -1039,7 +1039,7 @@ private fun makeMediaRecorder(stream: dynamic): dynamic {
 
 /**
  * Stops the in-flight recording. Flips [spikeRecording] off at once (so a rapid
- * third ⇧R can't race the async teardown) and calls `MediaRecorder.stop()`; the
+ * third ⌥R can't race the async teardown) and calls `MediaRecorder.stop()`; the
  * recorder's `onstop` then runs [finalizeRecording] to assemble and save the file.
  * A no-op when nothing is recording. Called by [toggleWindowRecording] while
  * recording, and by [closeWorld3dSpike] so a recording isn't orphaned on close.

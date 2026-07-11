@@ -514,13 +514,16 @@ internal fun buildKeyHandler(): (Event) -> Unit = handler@{ ev ->
             ke.code == "KeyG" -> { flashShortcut("fly-beside"); flyBesidePane() }
             ke.code == "KeyO" -> { flashShortcut("fly-over"); flyAbovePane() }
             ke.code == "KeyU" -> { flashShortcut("fly-under"); flyBelowPane() }
-            // Screenshot (P) and recording (⇧R) reach the filesystem via Electron,
+            // Screenshot (P) and recording (⌥R) reach the filesystem via Electron,
             // so both keys exist only in the desktop app — gated on isElectronClient
             // so a plain-browser demo neither fires nor advertises them (the legend
-            // rows are stripped to match, see hostVisibleSections). ⇧R is matched on
-            // the physical `code`, before the bare-`r`/`R` reformat branch below.
+            // rows are stripped to match, see hostVisibleSections). Recording is on
+            // ⌥R — not ⇧R — because in free flight Shift is the strafe-down thruster
+            // ([FLY_KEY_CODES]), so a Shift+R chord would fire the thruster too; ⌥ is
+            // not a movement key. Matched on the physical `code` (⌥ rewrites `ke.key`),
+            // before the bare-`r`/`R` reformat branch below.
             isElectronClient && ke.code == "KeyP" -> { flashShortcut("screenshot"); captureWindowScreenshot() }
-            isElectronClient && ke.shiftKey && ke.code == "KeyR" -> { flashShortcut("recording"); toggleWindowRecording() }
+            isElectronClient && ke.altKey && ke.code == "KeyR" -> { flashShortcut("recording"); toggleWindowRecording() }
             // Window edits on the nearest pane. Zoom stays an in-place magnify (the
             // "reference point" is the command center, not a zoom toward the camera).
             ke.key == "+" || ke.key == "=" -> { flashShortcut("zoom"); zoomNearest(1) }
@@ -638,11 +641,13 @@ internal fun buildKeyHandler(): (Event) -> Unit = handler@{ ev ->
         ke.key == ">" -> { flashShortcut("grid-h"); growGridH(1) }  // ⇧ → height (rows)
         ke.key == "<" -> { flashShortcut("grid-h"); growGridH(-1) }
         ke.code == "KeyF" -> { flashShortcut("fly"); toggleFlyMode() }
-        // ⇧R toggles screen-recording the world to a .webm on the Desktop. Desktop
+        // ⌥R toggles screen-recording the world to a .webm on the Desktop. Desktop
         // app only (isElectronClient) — see the screenshot/recording note below.
-        // Matched on the physical `code` *before* the bare-`r`/`R` reformat branch,
-        // which (with shift held, ke.key is "R") would otherwise swallow it.
-        isElectronClient && ke.shiftKey && ke.code == "KeyR" ->
+        // On ⌥R (not ⇧R) so it matches free flight, where Shift is the strafe-down
+        // thruster and a Shift+R chord would move the camera. Matched on the physical
+        // `code` (⌥ rewrites `ke.key` to "®") *before* the bare-`r`/`R` reformat
+        // branch, which would otherwise swallow it.
+        isElectronClient && ke.altKey && ke.code == "KeyR" ->
             { flashShortcut("recording"); toggleWindowRecording() }
         ke.key == "r" || ke.key == "R" -> { flashShortcut("reformat"); reformatFront() }
         ke.key == "j" || ke.key == "J" -> { flashShortcut("tilt"); tiltCamera() }
@@ -661,7 +666,7 @@ internal fun buildKeyHandler(): (Event) -> Unit = handler@{ ev ->
         // Screenshot (P) writes to the filesystem via Electron, so it exists only in
         // the desktop app — gated on isElectronClient so a plain-browser demo neither
         // fires nor advertises it (the legend row is stripped to match, see
-        // hostVisibleSections). The recording toggle (⇧R) is gated the same way above.
+        // hostVisibleSections). The recording toggle (⌥R) is gated the same way above.
         isElectronClient && ke.code == "KeyP" -> { flashShortcut("screenshot"); captureWindowScreenshot() }
         ke.key == "k" || ke.key == "K" -> {
             toggleLegend()
