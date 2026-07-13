@@ -558,6 +558,32 @@ private val PULSE_GROUPS: List<PulseGroup> = listOf(
 private var pulseRafHandle: Int = 0
 
 /**
+ * Minimum wall-clock gap (ms) between two pulse repaints — i.e. the pulse
+ * driver's effective cap of ~8 repaints/second regardless of the display's
+ * refresh rate.
+ *
+ * The status "breathe" is a slow 2.5–3 s curve (see [STATUS_PULSE_PERIOD_MS]
+ * and the world-status periods), so a handful of samples per second is visually
+ * indistinguishable from a per-frame (60 fps+) repaint while doing a fraction of
+ * the work. Before this cap [pulseTick] ran three whole-document
+ * `querySelectorAll` scans plus inline-style writes on *every* animation frame
+ * for as long as any agent was working/waiting — i.e. exactly while the user is
+ * typing at a working pane — contending with xterm's input/render on the main
+ * thread and making typing feel sluggish (issue #125). rAF still drives the
+ * schedule (so the loop pauses when the tab is backgrounded); this only gates
+ * the expensive repaint body.
+ */
+private const val PULSE_MIN_INTERVAL_MS: Double = 120.0
+
+/**
+ * [kotlinx.browser.Window.performance] timestamp of the last pulse repaint, so
+ * [pulseTick] can cheaply skip its DOM work on animation frames that arrive
+ * sooner than [PULSE_MIN_INTERVAL_MS]. Seeded to −∞ so the very first tick
+ * always paints.
+ */
+private var lastPulsePaintMs: Double = Double.NEGATIVE_INFINITY
+
+/**
  * True when the user has asked for reduced motion; the indicators then hold a
  * static full-opacity look instead of breathing.
  */
@@ -601,8 +627,23 @@ private fun currentPulseOpacity(periodMs: Double, floor: Double): Double {
  * summary), the breathe looked erratic. Driving opacity from one shared clock is
  * immune to that: a recreated element simply adopts the current global opacity on
  * the next frame — no snap, all in sync.
+ *
+ * Throttled to [PULSE_MIN_INTERVAL_MS]: rAF still fires ~60×/s, but frames that
+ * arrive within the interval of the last repaint just reschedule and return, so
+ * the expensive `querySelectorAll` + style-write body runs only ~8×/s. The
+ * `anyLive` stop-check therefore only runs on repaint frames — between them the
+ * loop is assumed still live, which at worst keeps it spinning one extra
+ * interval (~120 ms of no-op rAF ticks) after the final indicator clears.
  */
 private fun pulseTick() {
+    val now = kotlinx.browser.window.performance.now()
+    if (now - lastPulsePaintMs < PULSE_MIN_INTERVAL_MS) {
+        // Too soon since the last repaint — skip the DOM work this frame and
+        // just keep the schedule alive.
+        pulseRafHandle = kotlinx.browser.window.requestAnimationFrame { pulseTick() }
+        return
+    }
+    lastPulsePaintMs = now
     var anyLive = false
     for (group in PULSE_GROUPS) {
         val els = kotlinx.browser.document.querySelectorAll(group.selector)

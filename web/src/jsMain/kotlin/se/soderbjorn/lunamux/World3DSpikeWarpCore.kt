@@ -120,8 +120,28 @@ internal class WorldStatusBox(
     var lastText: String? = null,
 )
 
-/** Live per-world status boxes, keyed by world id; reconciled every frame by [updateWarpWorldBoxes]. */
+/** Live per-world status boxes, keyed by world id; reconciled by [updateWarpWorldBoxes]. */
 internal val spikeWarpWorldBoxes: MutableMap<String, WorldStatusBox> = mutableMapOf()
+
+/**
+ * Minimum wall-clock gap (ms) between all-world status-box recomputes in the 3D
+ * render loop — a cap of ~8 updates/second.
+ *
+ * The per-world working/waiting tally is slow-moving agent-status info, not a
+ * warp visual, so recomputing it (an all-worlds × tabs × panes scan in
+ * [computeWorldStatuses]) on every animation frame is wasted main-thread work;
+ * a handful of updates per second is indistinguishable to the eye. The reactor
+ * FX in [tickWarpCoreOverlay] stays per-frame — only the status boxes are gated.
+ * See issue #125.
+ */
+private const val WARP_BOX_MIN_INTERVAL_MS: Double = 120.0
+
+/**
+ * [kotlinx.browser.Window.performance] timestamp of the last status-box
+ * recompute, so [tickWarpCoreOverlay] can skip the scan on frames that arrive
+ * sooner than [WARP_BOX_MIN_INTERVAL_MS]. Seeded to −∞ so the first frame paints.
+ */
+private var lastWarpBoxUpdateMs: Double = Double.NEGATIVE_INFINITY
 
 /** Pre-built inner-heat gradient for the amber HOLD state — constant, so cached here to skip a per-frame re-parse. @see tickWarpCore */
 private val WARP_HEAT_AMBER_BG = warpHeatGradient(WARP_AMBER_COLOR)
@@ -317,7 +337,8 @@ internal fun tickWarpCore(p: RingPane, phaseIdx: Int, working: Boolean, waiting:
  * Screen-space + HUD driver of the warp-core effect, called once per frame from the render
  * loop **after** `css.render` (so the camera matrices its projection uses are current),
  * mirroring [tickPhaser]. It first updates the top-left per-world status boxes (each world's
- * working/waiting counts) — **regardless of [spikeStatusIndication]** — then, only when the
+ * working/waiting counts) — **regardless of [spikeStatusIndication]**, though throttled to
+ * [WARP_BOX_MIN_INTERVAL_MS] rather than recomputed every frame — then, only when the
  * reactor FX is on, clears the warp canvas, paints every discharging pane's bloom + thruster
  * plume and every live sonar ping, and updates the collective reactor-load meter + warm sky
  * tint. When the FX is off it hides the canvas + reactor HUD (but not the boxes) and returns
@@ -331,8 +352,14 @@ internal fun tickWarpCoreOverlay(camera: PerspectiveCamera) {
     //     of the reactor-FX flag (it is agent-status info, not a warp visual). Counts span ALL
     //     worlds (not just the one on screen) via the resident config + global session-state map,
     //     honouring the manual override maps like the render loop. ---
-    ensureWarpBanner()
-    updateWarpWorldBoxes(computeWorldStatuses())
+    // Throttled to [WARP_BOX_MIN_INTERVAL_MS]: the all-world tally moves slowly,
+    // so it needn't be recomputed at the render loop's full frame rate (#125).
+    val nowMs = kotlinx.browser.window.performance.now()
+    if (nowMs - lastWarpBoxUpdateMs >= WARP_BOX_MIN_INTERVAL_MS) {
+        lastWarpBoxUpdateMs = nowMs
+        ensureWarpBanner()
+        updateWarpWorldBoxes(computeWorldStatuses())
+    }
 
     // --- the reactor FX + sky tint are gated on the REACTOR status style. ---
     if (spikeStatusIndication != StatusIndication.REACTOR) {
