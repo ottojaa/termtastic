@@ -1031,6 +1031,15 @@ private fun buildChoiceRow(
 }
 
 /**
+ * The `close` function of the currently-open help popover, or `null` when none
+ * is open. Set by [buildHelpPopover]'s `open`, cleared by its `close`, and
+ * invoked by the next `open` so only one help popover is ever visible at a time.
+ *
+ * @see buildHelpPopover
+ */
+private var openHelpPopoverClose: (() -> Unit)? = null
+
+/**
  * Build a "?" help affordance: a small circular icon button that toggles a
  * popover containing [text].
  *
@@ -1045,10 +1054,17 @@ private fun buildChoiceRow(
  * it. The trigger's own click is stopped from bubbling so the freshly-added
  * outside-click listener doesn't immediately fire on the same event.
  *
+ * At most one help popover is ever open: because the trigger stops the click
+ * from bubbling, another already-open popover's outside-click listener never
+ * fires, so opening a new one would otherwise leave the old one visible and the
+ * screen fills with popovers. [openHelpPopoverClose] tracks the currently-open
+ * popover's `close` and [open] invokes it first, so opening any popover cancels
+ * the previous one.
+ *
  * @param text the explanation to show inside the popover.
  * @return a `<span>` wrapper element containing the trigger button and its
  *   (CSS-hidden-until-open) popover, ready to append next to a toggle label.
- * @see buildToggleRow
+ * @see buildToggleRow @see openHelpPopoverClose
  */
 private fun buildHelpPopover(text: String): HTMLElement {
     val wrapper = document.createElement("span") as HTMLElement
@@ -1076,9 +1092,23 @@ private fun buildHelpPopover(text: String): HTMLElement {
         trigger.setAttribute("aria-expanded", "false")
         outsideClick?.let { document.removeEventListener("click", it) }
         outsideClick = null
+        // Relinquish the "currently open" slot. Safe to clear unconditionally:
+        // once we're closed our listeners are gone, so the only way another
+        // close runs is a *new* popover's open() invoking us — and that path
+        // invokes-then-reassigns the slot below, so it restores it to the new
+        // popover right after this null. (No stale ::close identity check —
+        // local-function references aren't reliably ===-comparable in JS.)
+        openHelpPopoverClose = null
     }
 
     fun open() {
+        // Close any other popover first: its outside-click listener can't fire
+        // (the trigger stops this click from bubbling), so without this the old
+        // one would stay open and popovers would pile up. Invoke the previous
+        // close before claiming the slot, so its unconditional null (above)
+        // lands before our assignment.
+        openHelpPopoverClose?.invoke()
+        openHelpPopoverClose = ::close
         wrapper.classList.add("is-open")
         trigger.setAttribute("aria-expanded", "true")
         val handler: (Event) -> Unit = handler@{ e: Event ->
