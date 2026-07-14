@@ -12,6 +12,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -72,6 +73,7 @@ class FileBrowserBackingViewModel(
      * the initial root-directory listing. Long-running -- cancels when the
      * enclosing scope is cancelled.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun run() {
         coroutineScope {
             launch {
@@ -140,6 +142,7 @@ class FileBrowserBackingViewModel(
      *
      * @param dirRelPath relative path of the directory; `""` for root.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun listDir(dirRelPath: String) {
         emit(_stateFlow.value.copy(isLoading = true, errorMessage = null))
         windowSocket.send(WindowCommand.FileBrowserListDir(paneId = paneId, dirRelPath = dirRelPath))
@@ -151,6 +154,7 @@ class FileBrowserBackingViewModel(
      *
      * @param dirRelPath relative path of the directory to toggle.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun toggleDir(dirRelPath: String) {
         val cur = _stateFlow.value
         val nowExpanded = dirRelPath !in cur.expandedDirs
@@ -167,6 +171,7 @@ class FileBrowserBackingViewModel(
      *
      * @param relPath relative path of the file to open.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun openFile(relPath: String) {
         emit(_stateFlow.value.copy(
             selectedRelPath = relPath,
@@ -179,11 +184,13 @@ class FileBrowserBackingViewModel(
     }
 
     /** Expand every directory in the file tree. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun expandAll() {
         windowSocket.send(WindowCommand.FileBrowserExpandAll(paneId = paneId))
     }
 
     /** Collapse all directories in the file tree. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun collapseAll() {
         emit(_stateFlow.value.copy(expandedDirs = emptySet()))
         windowSocket.send(WindowCommand.FileBrowserCollapseAll(paneId = paneId))
@@ -194,6 +201,7 @@ class FileBrowserBackingViewModel(
      *
      * @param filter the filter string; empty to clear.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setFilter(filter: String) {
         emit(_stateFlow.value.copy(fileFilter = filter))
         windowSocket.send(WindowCommand.SetFileBrowserFilter(paneId = paneId, filter = filter))
@@ -204,6 +212,7 @@ class FileBrowserBackingViewModel(
      *
      * @param sort the new sort mode.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSort(sort: FileBrowserSort) {
         emit(_stateFlow.value.copy(sortBy = sort))
         windowSocket.send(WindowCommand.SetFileBrowserSort(paneId = paneId, sort = sort))
@@ -214,12 +223,14 @@ class FileBrowserBackingViewModel(
      *
      * @param px the new width.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setLeftColumnWidth(px: Int) {
         emit(_stateFlow.value.copy(leftColumnWidthPx = px))
         windowSocket.send(WindowCommand.SetFileBrowserLeftWidth(paneId = paneId, px = px))
     }
 
     /** Re-fetch the root listing and all currently expanded directories. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun refresh() {
         val cur = _stateFlow.value
         listDir("")

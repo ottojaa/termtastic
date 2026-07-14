@@ -24,6 +24,7 @@ import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -111,6 +112,7 @@ fun defaultThemeConfig(): LunamuxThemeConfig = LunamuxThemeConfig.defaults()
  * @receiver the connected client.
  * @return the parsed config, or `null` if the request was rejected/failed.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun LunamuxClient.fetchThemeConfig(): LunamuxThemeConfig? {
     if (demoMode) return LunamuxThemeConfig.defaults()
     val url = serverUrl.httpUrl("/api/ui-settings")

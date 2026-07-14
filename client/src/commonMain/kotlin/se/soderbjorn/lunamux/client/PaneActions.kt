@@ -10,6 +10,7 @@
  */
 package se.soderbjorn.lunamux.client
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -121,6 +122,7 @@ fun resolveCwdForNewPane(
  * @param config         the current window layout snapshot used to resolve
  *                       the anchor pane's tab id.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun addSiblingTerminal(
     socket: WindowSocket,
     anchorPaneId: String,
@@ -139,6 +141,7 @@ suspend fun addSiblingTerminal(
  * @param anchorPaneId   the pane ID whose tab should receive the new pane.
  * @param config         the current window layout snapshot.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun addSiblingFileBrowser(
     socket: WindowSocket,
     anchorPaneId: String,
@@ -157,6 +160,7 @@ suspend fun addSiblingFileBrowser(
  * @param anchorPaneId   the pane ID whose tab should receive the new pane.
  * @param config         the current window layout snapshot.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun addSiblingGit(
     socket: WindowSocket,
     anchorPaneId: String,
@@ -177,6 +181,7 @@ suspend fun addSiblingGit(
  * @param paneId the pane to rename.
  * @param title  the new custom name; blank clears the override.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun renamePane(socket: WindowSocket, paneId: String, title: String) {
     socket.send(WindowCommand.Rename(paneId = paneId, title = title))
 }
@@ -188,6 +193,7 @@ suspend fun renamePane(socket: WindowSocket, paneId: String, title: String) {
  * @param socket the live window WebSocket connection.
  * @param paneId the pane to close.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun closePane(socket: WindowSocket, paneId: String) {
     socket.send(WindowCommand.Close(paneId = paneId))
 }
@@ -200,6 +206,7 @@ suspend fun closePane(socket: WindowSocket, paneId: String) {
  * @param tabId  the tab to rename.
  * @param title  the new tab title; must not be blank.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun renameTab(socket: WindowSocket, tabId: String, title: String) {
     socket.send(WindowCommand.RenameTab(tabId = tabId, title = title))
 }
@@ -212,6 +219,7 @@ suspend fun renameTab(socket: WindowSocket, tabId: String, title: String) {
  * @param socket the live window WebSocket connection.
  * @param tabId  the tab to close.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun closeTab(socket: WindowSocket, tabId: String) {
     socket.send(WindowCommand.CloseTab(tabId = tabId))
 }
@@ -228,6 +236,7 @@ suspend fun closeTab(socket: WindowSocket, tabId: String) {
  * @param hidden `true` to hide the tab from the strip, `false` to reveal it.
  * @see setTabHiddenFromSidebar
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun setTabHidden(socket: WindowSocket, tabId: String, hidden: Boolean) {
     socket.send(WindowCommand.SetTabHidden(tabId = tabId, hidden = hidden))
 }
@@ -244,6 +253,7 @@ suspend fun setTabHidden(socket: WindowSocket, tabId: String, hidden: Boolean) {
  * @param hidden `true` to hide the tab from the sidebar, `false` to reveal it.
  * @see setTabHidden
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun setTabHiddenFromSidebar(socket: WindowSocket, tabId: String, hidden: Boolean) {
     socket.send(WindowCommand.SetTabHiddenFromSidebar(tabId = tabId, hidden = hidden))
 }
@@ -260,6 +270,7 @@ suspend fun setTabHiddenFromSidebar(socket: WindowSocket, tabId: String, hidden:
  *   anything else falls back to "terminal".
  * @param config   the current window layout snapshot used to resolve the cwd.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun addPaneToTab(
     socket: WindowSocket,
     tabId: String,
@@ -292,6 +303,7 @@ suspend fun addPaneToTab(
  * @return `true` if the tab was created (and renamed if requested), `false`
  *   on timeout.
  */
+@Throws(CancellationException::class, Exception::class)
 suspend fun addTab(
     client: LunamuxClient,
     socket: WindowSocket,

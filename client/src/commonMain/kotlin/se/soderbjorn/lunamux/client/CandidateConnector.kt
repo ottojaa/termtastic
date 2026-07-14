@@ -17,6 +17,7 @@
  */
 package se.soderbjorn.lunamux.client
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import se.soderbjorn.lunamux.HostPort
@@ -133,6 +134,13 @@ object CandidateConnector {
      * @see isPinMismatch
      * @see PinMismatchException
      */
+    // Every failure path here ends in a `throw`, and this function is called
+    // straight from Swift (`ConnectionHolder.connectMulti`). Kotlin/Native only
+    // bridges the exception types named here into an NSError; an undeclared one
+    // aborts the process instead of reaching the caller's `catch`. Without
+    // `Exception::class` a plain unreachable candidate — the normal outcome of a
+    // stale VPN address — is fatal rather than an error message.
+    @Throws(CancellationException::class, Exception::class)
     suspend fun connectFirstReachable(
         candidates: List<String>,
         defaultPort: Int,

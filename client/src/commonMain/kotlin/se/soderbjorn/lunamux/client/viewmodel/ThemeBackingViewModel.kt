@@ -25,6 +25,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -81,6 +82,7 @@ class ThemeBackingViewModel(
      * Called once when the connection is established (and may be called again to
      * re-sync after a reconnect).
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun load() {
         val config = client.fetchThemeConfig() ?: return
         _snapshot.value = config.studio
@@ -146,6 +148,7 @@ class ThemeBackingViewModel(
      *
      * @param appearance the new Auto / Light / Dark preference.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setAppearance(appearance: Appearance) {
         _snapshot.value = _snapshot.value.copy(appearance = appearance)
         persist()
@@ -184,6 +187,7 @@ class ThemeBackingViewModel(
      *   consulted when the appearance is [Appearance.Auto]).
      * @see activeSlotIsDark
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setActiveTheme(name: String, systemIsDark: Boolean) {
         val cur = _snapshot.value
         _snapshot.value = if (activeSlotIsDark(systemIsDark)) {
@@ -202,6 +206,7 @@ class ThemeBackingViewModel(
      *
      * @param name the theme to star or unstar.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun toggleFavorite(name: String) {
         val cur = _snapshot.value
         val next = if (name in cur.favorites) cur.favorites - name else cur.favorites + name

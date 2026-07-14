@@ -34,6 +34,7 @@
  */
 package se.soderbjorn.lunamux.client.storage
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -154,6 +155,7 @@ class LocalRepository(
      *
      * @return the hydrated [LocalState] (never `null`).
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun ensureLoaded(): LocalState {
         if (!hydrated) {
             mutex.withLock {
@@ -189,6 +191,7 @@ class LocalRepository(
      *
      * @return the existing or newly-minted base64url device-auth token.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun getOrCreateAuthToken(): String {
         secureStore.read(SECURE_AUTH_TOKEN_KEY)?.takeIf { it.isNotBlank() }?.let { return it }
         val token = encodeBase64Url(secureRandomBytes(32))
@@ -204,6 +207,7 @@ class LocalRepository(
      * @param port TCP port of the server.
      * @return the newly-created [HostEntry].
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addHost(label: String, host: String, port: Int): HostEntry {
         val entry = HostEntry(id = randomUuid(), label = label, host = host, port = port)
         mutate { it.copy(hosts = it.hosts + entry) }
@@ -232,6 +236,7 @@ class LocalRepository(
      * @return the newly-created [HostEntry].
      * @see se.soderbjorn.lunamux.PairingPayload
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addPairedHost(
         label: String,
         host: String,
@@ -259,6 +264,7 @@ class LocalRepository(
      *
      * @param entry the updated entry whose id must already exist.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun updateHost(entry: HostEntry) {
         mutate { s -> s.copy(hosts = s.hosts.map { if (it.id == entry.id) entry else it }) }
     }
@@ -268,6 +274,7 @@ class LocalRepository(
      *
      * @param id the [HostEntry.id] to delete.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun deleteHost(id: String) {
         mutate { s -> s.copy(hosts = s.hosts.filterNot { it.id == id }) }
     }
@@ -277,6 +284,7 @@ class LocalRepository(
      *
      * @param seen `true` once the walkthrough has been completed.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setOnboardingSeen(seen: Boolean) {
         mutate { it.copy(onboardingSeen = seen) }
     }
@@ -288,6 +296,7 @@ class LocalRepository(
      *
      * @param id the news-item id to remember as dismissed.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addDismissedNewsId(id: String) {
         mutate { it.copy(dismissedNewsIds = it.dismissedNewsIds + id) }
     }
@@ -300,6 +309,7 @@ class LocalRepository(
      *
      * @param code the dismissed update's `latestVersionCode`.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setDismissedUpdateVersionCode(code: Long) {
         mutate { it.copy(dismissedUpdateVersionCode = code) }
     }
@@ -311,6 +321,7 @@ class LocalRepository(
      * Called by [se.soderbjorn.lunamux.client.newsupdates.NewsUpdatesBackingViewModel.restoreAll]
      * when the user taps "Restore" in the News & Updates screen.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun clearDismissed() {
         mutate { it.copy(dismissedNewsIds = emptySet(), dismissedUpdateVersionCode = null) }
     }
@@ -322,6 +333,7 @@ class LocalRepository(
      *
      * @param epochMillis epoch-millis of the just-completed check.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setLastCheckEpochMillis(epochMillis: Long) {
         mutate { it.copy(lastCheckEpochMillis = epochMillis) }
     }

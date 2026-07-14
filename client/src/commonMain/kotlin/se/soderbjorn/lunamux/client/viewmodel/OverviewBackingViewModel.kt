@@ -23,6 +23,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -236,6 +237,7 @@ class OverviewBackingViewModel(
      * Start projecting config + state pushes into [stateFlow]. Long-running —
      * cancels when the enclosing scope is cancelled.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun run() {
         coroutineScope {
             launch {
@@ -284,6 +286,7 @@ class OverviewBackingViewModel(
      *
      * @param tabId the tab to activate.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setActiveTab(tabId: String) {
         windowSocket.send(WindowCommand.SetActiveTab(tabId))
     }
@@ -299,6 +302,7 @@ class OverviewBackingViewModel(
      * @param hidden `true` to hide the tab from the strip, `false` to reveal it.
      * @see setTabHiddenFromSidebar
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setTabHidden(tabId: String, hidden: Boolean) {
         windowSocket.send(WindowCommand.SetTabHidden(tabId = tabId, hidden = hidden))
     }
@@ -313,6 +317,7 @@ class OverviewBackingViewModel(
      * @param hidden `true` to hide the tab from the sidebar, `false` to reveal it.
      * @see setTabHidden
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setTabHiddenFromSidebar(tabId: String, hidden: Boolean) {
         windowSocket.send(WindowCommand.SetTabHiddenFromSidebar(tabId = tabId, hidden = hidden))
     }
@@ -326,6 +331,7 @@ class OverviewBackingViewModel(
      * @param tabId  the pane's tab.
      * @param paneId the pane to focus and raise.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun focusPane(tabId: String, paneId: String) {
         windowSocket.send(WindowCommand.SetFocusedPane(tabId = tabId, paneId = paneId))
         raiseZ(tabId, paneId)
@@ -338,6 +344,7 @@ class OverviewBackingViewModel(
      * @param tabId    the tab to receive the pane.
      * @param kindWire `"terminal"`, `"fileBrowser"`, or `"git"`.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addPane(tabId: String, kindWire: String) {
         addPaneToTab(windowSocket, tabId, kindWire, latestConfig)
     }
@@ -348,6 +355,7 @@ class OverviewBackingViewModel(
      *
      * @param paneId the pane to close.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun closePane(paneId: String) {
         windowSocket.send(WindowCommand.Close(paneId = paneId))
     }
@@ -362,6 +370,7 @@ class OverviewBackingViewModel(
      * @param tabId  the pane's tab.
      * @param paneId the pane to maximize/restore.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun toggleMaximize(tabId: String, paneId: String) {
         val geom = fullGeomForTab(tabId)
         val cur = geom[paneId] ?: return
@@ -378,6 +387,7 @@ class OverviewBackingViewModel(
      * @param tabId  the pane's tab.
      * @param paneId the pane to minimize.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun minimize(tabId: String, paneId: String) = setMinimized(tabId, paneId, true)
 
     /**
@@ -386,6 +396,7 @@ class OverviewBackingViewModel(
      * @param tabId  the pane's tab.
      * @param paneId the pane to restore.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun restore(tabId: String, paneId: String) {
         val geom = fullGeomForTab(tabId)
         val cur = geom[paneId] ?: return
@@ -401,6 +412,7 @@ class OverviewBackingViewModel(
      * @param tabId  the tab to rearrange.
      * @param preset the layout preset to apply.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun applyLayout(tabId: String, preset: LayoutPreset) {
         val tab = latestConfig?.effectiveTabs?.firstOrNull { it.id == tabId } ?: return
         val geom = fullGeomForTab(tabId)
@@ -431,6 +443,7 @@ class OverviewBackingViewModel(
      * @param presetKey a [LayoutPreset.key]; unknown keys (including `"custom"`)
      *   no-op.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun applyLayoutByKey(tabId: String, presetKey: String) {
         val preset = LayoutPreset.fromKey(presetKey) ?: return
         applyLayout(tabId, preset)
@@ -507,6 +520,7 @@ class OverviewBackingViewModel(
      * raise the pane to the front. No-op if no drag is in flight. Stays in edit
      * mode so the user can keep arranging.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun endDrag() {
         val d = _drag.value ?: return
         _drag.value = null

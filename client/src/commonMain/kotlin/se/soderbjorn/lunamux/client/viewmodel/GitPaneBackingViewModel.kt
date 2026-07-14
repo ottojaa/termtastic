@@ -12,6 +12,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,6 +83,7 @@ class GitPaneBackingViewModel(
      * the initial git file-list load. Long-running -- cancels when the
      * enclosing scope is cancelled.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun run() {
         coroutineScope {
             launch {
@@ -145,6 +147,7 @@ class GitPaneBackingViewModel(
     // ── Actions ─────────────────────────────────────────────────────
 
     /** Re-fetch the list of changed files from the server. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun refreshList() {
         emit(_stateFlow.value.copy(isLoading = true, errorMessage = null))
         windowSocket.send(WindowCommand.GitList(paneId = paneId))
@@ -155,6 +158,7 @@ class GitPaneBackingViewModel(
      *
      * @param filePath path of the file to diff.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun selectFile(filePath: String) {
         emit(_stateFlow.value.copy(
             selectedFilePath = filePath,
@@ -172,6 +176,7 @@ class GitPaneBackingViewModel(
      *
      * @param mode the new diff mode (inline or side-by-side).
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setDiffMode(mode: GitDiffMode) {
         emit(_stateFlow.value.copy(diffMode = mode))
         windowSocket.send(WindowCommand.SetGitDiffMode(paneId = paneId, mode = mode))
@@ -183,6 +188,7 @@ class GitPaneBackingViewModel(
      *
      * @param enabled `true` to enable.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setGraphicalDiff(enabled: Boolean) {
         emit(_stateFlow.value.copy(graphicalDiff = enabled))
         windowSocket.send(WindowCommand.SetGitGraphicalDiff(paneId = paneId, enabled = enabled))
@@ -194,6 +200,7 @@ class GitPaneBackingViewModel(
      *
      * @param enabled `true` to enable auto-refresh.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setAutoRefresh(enabled: Boolean) {
         emit(_stateFlow.value.copy(autoRefresh = enabled))
         windowSocket.send(WindowCommand.SetGitAutoRefresh(paneId = paneId, enabled = enabled))
@@ -204,6 +211,7 @@ class GitPaneBackingViewModel(
      *
      * @param px the new width in pixels.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setLeftColumnWidth(px: Int) {
         emit(_stateFlow.value.copy(leftColumnWidthPx = px))
         windowSocket.send(WindowCommand.SetGitLeftWidth(paneId = paneId, px = px))
@@ -214,6 +222,7 @@ class GitPaneBackingViewModel(
      *
      * @param sectionKey identifier of the section to toggle.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun toggleSection(sectionKey: String) {
         val cur = _stateFlow.value
         val updated = if (sectionKey in cur.collapsedSections)
@@ -228,6 +237,7 @@ class GitPaneBackingViewModel(
      *
      * @param query the search string.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSearchQuery(query: String) {
         emit(_stateFlow.value.copy(searchQuery = query, searchMatchIndex = 0))
     }
@@ -237,6 +247,7 @@ class GitPaneBackingViewModel(
      *
      * @param index zero-based index of the match to highlight.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSearchMatchIndex(index: Int) {
         emit(_stateFlow.value.copy(searchMatchIndex = index))
     }
