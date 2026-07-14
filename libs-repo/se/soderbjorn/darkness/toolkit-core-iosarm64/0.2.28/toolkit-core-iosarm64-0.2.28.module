@@ -1,0 +1,130 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../toolkit-core/0.2.28/toolkit-core-0.2.28.module",
+    "group": "se.soderbjorn.darkness",
+    "module": "toolkit-core",
+    "version": "0.2.28",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.3"
+    }
+  },
+  "variants": [
+    {
+      "name": "iosArm64ApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.3.20"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.10.2"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "toolkit-core-iosArm64Main-0.2.28.klib",
+          "url": "toolkit-core-iosarm64-0.2.28.klib",
+          "size": 135095,
+          "sha512": "ed0b90ddc91880c4e5978f9b60a891b02f806f65ff042458a68d04de895279002a472973476ca6c84ce88b1d32f11b2ab7d383d2b4554c304f83fa863f064515",
+          "sha256": "d4518a9ff3db63025daf30b4d6c3d90dfd47570a63a76ae6c7565a4267aa9da6",
+          "sha1": "aeb0e4ef97d230247900e4305dfad2fa12fb551a",
+          "md5": "95a06cae5abcde8528de6ed5c6168bba"
+        }
+      ]
+    },
+    {
+      "name": "iosArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "files": [
+        {
+          "name": "toolkit-core-iosarm64-0.2.28-sources.jar",
+          "url": "toolkit-core-iosarm64-0.2.28-sources.jar",
+          "size": 40943,
+          "sha512": "a58b0c258e0248ff7b912cd7250cd891a163034b541285ba2756ee7c47705b643bd4318dd925461902780c9af80054762c153d72e4f6f48467e177a33bbcd5d1",
+          "sha256": "a42b5b2582cc1703c3503343f755af47e3d8107921cffbe9ac66ab9963ebc92a",
+          "sha1": "09cbdcc822404f6e619611fd95f0584747a74fd6",
+          "md5": "873be5bfaa239c9a77e72bb7b01f70e3"
+        }
+      ]
+    },
+    {
+      "name": "iosArm64MetadataElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.3.20"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.10.2"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "toolkit-core-iosarm64-0.2.28-metadata.jar",
+          "url": "toolkit-core-iosarm64-0.2.28-metadata.jar",
+          "size": 261,
+          "sha512": "f7c6addb0ec068e2b9c93f8cb14920bd9939081673a826588a800eac70c1535107397a01cb92745b772fc78dde10255d7df92e71ecc337435f4d8b1f0a983584",
+          "sha256": "2fe7a69b1a857a7421ba5aa10fa3e462e85bbb53654d8f561c2bbaebb984d2ad",
+          "sha1": "1dbc32c20427cffa4286935580a568426179ae89",
+          "md5": "f30d0108c5ff600a53fd983e816258d7"
+        }
+      ]
+    }
+  ]
+}
