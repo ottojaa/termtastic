@@ -63,16 +63,8 @@ final class ConnectionHolder {
         disconnect()
         pendingApproval = false
         lastPinMismatch = false
-        // Report type "iOS" so the settings UI can tell this apart from Android
-        // and browser tabs, and the running app version (CFBundleShortVersionString)
-        // so the server can gate newer pane kinds (agent consoles, 1.5+) to
-        // clients able to render them. Both host/IP fields are advisory.
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        let identity = Client.ClientIdentity(
-            type: "iOS",
-            hostname: ProcessInfo.processInfo.hostName,
-            selfReportedIp: Self.firstNonLoopbackIPv4(),
-            version: appVersion
+        let identity = Self.identity(
+            demo: Client.DemoModeKt.isDemoHost(host: serverUrl.host)
         )
         let fresh = Client.LunamuxClientKt.createLunamuxClient(
             serverUrl: serverUrl,
@@ -170,13 +162,8 @@ final class ConnectionHolder {
         pendingApproval = false
         lastPinMismatch = false
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        let identity = Client.ClientIdentity(
-            type: "iOS",
-            hostname: ProcessInfo.processInfo.hostName,
-            selfReportedIp: Self.firstNonLoopbackIPv4(),
-            version: appVersion
-        )
+        // Real hosts only — the demo never reaches `connectMulti`.
+        let identity = Self.identity(demo: false)
 
         // Phase 1 — reach a candidate. A pin mismatch is re-surfaced through
         // `lastPinMismatch` so the UI can show the cert-changed dialog; any
@@ -264,6 +251,36 @@ final class ConnectionHolder {
         client?.close()
         client = nil
         Task { try? await ws?.close() }
+    }
+
+    /// Self-reported identity for this device.
+    ///
+    /// Reports type "iOS" so the settings UI can tell this apart from Android
+    /// and browser tabs, and the running app version (CFBundleShortVersionString)
+    /// so the server can gate newer pane kinds (agent consoles, 1.5+) to
+    /// clients able to render them. Both host/IP fields are advisory.
+    ///
+    /// The host/IP lookups are skipped entirely in demo mode, and not merely
+    /// as an optimisation: `ProcessInfo.hostName` resolves the device's own
+    /// `.local` name over mDNS, which trips the iOS local-network permission
+    /// alert. The demo runs against the in-process `DemoServer` and opens no
+    /// socket at all, so prompting for LAN access there asks the user to grant
+    /// a permission nothing will use — and it lands before they have any
+    /// reason to trust the app. There is also no server on the far end to
+    /// report an identity to. Real connects still resolve both: the prompt is
+    /// then answered in a context where the app genuinely needs the LAN.
+    ///
+    /// - Parameter demo: whether this connect targets the built-in demo.
+    /// - Returns: the identity to hand to the shared client.
+    /// - SeeAlso: `HostsViewModel.connectDemo`
+    private static func identity(demo: Bool) -> Client.ClientIdentity {
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return Client.ClientIdentity(
+            type: "iOS",
+            hostname: demo ? nil : ProcessInfo.processInfo.hostName,
+            selfReportedIp: demo ? nil : Self.firstNonLoopbackIPv4(),
+            version: appVersion
+        )
     }
 
     /// Best-effort first non-loopback IPv4 address.

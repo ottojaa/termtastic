@@ -12,6 +12,7 @@ import se.soderbjorn.lunamux.client.ClientIdentity
 import se.soderbjorn.lunamux.client.ServerUrl
 import se.soderbjorn.lunamux.client.LunamuxClient
 import se.soderbjorn.lunamux.client.WindowSocket
+import se.soderbjorn.lunamux.client.demo.isDemoHost
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -106,7 +107,8 @@ object ConnectionHolder {
                 candidates = candidates,
                 defaultPort = defaultPort,
                 authToken = authToken,
-                identity = androidIdentity(),
+                // Real hosts only — the demo never reaches connectMulti.
+                identity = androidIdentity(demo = false),
                 pinnedFingerprintHex = pinnedFingerprintHex,
                 pairingToken = pairingToken,
             )
@@ -141,12 +143,22 @@ object ConnectionHolder {
      * Runs on [Dispatchers.IO]: `getLocalHost()` does a reverse-DNS lookup
      * that can block for seconds on a bad resolver, and connect callers run
      * on the main dispatcher — resolving it here keeps that off the UI thread.
+     *
+     * In demo mode both lookups are skipped: the demo runs against the
+     * in-process `DemoServer` and opens no socket, so there is no server to
+     * report an identity to and no reason to make the user wait on a resolver
+     * that may block for seconds. Mirrors the iOS `ConnectionHolder.identity`,
+     * where skipping the same pair of lookups additionally avoids tripping the
+     * local-network permission alert.
+     *
+     * @param demo whether this connect targets the built-in demo.
+     * @return the identity to hand to the shared client.
      */
-    private suspend fun androidIdentity(): ClientIdentity = withContext(Dispatchers.IO) {
+    private suspend fun androidIdentity(demo: Boolean): ClientIdentity = withContext(Dispatchers.IO) {
         ClientIdentity(
             type = "Android",
-            hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrNull(),
-            selfReportedIp = runCatching { firstNonLoopbackIpv4() }.getOrNull(),
+            hostname = if (demo) null else runCatching { InetAddress.getLocalHost().hostName }.getOrNull(),
+            selfReportedIp = if (demo) null else runCatching { firstNonLoopbackIpv4() }.getOrNull(),
             version = BuildConfig.VERSION_NAME,
         )
     }
@@ -184,7 +196,7 @@ object ConnectionHolder {
         val fresh = LunamuxClient(
             serverUrl = serverUrl,
             authToken = authToken,
-            identity = androidIdentity(),
+            identity = androidIdentity(demo = isDemoHost(serverUrl.host)),
             pinnedFingerprintHex = pinnedFingerprintHex,
         )
         val socket = fresh.openWindowSocket()

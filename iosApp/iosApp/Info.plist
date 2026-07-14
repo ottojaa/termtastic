@@ -36,6 +36,18 @@
 		<true/>
 	</dict>
 	<!--
+		Local network access. Lunamux servers live on the same Wi-Fi as the
+		phone, so reaching one is local-network access as far as iOS is
+		concerned and the system alert is unavoidable. Without this string it
+		appears with Apple's generic wording, which does not tell the user why
+		a terminal app wants to scan their network. ConnectionHolder skips the
+		identity lookups that would otherwise raise this alert during the
+		built-in demo, so it fires on a real connect — where the LAN is
+		genuinely needed and the ask makes sense in context.
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Lunamux connects to the Lunamux server running on your Mac over your local network.</string>
+	<!--
 		Camera access for QR device pairing (QRScannerSheet). iOS has no
 		out-of-process code scanner like the Google code scanner Android uses,
 		so the app drives AVCaptureSession itself and must carry this string.
