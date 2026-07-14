@@ -17,21 +17,31 @@
 	<!--
 		ATS configuration for Lunamux's self-signed TLS endpoints.
 
-		NSAllowsLocalNetworking lets the app reach Bonjour/.local/IP-based
-		hosts (the usual local-server scenario) without going through the
-		standard ATS chain check.
-
 		NSAllowsArbitraryLoads is required so that ATS does NOT reject the
 		self-signed server cert before the URLSessionDelegate installed by
 		:client's PinnedHttpClientFactory.ios gets a chance to inspect the
 		server-trust challenge and either accept (capture/verify path) or
 		cancel (pin mismatch). The delegate is the actual security check;
 		ATS would otherwise pre-empt it with a generic chain failure.
+
+		Do NOT add NSAllowsLocalNetworking back, however reasonable it looks
+		next to the above. Per Apple, on iOS 10+ the presence of
+		NSAllowsLocalNetworking (or NSAllowsArbitraryLoadsInWebContent /
+		NSAllowsArbitraryLoadsForMedia) makes NSAllowsArbitraryLoads *ignored*,
+		with an effective value of NO — silently re-enabling ATS. The keys read
+		as additive but are not.
+
+		That combination shipped here once and cost a real bug: LAN candidates
+		kept working (local networking stayed exempt) while any fully-qualified
+		public hostname — a Tailscale `*.ts.net` address — was rejected for
+		presenting a non-CA-issued cert, before the pinning delegate ran.
+		Android and Safari were unaffected, so it read as a VPN/routing fault.
+		NSAllowsArbitraryLoads alone already covers local networking.
+
+		See: https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowsarbitraryloads
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
