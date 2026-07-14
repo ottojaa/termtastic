@@ -1,9 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Normal permission (no prompt): lets connection-failure messages say
-         whether the phone is on Wi-Fi or mobile data. -->
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- No CAMERA permission: the QR pairing scanner is the Google code
          scanner, which captures inside a Play Services process and hands back

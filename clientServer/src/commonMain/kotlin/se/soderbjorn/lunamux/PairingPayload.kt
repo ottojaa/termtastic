@@ -89,17 +89,19 @@ data class HostPort(val host: String, val port: Int) {
  * The device-pairing payload carried by the QR code shown in the desktop
  * pairing dialog.
  *
- * Wire format (`v=1`):
+ * Wire format (`v=0`, pre-release — see [PairingPayload.VERSION]):
  * ```
- * lunamux://pair?v=1&h=<csv of host[:port]>&p=<default port>&fp=<64 hex>&t=<token>&n=<name>
+ * lunamux://pair?v=0&h=<csv of host[:port]>&p=<default port>&fp=<43 base64url>&t=<token>&n=<name>
  * ```
  *
  * - `h` — ordered, percent-encoded candidate endpoints; entries without a
  *   `:port` suffix default to `p`. IPv6 literals are bracketed.
  * - `p` — the default port for bare candidates.
- * - `fp` — lowercase-hex SHA-256 of the server's TLS leaf certificate. The
- *   client pins this from the very first connect (verify mode), which is
- *   strictly stronger than blind trust-on-first-use.
+ * - `fp` — SHA-256 of the server's TLS leaf certificate as unpadded base64url
+ *   (43 chars, vs 64 for hex — the field is a fifth of the budget, so the
+ *   encoding is worth the conversion). Exposed to callers as hex via
+ *   [fingerprintHex]. The client pins this from the very first connect
+ *   (verify mode), which is strictly stronger than blind trust-on-first-use.
  * - `t` — single-use pairing token minted while the pairing dialog is open;
  *   possession proves the user is looking at the server's screen, so the
  *   server trusts the device without an approval dialog.
@@ -147,9 +149,13 @@ data class PairingPayload(
         val head = "${URI_PREFIX}v=$VERSION&h="
         // p/fp/t are mandatory and fixed-width, so their cost is known up
         // front and every trim decision below is measured against it.
+        val fpBytes = hexToBytes(fingerprintHex.lowercase())
+        require(fpBytes != null && fpBytes.size == FINGERPRINT_BYTES) {
+            "fingerprintHex must be $FINGERPRINT_BYTES bytes of hex"
+        }
         val tail = StringBuilder()
             .append("&p=").append(defaultPort)
-            .append("&fp=").append(fingerprintHex.lowercase())
+            .append("&fp=").append(base64UrlEncode(fpBytes))
             .append("&t=").append(percentEncode(token))
             .toString()
 
@@ -171,8 +177,18 @@ data class PairingPayload(
     }
 
     companion object {
-        /** Payload format version emitted by [encode] and required by [parse]. */
-        const val VERSION = 1
+        /**
+         * Payload format version emitted by [encode] and required by [parse].
+         *
+         * 0 means pre-release: the format is still free to change, because
+         * nothing in the wild parses it. Bump to 1 in the release that first
+         * puts QR pairing in front of a user; after that, every format change
+         * costs a version and needs a compatibility story.
+         */
+        const val VERSION = 0
+
+        /** SHA-256 digest length; the only [PairingPayload.fingerprintHex] size accepted. */
+        const val FINGERPRINT_BYTES = 32
 
         /** URI scheme + path prefix every pairing payload starts with. */
         const val URI_PREFIX = "lunamux://pair?"
@@ -230,8 +246,9 @@ data class PairingPayload(
                 val decoded = percentDecode(entry) ?: return null
                 HostPort.parseCandidate(decoded, defaultPort) ?: return null
             }
-            val fp = params["fp"]?.lowercase() ?: return null
-            if (fp.length != 64 || fp.any { it !in '0'..'9' && it !in 'a'..'f' }) return null
+            val fpBytes = params["fp"]?.let(::base64UrlDecode) ?: return null
+            if (fpBytes.size != FINGERPRINT_BYTES) return null
+            val fp = bytesToHex(fpBytes)
             val token = params["t"]?.let(::percentDecode)?.takeIf { it.isNotBlank() } ?: return null
             val name = params["n"]?.let(::percentDecode)?.takeIf { it.isNotBlank() }
             return PairingPayload(candidates, defaultPort, fp, token, name)
@@ -250,6 +267,118 @@ private fun parsePortOrNull(text: String): Int? {
     if (text.isEmpty() || text.length > 5 || text.any { it !in '0'..'9' }) return null
     val port = text.toInt()
     return if (port in 1..65535) port else null
+}
+
+/** RFC 4648 §5 base64url alphabet. No padding: `=` would cost characters. */
+private const val B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+/**
+ * Encodes [bytes] as unpadded base64url.
+ *
+ * Hand-rolled for the same reason as [percentEncode]: this module compiles to
+ * js/wasmJs, where `java.util.Base64` does not exist. Used only for `fp`,
+ * where it costs 43 characters against hex's 64 — a fifth of [PairingPayload.MAX_LENGTH]
+ * bought back, which is the difference between the server name fitting in the
+ * QR and being silently shed.
+ *
+ * Every output character is URL-safe, so the result never needs percent-encoding.
+ *
+ * @param bytes the raw bytes.
+ * @return the unpadded base64url text; reversible via [base64UrlDecode].
+ */
+private fun base64UrlEncode(bytes: ByteArray): String {
+    val sb = StringBuilder((bytes.size * 4 + 2) / 3)
+    var i = 0
+    while (i + 2 < bytes.size) {
+        val n = ((bytes[i].toInt() and 0xff) shl 16) or
+            ((bytes[i + 1].toInt() and 0xff) shl 8) or
+            (bytes[i + 2].toInt() and 0xff)
+        sb.append(B64URL[(n ushr 18) and 0x3f])
+        sb.append(B64URL[(n ushr 12) and 0x3f])
+        sb.append(B64URL[(n ushr 6) and 0x3f])
+        sb.append(B64URL[n and 0x3f])
+        i += 3
+    }
+    // Tail: 1 leftover byte yields 2 chars, 2 bytes yield 3. Never padded.
+    when (bytes.size - i) {
+        1 -> {
+            val n = (bytes[i].toInt() and 0xff) shl 16
+            sb.append(B64URL[(n ushr 18) and 0x3f])
+            sb.append(B64URL[(n ushr 12) and 0x3f])
+        }
+        2 -> {
+            val n = ((bytes[i].toInt() and 0xff) shl 16) or ((bytes[i + 1].toInt() and 0xff) shl 8)
+            sb.append(B64URL[(n ushr 18) and 0x3f])
+            sb.append(B64URL[(n ushr 12) and 0x3f])
+            sb.append(B64URL[(n ushr 6) and 0x3f])
+        }
+    }
+    return sb.toString()
+}
+
+/**
+ * Reverses [base64UrlEncode]. Returns null rather than throwing on any
+ * character outside [B64URL] or a length that cannot come from unpadded
+ * base64url, because input comes from untrusted QR scans.
+ *
+ * Standard base64's `+` and `/` are rejected too: nothing this codebase emits
+ * uses them, so accepting them would only widen what a hostile QR can feed in.
+ *
+ * @param value the unpadded base64url text.
+ * @return the decoded bytes, or null when malformed.
+ */
+private fun base64UrlDecode(value: String): ByteArray? {
+    // A 4n+1 length is unreachable: no byte count encodes to it.
+    if (value.length % 4 == 1) return null
+    val out = ArrayList<Byte>(value.length * 3 / 4)
+    var buffer = 0
+    var bits = 0
+    for (c in value) {
+        val v = B64URL.indexOf(c)
+        if (v < 0) return null
+        buffer = (buffer shl 6) or v
+        bits += 6
+        if (bits >= 8) {
+            bits -= 8
+            out.add(((buffer ushr bits) and 0xff).toByte())
+        }
+    }
+    return out.toByteArray()
+}
+
+/**
+ * Parses an even-length hex string into bytes.
+ *
+ * @param hex lowercase or uppercase hex, no prefix or separators.
+ * @return the bytes, or null on odd length or a non-hex character.
+ */
+private fun hexToBytes(hex: String): ByteArray? {
+    if (hex.length % 2 != 0) return null
+    val out = ByteArray(hex.length / 2)
+    for (i in out.indices) {
+        val hi = hexValue(hex[i * 2])
+        val lo = hexValue(hex[i * 2 + 1])
+        if (hi < 0 || lo < 0) return null
+        out[i] = (((hi shl 4) or lo) and 0xff).toByte()
+    }
+    return out
+}
+
+/**
+ * Renders [bytes] as lowercase hex — the form every caller of
+ * [PairingPayload.fingerprintHex] compares against, so `fp` is decoded back
+ * to it at the parse boundary and base64url never leaks past this file.
+ *
+ * @param bytes the raw bytes.
+ * @return lowercase hex, two characters per byte.
+ */
+private fun bytesToHex(bytes: ByteArray): String {
+    val sb = StringBuilder(bytes.size * 2)
+    for (b in bytes) {
+        sb.append(HEX[(b.toInt() ushr 4) and 0x0f])
+        sb.append(HEX[b.toInt() and 0x0f])
+    }
+    return sb.toString()
 }
 
 /**

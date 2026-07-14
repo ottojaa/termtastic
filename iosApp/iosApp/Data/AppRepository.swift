@@ -48,6 +48,19 @@ struct HostEntryLocal: Identifiable, Equatable {
     /// One-time QR pairing token, or nil; also preserved on round-trip.
     var pairingToken: String?
 
+    /// Every address this entry can be reached at, in the order the connect
+    /// walk would try them: the preferred endpoint first, then the stored
+    /// candidates.
+    ///
+    /// Backs both the long-press picker's list and the check for whether there
+    /// is anything to pick between — a one-address host has no choice to offer,
+    /// so it gets no picker. Mirrors the Android `HostEntry.allAddresses()`.
+    var allAddresses: [String] {
+        let preferred = Client.HostPort(host: host, port: port)
+            .toCandidateString(defaultPort: nil)
+        return [preferred] + candidates.filter { $0 != preferred }
+    }
+
     init(
         id: String,
         label: String,

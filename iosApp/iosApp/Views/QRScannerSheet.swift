@@ -67,7 +67,7 @@ struct QRScannerSheet: View {
                 }
             }
             .background(Palette.background)
-            .navigationTitle("Scan pairing code")
+            .navigationTitle("Scan QR code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -98,7 +98,9 @@ struct QRScannerSheet: View {
                     .frame(width: 240, height: 240)
                     .accessibilityHidden(true)
                 Spacer()
-                Text("On your Mac: Lunamux > Settings > Server & Security… > Devices > Pair a device")
+                Text("On your Mac, in Lunamux, go to \"Settings > Server & Security… > Devices\" "
+                     + "and tick \"Allow connections from other devices\" and then press "
+                     + "\"Pair via QR Code\" - and then scan the code here.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white)

@@ -60,4 +60,49 @@ data class HostEntry(
     val pinnedFingerprintHex: String? = null,
     val candidates: List<String> = emptyList(),
     val pairingToken: String? = null,
-)
+) {
+    companion object {
+        /**
+         * Ceiling on a stored candidate list. Not the same concern as
+         * `PairingPayload.MAX_CANDIDATES` (which bounds what one QR can carry
+         * and what a hostile QR could induce): this bounds what accumulates
+         * across *many* pairings over time.
+         *
+         * It exists because `CandidateConnector` walks candidates
+         * sequentially with a 12s timeout each, so every stale entry is up to
+         * 12 seconds of spinner before a live one is reached. Without a cap,
+         * a laptop paired at work, home, and a café collects dead addresses
+         * forever and connects get slower every time.
+         */
+        const val MAX_STORED_CANDIDATES = 12
+
+        /**
+         * Merge the candidates from a freshly-scanned QR into what an entry
+         * already knows, newest-first.
+         *
+         * Re-pairing exists to *add* a network, not swap one for another: a
+         * laptop paired at work and then re-paired at home should be reachable
+         * from both, whereas replacing the list would make the phone
+         * ping-pong, re-pairing every time it changes buildings.
+         *
+         * [fresh] leads because it describes the network the user is standing
+         * on right now — the one most likely to connect, and position is worth
+         * up to 12s each in the sequential walk. Older entries follow in their
+         * previous order, and the tail past [MAX_STORED_CANDIDATES] is dropped:
+         * those are the least-recently-seen networks, so they are the ones
+         * least likely to be the current one.
+         *
+         * Called by the Android hosts screen's `handlePairingUri` and the iOS
+         * `HostsViewModel.handlePairingUri` when a scan matches a known server.
+         *
+         * @param fresh candidate strings from the scanned payload, in the
+         *   server's suggested order.
+         * @param existing the entry's current [candidates].
+         * @return the merged list, deduplicated, newest-first, capped at
+         *   [MAX_STORED_CANDIDATES].
+         * @see CandidateConnector
+         */
+        fun mergeCandidates(fresh: List<String>, existing: List<String>): List<String> =
+            (fresh + existing).distinct().take(MAX_STORED_CANDIDATES)
+    }
+}

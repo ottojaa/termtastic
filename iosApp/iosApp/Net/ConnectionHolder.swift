@@ -156,7 +156,8 @@ final class ConnectionHolder {
         defaultPort: Int32,
         authToken: String,
         pinnedFingerprintHex: String? = nil,
-        pairingToken: String? = nil
+        pairingToken: String? = nil,
+        onAttempt: @escaping (String) -> Void = { _ in }
     ) async throws -> Client.CandidateConnection {
         disconnect()
         pendingApproval = false
@@ -180,8 +181,17 @@ final class ConnectionHolder {
                 identity: identity,
                 pinnedFingerprintHex: pinnedFingerprintHex,
                 pairingToken: pairingToken,
-                // Matches the shared default, which does not bridge to Swift.
-                perCandidateTimeoutMs: 12_000
+                perCandidateTimeoutMs: Client.CandidateConnector.shared
+                    .DEFAULT_PER_CANDIDATE_TIMEOUT_MS,
+                // Name what we're waiting on: a dead candidate costs the full
+                // per-candidate budget of otherwise mute spinner, which reads
+                // as a hang.
+                // nil default port, matching how candidates are stringified for
+                // storage — so the address named here reads the same as the one
+                // in the host's saved list.
+                onAttempt: { endpoint in
+                    onAttempt(endpoint.toCandidateString(defaultPort: nil))
+                }
             )
         } catch {
             if Self.isPinMismatch(error) {

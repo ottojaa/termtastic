@@ -62,6 +62,21 @@ class PairingPayloadTest {
         assertEquals(payload, PairingPayload.parse(payload.encode()))
     }
 
+    /**
+     * `fp` travels as base64url but every caller compares hex, so the
+     * conversion must be invisible: what goes in as hex comes back as the
+     * same hex, and the field on the wire is the shorter form.
+     */
+    @Test
+    fun fingerprintTravelsAsBase64UrlAndReturnsAsHex() {
+        val encoded = samplePayload().encode()
+        val fpField = encoded.substringAfter("&fp=").substringBefore("&")
+        assertEquals(43, fpField.length, "SHA-256 as unpadded base64url is 43 chars")
+        assertFalse(encoded.contains(fp), "the 64-char hex form must not be on the wire")
+        assertEquals(fp, PairingPayload.parse(encoded)!!.fingerprintHex)
+    }
+
+
     @Test
     fun nameDroppedWhenPayloadWouldExceedMax() {
         val payload = samplePayload(
@@ -83,11 +98,16 @@ class PairingPayloadTest {
     @Test
     fun malformedInputsReturnNull() {
         val good = samplePayload(name = null).encode()
-        assertNull(PairingPayload.parse("https://example.com/?v=1"))
-        assertNull(PairingPayload.parse(good.replace("v=1", "v=2")))
+        val fpField = good.substringAfter("&fp=").substringBefore("&")
+        assertNull(PairingPayload.parse("https://example.com/?v=${PairingPayload.VERSION}"))
+        assertNull(PairingPayload.parse(good.replace("v=${PairingPayload.VERSION}", "v=99")))
         assertNull(PairingPayload.parse(good.replace("&t=", "&tt=")))
-        assertNull(PairingPayload.parse(good.replace("&fp=$fp", "&fp=${fp.dropLast(2)}")))
-        assertNull(PairingPayload.parse(good.replace("&fp=$fp", "&fp=${"zz".repeat(32)}")))
+        // 41 chars cannot be unpadded base64url of anything (4n+1).
+        assertNull(PairingPayload.parse(good.replace("&fp=$fpField", "&fp=${fpField.dropLast(2)}")))
+        // Outside the base64url alphabet.
+        assertNull(PairingPayload.parse(good.replace("&fp=$fpField", "&fp=${"*".repeat(43)}")))
+        // Well-formed base64url, wrong digest length.
+        assertNull(PairingPayload.parse(good.replace("&fp=$fpField", "&fp=AAAA")))
         assertNull(PairingPayload.parse(good.replace("&p=8443", "&p=99999")))
         assertNull(PairingPayload.parse(good.replace("&p=8443", "&p=abc")))
         // Truncated percent escape in the token.
@@ -98,9 +118,11 @@ class PairingPayloadTest {
 
     @Test
     fun tooManyCandidatesRejected() {
+        val fpField = samplePayload(name = null).encode().substringAfter("&fp=").substringBefore("&")
         fun uriWith(n: Int): String {
             val hosts = (1..n).joinToString(",") { "10.0.0.$it" }
-            return "${PairingPayload.URI_PREFIX}v=1&h=$hosts&p=8443&fp=$fp&t=$token"
+            return "${PairingPayload.URI_PREFIX}v=${PairingPayload.VERSION}" +
+                "&h=$hosts&p=8443&fp=$fpField&t=$token"
         }
         // Exactly the cap parses; one past it is treated as malformed (null),
         // which bounds the host:port probe sweep a hostile QR could induce.
@@ -164,16 +186,38 @@ class PairingPayloadTest {
         )
     }
 
-    /** For IPv4 LAN addresses the length ceiling binds before the candidate cap. */
+    /**
+     * Bare IPv4 candidates are short enough that the [PairingPayload.MAX_CANDIDATES]
+     * cap binds before the length ceiling — which only became true once `fp`
+     * moved to base64url and handed back 21 characters. Before that the
+     * ceiling bound first and a machine could not offer 12 addresses.
+     */
     @Test
-    fun encodeTrimsCandidatesToStayScannable() {
+    fun ipv4CandidatesAreBoundedByTheCapNotTheLength() {
         val many = (1..40).map { HostPort("192.168.1.$it", 8443) }
-        val parsed = PairingPayload.parse(samplePayload(candidates = many).encode())
+        val encoded = samplePayload(candidates = many).encode()
+        val parsed = PairingPayload.parse(encoded)
+        assertNotNull(parsed)
+        assertEquals(PairingPayload.MAX_CANDIDATES, parsed.candidates.size)
+        assertTrue(encoded.length <= PairingPayload.MAX_LENGTH)
+    }
+
+    /**
+     * Hostnames are long enough that the length ceiling still binds first, so
+     * the tail-trim path stays exercised. This is the case that matters in
+     * practice: a machine on a VPN offers resolved names alongside its IPs.
+     */
+    @Test
+    fun hostnameCandidatesAreTrimmedToStayScannable() {
+        val many = (1..12).map { HostPort("machine-$it.tailnet-example.ts.net", 8443) }
+        val encoded = samplePayload(candidates = many).encode()
+        val parsed = PairingPayload.parse(encoded)
         assertNotNull(parsed)
         assertTrue(
             parsed.candidates.size < PairingPayload.MAX_CANDIDATES,
             "expected the length ceiling to bind first, kept ${parsed.candidates.size}",
         )
+        assertTrue(encoded.length <= PairingPayload.MAX_LENGTH)
     }
 
     /** Trimming is tail-first, so the most-reachable address keeps its slot. */

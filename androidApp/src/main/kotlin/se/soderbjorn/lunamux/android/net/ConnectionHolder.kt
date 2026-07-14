@@ -93,6 +93,7 @@ object ConnectionHolder {
         authToken: String,
         pinnedFingerprintHex: String? = null,
         pairingToken: String? = null,
+        onAttempt: (String) -> Unit = {},
     ): CandidateConnection {
         disconnect()
         Log.i("ConnectionHolder", "connectMulti: ${candidates.size} candidate(s), defaultPort=$defaultPort")
@@ -111,6 +112,10 @@ object ConnectionHolder {
                 identity = androidIdentity(demo = false),
                 pinnedFingerprintHex = pinnedFingerprintHex,
                 pairingToken = pairingToken,
+                // No default port, matching how candidates are stringified for
+                // storage — so the address named here reads the same as the one
+                // in the host's saved list.
+                onAttempt = { onAttempt(it.toCandidateString()) },
             )
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException || isPinMismatch(t)) throw t

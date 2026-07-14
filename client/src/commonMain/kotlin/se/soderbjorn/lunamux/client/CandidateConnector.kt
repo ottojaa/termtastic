@@ -76,6 +76,21 @@ class PinMismatchException(
 object CandidateConnector {
 
     /**
+     * Default handshake budget per candidate. 12 s covers a TLS + WS handshake
+     * on a sleepy Wi-Fi radio while keeping a multi-candidate walk under a
+     * minute.
+     *
+     * Public because it is not only this file's business: the walk spends this
+     * long on every address that doesn't answer, so the UI showing a progress
+     * bar over an attempt has to agree with it or the bar lies. Callers that
+     * display attempt progress should size it from this rather than restating
+     * the number.
+     *
+     * @see connectFirstReachable
+     */
+    const val DEFAULT_PER_CANDIDATE_TIMEOUT_MS: Long = 12_000
+
+    /**
      * Try [candidates] in order and return the first endpoint whose
      * WebSocket handshake completes within [perCandidateTimeoutMs].
      *
@@ -103,6 +118,11 @@ object CandidateConnector {
      * @param perCandidateTimeoutMs handshake budget per candidate. 12 s
      *   covers a TLS + WS handshake on a sleepy Wi-Fi radio while keeping a
      *   multi-candidate walk under a minute.
+     * @param onAttempt invoked on the calling coroutine with each endpoint
+     *   just before it is tried, so the UI can name what it is waiting on.
+     *   Without it a multi-candidate walk is a mute spinner for up to
+     *   [perCandidateTimeoutMs] per dead address, which reads as a hang rather
+     *   than as progress. Must not block: it runs inline in the walk.
      * @return the winning [CandidateConnection]; the caller owns its handles.
      * @throws IllegalArgumentException when no candidate is parseable.
      * @throws PinMismatchException when a candidate's cert failed the pin
@@ -120,7 +140,8 @@ object CandidateConnector {
         identity: ClientIdentity,
         pinnedFingerprintHex: String? = null,
         pairingToken: String? = null,
-        perCandidateTimeoutMs: Long = 12_000,
+        perCandidateTimeoutMs: Long = DEFAULT_PER_CANDIDATE_TIMEOUT_MS,
+        onAttempt: (HostPort) -> Unit = {},
     ): CandidateConnection {
         val endpoints = candidates
             .mapNotNull { HostPort.parseCandidate(it, defaultPort) }
@@ -130,6 +151,7 @@ object CandidateConnector {
         var pinMismatch: Throwable? = null
         var lastFailure: Throwable? = null
         for (endpoint in endpoints) {
+            onAttempt(endpoint)
             val client = LunamuxClient(
                 serverUrl = ServerUrl(host = endpoint.host, port = endpoint.port),
                 authToken = authToken,

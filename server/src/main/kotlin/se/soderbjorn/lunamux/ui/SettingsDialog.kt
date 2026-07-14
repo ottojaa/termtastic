@@ -7,7 +7,7 @@
  * clutter the everyday network/device controls:
  *  - **Devices** tab:
  *    - Connections (listening port/IPs, allow-remote toggle, "Pair a
- *      device" QR dialog — see [PairingDialog]).
+ *      device" QR — which takes over this whole window, see [PairingPanel]).
  *    - Approved device management (list, revoke).
  *    - Denied device management (list, unban).
  *  - **Features** tab:
@@ -246,12 +246,29 @@ object SettingsDialog {
         var selectedTab by remember { mutableStateOf(0) }
         val tabs = listOf("Devices", "Features", "MCP")
 
-        // Bumped when a flow outside this window may have mutated settings —
-        // currently the pairing dialog, whose QR approval adds a trusted
+        // Bumped when a flow outside the normal controls may have mutated
+        // settings — currently pairing, whose QR approval adds a trusted
         // device. Paired with isShowing so both reopening the window and
-        // closing the pairing dialog force a fresh repo read.
+        // leaving the pairing panel force a fresh repo read.
         var settingsRefresh by remember { mutableStateOf(0) }
         val refreshKey: Any = Pair(isShowing, settingsRefresh)
+
+        // Pairing takes over the whole window rather than opening one of its
+        // own: a QR is something you hold a phone up to, and the settings
+        // chrome behind it is noise. Hoisted to here (rather than living in
+        // ConnectionsSection) precisely so it can replace the header and tabs
+        // too, not just the section body.
+        var showPairing by remember { mutableStateOf(false) }
+        if (showPairing) {
+            PairingPanel(
+                port = listeningPort ?: SERVER_TLS_PORT,
+                onBack = {
+                    showPairing = false
+                    settingsRefresh++
+                },
+            )
+            return
+        }
 
         Column(
             modifier = Modifier
@@ -316,7 +333,7 @@ object SettingsDialog {
                             McpSection(repo, refreshKey)
                         }
                         else -> {
-                            ConnectionsSection(repo, refreshKey, onPairingDialogClosed = { settingsRefresh++ })
+                            ConnectionsSection(repo, refreshKey, onPairViaQr = { showPairing = true })
                             Spacer(Modifier.height(16.dp))
                             TrustedDevicesSection(repo, refreshKey)
                             Spacer(Modifier.height(16.dp))
@@ -367,16 +384,16 @@ object SettingsDialog {
      * @param repo settings repository backing the allow-remote toggle.
      * @param refreshKey changing this value re-reads settings state from the
      *   repo, so reopening the window shows what is actually stored.
-     * @param onPairingDialogClosed invoked when the pairing dialog closes so
-     *   the parent can bump the refresh counter — a completed pairing adds a
-     *   trusted device that the sections below must pick up.
-     * @see PairingDialog
+     * @param onPairViaQr invoked when the user presses "Pair via QR code";
+     *   the parent swaps the whole window over to [PairingPanel] rather than
+     *   opening a second window.
+     * @see PairingPanel
      */
     @Composable
     private fun ConnectionsSection(
         repo: SettingsRepository,
         refreshKey: Any,
-        onPairingDialogClosed: () -> Unit,
+        onPairViaQr: () -> Unit,
     ) {
         SectionHeader("Connections")
 
@@ -406,7 +423,6 @@ object SettingsDialog {
         // Keyed on refreshKey so reopening the window re-reads the stored
         // value rather than showing whatever this composable last had.
         var allowRemote by remember(refreshKey) { mutableStateOf(repo.isAllowRemoteConnections()) }
-        var showPairing by remember { mutableStateOf(false) }
         SettingToggleRow(
             title = "Allow connections from other devices",
             description = "When off, connections are only accepted from this " +
@@ -415,9 +431,6 @@ object SettingsDialog {
         ) {
             allowRemote = it
             repo.setAllowRemoteConnections(it)
-            // Switching off closes an open QR window: the code it shows would
-            // no longer get a scanning device past the network gate.
-            if (!it) showPairing = false
             log.info("Settings: allow-remote toggled to {}", it)
         }
 
@@ -426,7 +439,7 @@ object SettingsDialog {
         // connections — there is nothing it could usefully do while off.
         if (allowRemote) {
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { showPairing = true }) {
+            Button(onClick = onPairViaQr) {
                 Text("Pair via QR code")
             }
             Text(
@@ -434,15 +447,6 @@ object SettingsDialog {
                     "instantly — no addresses to type, no approval dialog.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
-            )
-        }
-        if (showPairing) {
-            PairingDialog(
-                port = port ?: SERVER_TLS_PORT,
-                onClose = {
-                    showPairing = false
-                    onPairingDialogClosed()
-                },
             )
         }
 
