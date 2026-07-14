@@ -14,6 +14,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import platform.Foundation.NSData
@@ -42,6 +43,7 @@ actual class LocalStore {
 
     private fun filePath(name: String): String = "$documentsDirPath/$name"
 
+    @Throws(CancellationException::class, Exception::class)
     actual suspend fun read(name: String): String? = withContext(Dispatchers.Default) {
         val path = filePath(name)
         val fm = NSFileManager.defaultManager
@@ -57,6 +59,7 @@ actual class LocalStore {
         bytes.decodeToString()
     }
 
+    @Throws(CancellationException::class, Exception::class)
     actual suspend fun write(name: String, text: String): Unit = withContext(Dispatchers.Default) {
         val path = filePath(name)
         val bytes = text.encodeToByteArray()
@@ -70,6 +73,7 @@ actual class LocalStore {
         Unit
     }
 
+    @Throws(CancellationException::class, Exception::class)
     actual suspend fun delete(name: String): Unit = withContext(Dispatchers.Default) {
         NSFileManager.defaultManager.removeItemAtPath(filePath(name), error = null)
         Unit

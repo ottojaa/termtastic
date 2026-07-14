@@ -23,6 +23,7 @@
  */
 package se.soderbjorn.lunamux.client.storage
 
+import kotlinx.coroutines.CancellationException
 /**
  * The [SecureStore] key under which [LocalRepository.getOrCreateAuthToken]
  * stores the device-auth token. On iOS this is the Keychain `kSecAttrAccount`
@@ -43,6 +44,7 @@ expect class SecureStore {
      * @param key the entry key (e.g. [SECURE_AUTH_TOKEN_KEY]).
      * @return the stored value, or `null` if absent or unreadable.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun read(key: String): String?
 
     /**
@@ -51,6 +53,7 @@ expect class SecureStore {
      * @param key the entry key.
      * @param value the UTF-8 secret to persist.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun write(key: String, value: String)
 
     /**
@@ -58,5 +61,6 @@ expect class SecureStore {
      *
      * @param key the entry key to remove.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun delete(key: String)
 }

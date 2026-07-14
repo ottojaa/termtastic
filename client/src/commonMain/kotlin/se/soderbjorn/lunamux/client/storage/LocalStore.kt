@@ -24,6 +24,7 @@
  */
 package se.soderbjorn.lunamux.client.storage
 
+import kotlinx.coroutines.CancellationException
 /**
  * A tiny platform-backed file store. Values are plain UTF-8 text; serialize via
  * kotlinx.serialization before [write] and deserialize after [read]. Backed by
@@ -38,6 +39,7 @@ expect class LocalStore {
      * @return the file contents, or `null` if the file does not exist or could
      *   not be read.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun read(name: String): String?
 
     /**
@@ -47,6 +49,7 @@ expect class LocalStore {
      * @param name the file name (no directory component needed).
      * @param text the UTF-8 text to persist.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun write(name: String, text: String)
 
     /**
@@ -54,5 +57,6 @@ expect class LocalStore {
      *
      * @param name the file name to remove.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun delete(name: String)
 }

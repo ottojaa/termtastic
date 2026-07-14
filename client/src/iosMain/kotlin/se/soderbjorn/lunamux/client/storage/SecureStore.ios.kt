@@ -29,6 +29,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import platform.CoreFoundation.CFDictionaryAddValue
@@ -103,6 +104,7 @@ actual class SecureStore {
         return Triple(query, cfService, cfAccount)
     }
 
+    @Throws(CancellationException::class, Exception::class)
     actual suspend fun read(key: String): String? = withContext(Dispatchers.Default) {
         val (query, cfService, cfAccount) = baseQuery(key)
         CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue)
@@ -123,6 +125,7 @@ actual class SecureStore {
         token
     }
 
+    @Throws(CancellationException::class, Exception::class)
     actual suspend fun write(key: String, value: String): Unit = withContext(Dispatchers.Default) {
         val (query, cfService, cfAccount) = baseQuery(key)
         // Build NSData from the UTF-8 bytes (NSData.create copies immediately, so
@@ -158,6 +161,7 @@ actual class SecureStore {
         Unit
     }
 
+    @Throws(CancellationException::class, Exception::class)
     actual suspend fun delete(key: String): Unit = withContext(Dispatchers.Default) {
         val (query, cfService, cfAccount) = baseQuery(key)
         SecItemDelete(query)

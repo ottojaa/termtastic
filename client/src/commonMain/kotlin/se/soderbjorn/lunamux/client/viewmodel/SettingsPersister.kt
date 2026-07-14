@@ -10,6 +10,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -26,6 +27,7 @@ interface SettingsPersister {
      * @param key   the setting key (e.g. `"theme"`, `"appearance"`).
      * @param value the setting value as a string.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun putSetting(key: String, value: String)
 
     /**
@@ -36,6 +38,7 @@ interface SettingsPersister {
      *
      * @param settings map of setting keys to values.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun putSettings(settings: Map<String, String>) {
         for ((key, value) in settings) putSetting(key, value)
     }
@@ -64,6 +67,7 @@ interface SettingsPersister {
      * @param settings JSON object whose top-level keys are the setting
      *   keys to merge into the server's `ui.settings.v1` blob.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun putJsonSettings(settings: JsonObject) {
         val flat = buildMap<String, String> {
             for ((k, v) in settings) {

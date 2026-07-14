@@ -19,6 +19,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import se.soderbjorn.darkness.core.*
 
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -126,6 +127,7 @@ class AppBackingViewModel(
      * Start collecting window state and envelope streams. Long-running; call
      * from a lifecycle-scoped coroutine. Returns when the scope is cancelled.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun run() {
         sessionState.run(
             onDynamic = { dyn ->
@@ -156,90 +158,105 @@ class AppBackingViewModel(
     // ── UI settings mutations ───────────────────────────────────────
 
     /** Update the light/dark appearance mode and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setAppearance(appearance: Appearance) {
         emit(_stateFlow.value.copy(appearance = appearance))
         persistThemeSnapshot()
     }
 
     /** Update the per-pane font size and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setPaneFontSize(size: Int) {
         emit(_stateFlow.value.copy(paneFontSize = size))
         persistFonts()
     }
 
     /** Update the terminal/code font-family preset and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setPaneFontFamily(key: String) {
         emit(_stateFlow.value.copy(paneFontFamily = key.ifEmpty { null }))
         persistFonts()
     }
 
     /** Update the sidebar / topbar chrome font preset and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSidebarFontFamily(key: String) {
         emit(_stateFlow.value.copy(sidebarFontFamily = key.ifEmpty { null }))
         persistFonts()
     }
 
     /** Update the sidebar / topbar chrome font size and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSidebarFontSizePx(size: Int) {
         emit(_stateFlow.value.copy(sidebarFontSizePx = size))
         persistFonts()
     }
 
     /** Update the tab strip font preset and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setTabbarFontFamily(key: String) {
         emit(_stateFlow.value.copy(tabbarFontFamily = key.ifEmpty { null }))
         persistFonts()
     }
 
     /** Update the tab strip font size and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setTabbarFontSizePx(size: Int) {
         emit(_stateFlow.value.copy(tabbarFontSizePx = size))
         persistFonts()
     }
 
     /** Update the pane title (pane header) font preset and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setPaneHeaderFontFamily(key: String) {
         emit(_stateFlow.value.copy(paneHeaderFontFamily = key.ifEmpty { null }))
         persistFonts()
     }
 
     /** Update the pane title (pane header) font size and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setPaneHeaderFontSizePx(size: Int) {
         emit(_stateFlow.value.copy(paneHeaderFontSizePx = size))
         persistFonts()
     }
 
     /** Update the sidebar width and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSidebarWidth(width: Int) {
         emit(_stateFlow.value.copy(sidebarWidth = width))
         settings.persistSetting("sidebarWidth", width.toString())
     }
 
     /** Collapse or expand the sidebar and persist the preference. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setSidebarCollapsed(collapsed: Boolean) {
         emit(_stateFlow.value.copy(sidebarCollapsed = collapsed))
         settings.persistSetting("sidebarCollapsed", collapsed.toString())
     }
 
     /** Collapse or expand the app header and persist the preference. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setHeaderCollapsed(collapsed: Boolean) {
         emit(_stateFlow.value.copy(headerCollapsed = collapsed))
         settings.persistSetting("headerCollapsed", collapsed.toString())
     }
 
     /** Collapse or expand the Claude usage bar and persist the preference. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setUsageBarCollapsed(collapsed: Boolean) {
         emit(_stateFlow.value.copy(usageBarCollapsed = collapsed))
         settings.persistSetting("usageBarCollapsed", collapsed.toString())
     }
 
     /** Enable or disable desktop notifications and persist the preference. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setDesktopNotifications(enabled: Boolean) {
         emit(_stateFlow.value.copy(desktopNotifications = enabled))
         persistFonts()
     }
 
     /** Enable or disable the custom Electron title bar and persist it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setElectronCustomTitleBar(enabled: Boolean) {
         emit(_stateFlow.value.copy(electronCustomTitleBar = enabled))
         persistFonts()
@@ -248,64 +265,82 @@ class AppBackingViewModel(
     // ── Layout mutations (delegated to LayoutViewModel) ─────────────
 
     /** Tell the server to switch to tab [tabId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setActiveTab(tabId: String) = layout.setActiveTab(tabId)
 
     /** Focus [paneId] within [tabId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setFocusedPane(tabId: String, paneId: String) = layout.setFocusedPane(tabId, paneId)
 
     /** Create a new tab with a default terminal pane. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addTab() = layout.addTab()
 
     /** Close tab [tabId] and all panes within it. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun closeTab(tabId: String) = layout.closeTab(tabId)
 
     /** Rename tab [tabId] to [title]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun renameTab(tabId: String, title: String) = layout.renameTab(tabId, title)
 
     /** Reorder [tabId] relative to [targetTabId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun moveTab(tabId: String, targetTabId: String, before: Boolean) =
         layout.moveTab(tabId, targetTabId, before)
 
     /** Close pane [paneId] (terminal, file-browser, or git). */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun closePane(paneId: String) = layout.closePane(paneId)
 
     /** Close all panes that share [sessionId] and terminate the PTY. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun closeSession(sessionId: String) = layout.closeSession(sessionId)
 
     /** Set a custom title for [paneId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun renamePane(paneId: String, title: String) = layout.renamePane(paneId, title)
 
     /** Add a new terminal pane to [tabId] starting in [cwd]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addPaneToTab(tabId: String, cwd: String? = null) =
         layout.addPaneToTab(tabId, cwd)
 
     /** Add a file-browser pane to [tabId] rooted at [cwd]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addFileBrowserToTab(tabId: String, cwd: String? = null) =
         layout.addFileBrowserToTab(tabId, cwd)
 
     /** Add a git pane to [tabId] rooted at [cwd]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addGitToTab(tabId: String, cwd: String? = null) =
         layout.addGitToTab(tabId, cwd)
 
     /** Add a linked pane to [tabId] sharing [targetSessionId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun addLinkToTab(tabId: String, targetSessionId: String) =
         layout.addLinkToTab(tabId, targetSessionId)
 
     /** Update the geometry (position and size) for [paneId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setPaneGeom(paneId: String, x: Double, y: Double, width: Double, height: Double) =
         layout.setPaneGeom(paneId, x, y, width, height)
 
     /** Bring [paneId] to the front of its tab's z-order. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun raisePane(paneId: String) = layout.raisePane(paneId)
 
     /** Move [paneId] from its current tab to [targetTabId]. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun movePaneToTab(paneId: String, targetTabId: String) =
         layout.movePaneToTab(paneId, targetTabId)
 
     /** Ask the server to re-send Claude AI usage data. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun refreshUsage() = layout.refreshUsage()
 
     /** Request the server to open the settings panel. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun openSettings() = layout.openSettings()
 
     // ── Internal ────────────────────────────────────────────────────
@@ -373,18 +408,21 @@ class AppBackingViewModel(
     // ── Theme slots + custom themes ─────────────────────────────────
 
     /** Persist the chosen theme for the Light slot. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setLightThemeName(name: String) {
         emit(_stateFlow.value.copy(lightThemeName = name))
         persistThemeSnapshot()
     }
 
     /** Persist the chosen theme for the Dark slot. */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setDarkThemeName(name: String) {
         emit(_stateFlow.value.copy(darkThemeName = name))
         persistThemeSnapshot()
     }
 
     /** Insert or replace a custom theme (by name). */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun saveCustomTheme(theme: Theme) {
         val cur = _stateFlow.value
         val next = cur.customThemes.filterNot { it.name == theme.name } + theme
@@ -397,6 +435,7 @@ class AppBackingViewModel(
      * built-in defaults when they pointed at the removed theme, and dropping it
      * from the favorites set.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun deleteCustomTheme(name: String) {
         val cur = _stateFlow.value
         val nextThemes = cur.customThemes.filterNot { it.name == name }
@@ -419,6 +458,7 @@ class AppBackingViewModel(
      *
      * @param name the theme to star or unstar.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun toggleThemeFavorite(name: String) {
         val cur = _stateFlow.value
         val next = if (name in cur.favoriteThemeNames) {

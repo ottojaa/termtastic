@@ -20,6 +20,7 @@
  */
 package se.soderbjorn.lunamux.client.demo
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -185,6 +186,7 @@ class DemoServer internal constructor(
      *
      * @param command the client command to simulate.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun handle(command: WindowCommand) {
         mutex.withLock { dispatch(command) }
     }
@@ -205,6 +207,7 @@ class DemoServer internal constructor(
      * @param patch the settings key/values to merge (verbatim JSON); the
      *   overview sends the toolkit `LAYOUT_STATE` blob under that key.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun applyUiSettings(patch: JsonObject) {
         if (patch.isEmpty()) return
         mutex.withLock {
@@ -230,6 +233,7 @@ class DemoServer internal constructor(
      * first. The id counter is deliberately NOT reset — a recycled pane id
      * could collide with a same-id pane still animating out in a client.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun resetToFixtures() {
         mutex.withLock {
             states.clear()

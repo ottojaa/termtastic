@@ -12,6 +12,7 @@
  */
 package se.soderbjorn.lunamux.client.demo
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -61,6 +62,7 @@ interface DemoSession {
      * @param cols terminal width in character cells.
      * @param rows terminal height in character cells.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun resize(cols: Int, rows: Int) {}
 
     /**
@@ -68,6 +70,7 @@ interface DemoSession {
      * already-attached transports keep streaming. Called by
      * [DemoServer.resetToFixtures] before the demo tour plays.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun restart()
 
     /**

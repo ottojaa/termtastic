@@ -42,6 +42,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -276,6 +277,7 @@ class NewsUpdatesBackingViewModel(
      * Exposed (not private) so a platform or test can trigger an out-of-band
      * check; the periodic loop in [start] calls it on each tick.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun checkNow() {
         println(
             "NewsUpdates: checking $manifestUrl + $newsUrl for platform=$platformId " +

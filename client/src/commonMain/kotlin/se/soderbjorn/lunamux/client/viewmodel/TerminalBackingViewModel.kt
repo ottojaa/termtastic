@@ -12,6 +12,7 @@
  */
 package se.soderbjorn.lunamux.client.viewmodel
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +68,7 @@ class TerminalBackingViewModel(
      * Start collecting PTY size, session state, and config updates. Long-running
      * -- cancels when the enclosing scope is cancelled.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun run() {
         coroutineScope {
             launch {
@@ -102,6 +104,7 @@ class TerminalBackingViewModel(
      * @param cols new column count.
      * @param rows new row count.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun resize(cols: Int, rows: Int) {
         ptySocket.resize(cols, rows)
     }
@@ -113,6 +116,7 @@ class TerminalBackingViewModel(
      * @param rows new row count.
      * @see PtySocket.forceResize
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun forceResize(cols: Int, rows: Int) {
         ptySocket.forceResize(cols, rows)
     }
@@ -122,6 +126,7 @@ class TerminalBackingViewModel(
      *
      * @param size the new font size in points.
      */
+    @Throws(CancellationException::class, Exception::class)
     suspend fun setFontSize(size: Int) {
         emit(_stateFlow.value.copy(fontSize = size))
         windowSocket.send(WindowCommand.SetTerminalFontSize(paneId = paneId, size = size))
