@@ -11,24 +11,34 @@
  * Both the encoder and parser are hand-rolled on pure kotlin-stdlib because
  * this module compiles to js/wasmJs where `java.net.URI` is unavailable.
  *
- * Also contains [HostPort], the shared `host[:port]` candidate-endpoint
- * representation used by the multi-candidate connect path in `:client`.
+ * Also contains [HostPort], the shared endpoint representation used by the
+ * multi-candidate connect path in `:client` and stored on the host entry.
  */
 package se.soderbjorn.lunamux
 
+import kotlinx.serialization.Serializable
+
 /**
- * One candidate endpoint a client can try when connecting to a server.
+ * One endpoint a client can try when connecting to a server.
  *
- * Candidates travel inside [PairingPayload.candidates] (a server usually has
- * several LAN addresses) and are persisted client-side as `host[:port]`
- * strings on the host entry, in the order the server suggested trying them.
+ * Endpoints travel inside [PairingPayload.candidates] (a server usually has
+ * several LAN addresses) and are persisted client-side, in order, as
+ * [se.soderbjorn.lunamux.client.HostEntry.addresses].
+ *
+ * Serializable because it *is* the stored form: the host entry keeps a typed
+ * list of these rather than `host[:port]` strings, so nothing has to reparse a
+ * string to learn which port an address uses. [toCandidateString] and
+ * [parseCandidate] survive only as the QR wire format and the text form the
+ * host editor types in — both boundaries, not storage.
  *
  * @property host IP literal or hostname. IPv6 literals are stored *without*
  *   brackets; brackets are added only in the string form (see
  *   [toCandidateString]).
  * @property port TCP port of the server's TLS listener at this address.
  * @see PairingPayload
+ * @see se.soderbjorn.lunamux.client.HostEntry
  */
+@Serializable
 data class HostPort(val host: String, val port: Int) {
 
     /**

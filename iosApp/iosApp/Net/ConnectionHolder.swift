@@ -138,26 +138,30 @@ final class ConnectionHolder {
     /// the network.
     ///
     /// - Parameters:
-    ///   - candidates: ordered `host[:port]` strings; see `HostEntry.candidates`.
-    ///   - defaultPort: port for candidates without an explicit `:port`.
+    ///   - addresses: ordered endpoints to try — typically a host entry's
+    ///     `addresses` verbatim. See `HostEntryLocal.addresses`.
     ///   - authToken: the device-auth token.
     ///   - pinnedFingerprintHex: TLS pin (verify mode), or `nil` for TOFU
     ///     capture on first connect.
     ///   - pairingToken: one-time QR pairing token, or `nil` outside pairing.
-    /// - Returns: the winning `CandidateConnection`; the caller persists its
-    ///   endpoint as the entry's new preferred address.
-    /// - Throws: `ServerUnreachableError` when no candidate answered, or the
+    ///   - onAttempt: invoked with each endpoint just before it is tried, so
+    ///     the UI can name what it is waiting on. Passes the endpoint rather
+    ///     than a formatted string: the hosts screen matches it against the
+    ///     walk to show "address 2 of 3", which a string would force it to
+    ///     re-parse.
+    /// - Returns: the winning `CandidateConnection`; the caller promotes its
+    ///   endpoint to the head of the entry's address list.
+    /// - Throws: `ServerUnreachableError` when no address answered, or the
     ///   underlying failure otherwise. Pin mismatches propagate so the caller
     ///   can check `lastPinMismatch`.
     @MainActor
     @discardableResult
     func connectMulti(
-        candidates: [String],
-        defaultPort: Int32,
+        addresses: [Client.HostPort],
         authToken: String,
         pinnedFingerprintHex: String? = nil,
         pairingToken: String? = nil,
-        onAttempt: @escaping (String) -> Void = { _ in }
+        onAttempt: @escaping (Client.HostPort) -> Void = { _ in }
     ) async throws -> Client.CandidateConnection {
         disconnect()
         pendingApproval = false
@@ -166,32 +170,23 @@ final class ConnectionHolder {
         // Real hosts only — the demo never reaches `connectMulti`.
         let identity = Self.identity(demo: false)
 
-        // Phase 1 — reach a candidate. A pin mismatch is re-surfaced through
+        // Phase 1 — reach an address. A pin mismatch is re-surfaced through
         // `lastPinMismatch` so the UI can show the cert-changed dialog; any
-        // other phase-1 failure means no candidate answered, which is a
+        // other phase-1 failure means no address answered, which is a
         // reachability problem, so tag it as such. Phase-2 failures below are
         // the opposite (we reached the server but it didn't send a config —
         // an auth rejection) and must NOT be mislabelled as a network problem.
         let connection: Client.CandidateConnection
         do {
             connection = try await Client.CandidateConnector.shared.connectFirstReachable(
-                candidates: candidates,
-                defaultPort: defaultPort,
+                endpoints: addresses,
                 authToken: authToken,
                 identity: identity,
                 pinnedFingerprintHex: pinnedFingerprintHex,
                 pairingToken: pairingToken,
                 perCandidateTimeoutMs: Client.CandidateConnector.shared
                     .DEFAULT_PER_CANDIDATE_TIMEOUT_MS,
-                // Name what we're waiting on: a dead candidate costs the full
-                // per-candidate budget of otherwise mute spinner, which reads
-                // as a hang.
-                // nil default port, matching how candidates are stringified for
-                // storage — so the address named here reads the same as the one
-                // in the host's saved list.
-                onAttempt: { endpoint in
-                    onAttempt(endpoint.toCandidateString(defaultPort: nil))
-                }
+                onAttempt: onAttempt
             )
         } catch {
             if Self.isPinMismatch(error) {

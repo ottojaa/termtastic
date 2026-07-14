@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import se.soderbjorn.lunamux.HostPort
 import se.soderbjorn.lunamux.android.BuildConfig
 import se.soderbjorn.lunamux.client.CandidateConnection
 import se.soderbjorn.lunamux.client.CandidateConnector
@@ -63,59 +64,57 @@ object ConnectionHolder {
         get() = currentClient?.windowState?.pendingApproval
 
     /**
-     * Try every candidate endpoint of a host entry in order and keep the
-     * first that connects. Used by the hosts screen for saved entries —
-     * QR-paired entries carry several addresses, and even manually-added
-     * ones benefit from the same code path.
+     * Try every address of a host entry in order and keep the first that
+     * connects. Used by the hosts screen for saved entries — QR-paired entries
+     * carry several addresses, and even manually-added ones benefit from the
+     * same code path.
      *
-     * Phase 1 (per candidate, inside [CandidateConnector]): WebSocket
-     * handshake with a 12 s budget. Phase 2 (winner only): wait for the
-     * initial Config envelope, up to 5 min so a server-side approval dialog
-     * can be answered. The current client is published before phase 2 so
-     * [pendingApproval] is observable while waiting.
+     * Phase 1 (per address, inside [CandidateConnector]): WebSocket handshake
+     * with a 12 s budget. Phase 2 (winner only): wait for the initial Config
+     * envelope, up to 5 min so a server-side approval dialog can be answered.
+     * The current client is published before phase 2 so [pendingApproval] is
+     * observable while waiting.
      *
-     * @param candidates ordered `host[:port]` strings; see
-     *   [se.soderbjorn.termtastic.client.HostEntry.candidates].
-     * @param defaultPort port for candidates without an explicit `:port`.
+     * @param addresses ordered endpoints to try — typically a host entry's
+     *   [se.soderbjorn.lunamux.client.HostEntry.addresses] verbatim.
      * @param authToken the device-auth token.
      * @param pinnedFingerprintHex TLS pin (verify mode), or `null` for TOFU
      *   capture on first connect.
      * @param pairingToken one-time QR pairing token, or `null` outside the
      *   pairing flow.
-     * @return the winning [CandidateConnection]; the caller persists its
-     *   endpoint as the entry's new preferred address.
-     * @throws Throwable when every candidate fails — pin-mismatch failures
+     * @param onAttempt invoked with each endpoint just before it is tried, so
+     *   the UI can name what it is waiting on. Passes the endpoint rather than
+     *   a formatted string: the hosts screen matches it against the walk to
+     *   show "address 2 of 3", which a string would force it to re-parse.
+     * @return the winning [CandidateConnection]; the caller promotes its
+     *   endpoint to the head of the entry's address list.
+     * @throws Throwable when every address fails — pin-mismatch failures
      *   take precedence (see [CandidateConnector.connectFirstReachable]).
      */
     suspend fun connectMulti(
-        candidates: List<String>,
-        defaultPort: Int,
+        addresses: List<HostPort>,
         authToken: String,
         pinnedFingerprintHex: String? = null,
         pairingToken: String? = null,
-        onAttempt: (String) -> Unit = {},
+        onAttempt: (HostPort) -> Unit = {},
     ): CandidateConnection {
         disconnect()
-        Log.i("ConnectionHolder", "connectMulti: ${candidates.size} candidate(s), defaultPort=$defaultPort")
-        // Phase 1 — reach a candidate. A pin mismatch propagates unwrapped so
+        Log.i("ConnectionHolder", "connectMulti: ${addresses.size} address(es)")
+        // Phase 1 — reach an address. A pin mismatch propagates unwrapped so
         // the UI can show the cert-changed dialog; any other phase-1 failure
-        // means no candidate answered, which is a reachability problem, so we
+        // means no address answered, which is a reachability problem, so we
         // tag it as such. Phase-2 failures below are the opposite (we reached
         // the server but it didn't send a config — an auth rejection), and
         // must NOT be mislabelled as a network problem.
         val connection = try {
             CandidateConnector.connectFirstReachable(
-                candidates = candidates,
-                defaultPort = defaultPort,
+                endpoints = addresses,
                 authToken = authToken,
                 // Real hosts only — the demo never reaches connectMulti.
                 identity = androidIdentity(demo = false),
                 pinnedFingerprintHex = pinnedFingerprintHex,
                 pairingToken = pairingToken,
-                // No default port, matching how candidates are stringified for
-                // storage — so the address named here reads the same as the one
-                // in the host's saved list.
-                onAttempt = { onAttempt(it.toCandidateString()) },
+                onAttempt = onAttempt,
             )
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException || isPinMismatch(t)) throw t

@@ -64,7 +64,10 @@ fun AboutMenu() {
             Icon(
                 Icons.Outlined.Info,
                 contentDescription = "About & links",
-                tint = SidebarTextPrimary,
+                // Accent, matching the scanner and add-server actions beside it
+                // — SidebarTextPrimary is the body-text colour, which rendered
+                // this the only white icon in an otherwise accented toolbar.
+                tint = SidebarAccent,
             )
         }
         DropdownMenu(

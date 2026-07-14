@@ -99,6 +99,19 @@ internal val SidebarWarn: Color
     get() = Color((LocalUiSettings.current?.warn ?: FALLBACK_WARN).toInt())
 
 /**
+ * Unfilled track behind a progress bar: the secondary text colour, heavily
+ * faded.
+ *
+ * Derived from [SidebarTextSecondary] rather than given its own theme token so
+ * it follows whatever palette is resolved. Material 3's stock track colour is
+ * from the Material colour scheme, which this app does not theme — left alone,
+ * a progress bar renders in default purple/green against the sidebar palette.
+ */
+internal val SidebarProgressTrack: Color
+    @Composable @ReadOnlyComposable
+    get() = SidebarTextSecondary.copy(alpha = 0.25f)
+
+/**
  * Outlined text-field colours derived from the resolved sidebar palette.
  *
  * Used by the host/tab/rename [androidx.compose.material3.AlertDialog]s so

@@ -185,7 +185,7 @@ struct TreeView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.backward")
-                    Text("Hosts")
+                    Text("Servers")
                 }
                 // Same tint as every other bar action — mixed per-icon tints
                 // read as a bug on light themes (issue #96).

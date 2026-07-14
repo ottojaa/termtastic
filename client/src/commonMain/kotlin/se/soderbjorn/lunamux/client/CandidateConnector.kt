@@ -28,8 +28,9 @@ import se.soderbjorn.lunamux.HostPort
  *
  * The caller owns both handles — typically it finishes the second handshake
  * phase (`awaitInitialConfig`) and then stores them in its connection holder,
- * persisting [endpoint] as the host entry's new preferred `host`/`port` so
- * the next connect tries the known-good address first.
+ * promoting [endpoint] to the head of the host entry's address list (see
+ * [HostEntry.promoting]) so the next connect tries the known-good address
+ * first.
  *
  * @property client the connected [LunamuxClient]; close on failure/teardown.
  * @property windowSocket the `/window` socket whose handshake completed.
@@ -92,44 +93,43 @@ object CandidateConnector {
     const val DEFAULT_PER_CANDIDATE_TIMEOUT_MS: Long = 12_000
 
     /**
-     * Try [candidates] in order and return the first endpoint whose
-     * WebSocket handshake completes within [perCandidateTimeoutMs].
+     * Try [endpoints] in order and return the first whose WebSocket handshake
+     * completes within [perCandidateTimeoutMs].
      *
      * Each attempt builds a fresh [LunamuxClient] (same [authToken],
      * [identity], [pinnedFingerprintHex], and [pairingToken] for every
-     * candidate — they all point at the same server) and awaits
+     * endpoint — they all point at the same server) and awaits
      * [WindowSocket.awaitSessionReady]. A failed attempt is torn down and the
      * walk moves on; the caller still has to run the second handshake phase
      * ([WindowSocket.awaitInitialConfig]) on the returned socket.
      *
-     * When every candidate fails, a pin-mismatch failure is rethrown in
-     * preference to a generic one: a stale candidate that now points at a
+     * When every endpoint fails, a pin-mismatch failure is rethrown in
+     * preference to a generic one: a stale address that now points at a
      * *stranger's* server (DHCP reuse, changed network) must not bury the
      * one signal the user has to act on.
      *
-     * @param candidates ordered `host[:port]` strings (bracketed IPv6);
-     *   unparseable entries are skipped, duplicates collapsed.
-     * @param defaultPort port for candidates without an explicit `:port`.
+     * @param endpoints ordered addresses to try — typically a host entry's
+     *   [HostEntry.addresses] verbatim. Duplicates are collapsed.
      * @param authToken the device-auth token (see
      *   [se.soderbjorn.lunamux.client.storage.LocalRepository.getOrCreateAuthToken]).
      * @param identity self-reported client metadata for every attempt.
      * @param pinnedFingerprintHex the entry's TLS pin, or `null` for TOFU
      *   capture (manually-added hosts only — QR entries always have a pin).
      * @param pairingToken one-time pairing token, or `null` outside pairing.
-     * @param perCandidateTimeoutMs handshake budget per candidate. 12 s
+     * @param perCandidateTimeoutMs handshake budget per endpoint. 12 s
      *   covers a TLS + WS handshake on a sleepy Wi-Fi radio while keeping a
-     *   multi-candidate walk under a minute.
+     *   multi-address walk under a minute.
      * @param onAttempt invoked on the calling coroutine with each endpoint
      *   just before it is tried, so the UI can name what it is waiting on.
-     *   Without it a multi-candidate walk is a mute spinner for up to
+     *   Without it a multi-address walk is a mute spinner for up to
      *   [perCandidateTimeoutMs] per dead address, which reads as a hang rather
      *   than as progress. Must not block: it runs inline in the walk.
      * @return the winning [CandidateConnection]; the caller owns its handles.
-     * @throws IllegalArgumentException when no candidate is parseable.
-     * @throws PinMismatchException when a candidate's cert failed the pin
+     * @throws IllegalArgumentException when [endpoints] is empty.
+     * @throws PinMismatchException when an endpoint's cert failed the pin
      *   check on a platform that drops the marker (see the class doc).
-     * @throws Throwable the pin-mismatch failure if any candidate saw one,
-     *   otherwise the last candidate's failure. Whatever comes out of a
+     * @throws Throwable the pin-mismatch failure if any endpoint saw one,
+     *   otherwise the last endpoint's failure. Whatever comes out of a
      *   mismatch satisfies [isPinMismatch] on every platform.
      * @see isPinMismatch
      * @see PinMismatchException
@@ -138,12 +138,11 @@ object CandidateConnector {
     // straight from Swift (`ConnectionHolder.connectMulti`). Kotlin/Native only
     // bridges the exception types named here into an NSError; an undeclared one
     // aborts the process instead of reaching the caller's `catch`. Without
-    // `Exception::class` a plain unreachable candidate — the normal outcome of a
+    // `Exception::class` a plain unreachable endpoint — the normal outcome of a
     // stale VPN address — is fatal rather than an error message.
     @Throws(CancellationException::class, Exception::class)
     suspend fun connectFirstReachable(
-        candidates: List<String>,
-        defaultPort: Int,
+        endpoints: List<HostPort>,
         authToken: String,
         identity: ClientIdentity,
         pinnedFingerprintHex: String? = null,
@@ -151,14 +150,12 @@ object CandidateConnector {
         perCandidateTimeoutMs: Long = DEFAULT_PER_CANDIDATE_TIMEOUT_MS,
         onAttempt: (HostPort) -> Unit = {},
     ): CandidateConnection {
-        val endpoints = candidates
-            .mapNotNull { HostPort.parseCandidate(it, defaultPort) }
-            .distinct()
-        require(endpoints.isNotEmpty()) { "no parseable candidates in $candidates" }
+        val ordered = endpoints.distinct()
+        require(ordered.isNotEmpty()) { "a host entry needs at least one address to connect to" }
 
         var pinMismatch: Throwable? = null
         var lastFailure: Throwable? = null
-        for (endpoint in endpoints) {
+        for (endpoint in ordered) {
             onAttempt(endpoint)
             val client = LunamuxClient(
                 serverUrl = ServerUrl(host = endpoint.host, port = endpoint.port),

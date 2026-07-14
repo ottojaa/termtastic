@@ -46,7 +46,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import se.soderbjorn.lunamux.HostPort
 import se.soderbjorn.lunamux.client.HostEntry
+import se.soderbjorn.lunamux.client.HostEntryMigratingSerializer
 import se.soderbjorn.lunamux.client.encodeBase64Url
 import se.soderbjorn.lunamux.client.secureRandomBytes
 
@@ -63,6 +65,10 @@ const val LOCAL_STATE_FILE_NAME: String = "local_state.json"
  * platform [SecureStore], not this plain-JSON blob. See [LocalRepository].
  *
  * @property hosts the user's saved server entries shown in the host picker.
+ *   Read through [HostEntryMigratingSerializer], which folds entries written in
+ *   the old `host`/`port` + `candidates` format into [HostEntry.addresses];
+ *   anything still address-less afterwards is dropped by
+ *   [LocalRepository.ensureLoaded].
  * @property onboardingSeen whether the first-launch walkthrough has been completed.
  * @property dismissedNewsIds the news-item ids the user has swiped away.
  * @property dismissedUpdateVersionCode the `latestVersionCode` of an update the
@@ -75,7 +81,7 @@ const val LOCAL_STATE_FILE_NAME: String = "local_state.json"
  */
 @Serializable
 data class LocalState(
-    val hosts: List<HostEntry> = emptyList(),
+    val hosts: List<@Serializable(with = HostEntryMigratingSerializer::class) HostEntry> = emptyList(),
     val onboardingSeen: Boolean = false,
     val dismissedNewsIds: Set<String> = emptySet(),
     val dismissedUpdateVersionCode: Long? = null,
@@ -153,6 +159,15 @@ class LocalRepository(
      * that must see persisted values (e.g. the news checker, the auth-token
      * mint, every mutator) can await a consistent base. Safe to call repeatedly.
      *
+     * Host entries written in the old `host`/`port` + `candidates` format are
+     * migrated during the decode by [HostEntryMigratingSerializer]; the filter
+     * below is the backstop for entries it could not rescue (no `addresses`
+     * and no usable legacy `host`/`port` either). Such an entry cannot be
+     * connected to and would render as a blank row, so it is discarded rather
+     * than shown. Filtering entries — rather than letting a bad one fail the
+     * decode — matters because the rest of the blob (onboarding, news
+     * dismissals) shares this file and must survive.
+     *
      * @return the hydrated [LocalState] (never `null`).
      */
     @Throws(CancellationException::class, Exception::class)
@@ -169,7 +184,14 @@ class LocalRepository(
                             LocalState()
                         }
                     }
-                    _state.value = parsed
+                    val usable = parsed.hosts.filter { it.addresses.isNotEmpty() }
+                    if (usable.size != parsed.hosts.size) {
+                        println(
+                            "LocalRepository: dropped ${parsed.hosts.size - usable.size} host(s) " +
+                                "with no usable address",
+                        )
+                    }
+                    _state.value = parsed.copy(hosts = usable)
                     hydrated = true
                 }
             }
@@ -203,13 +225,16 @@ class LocalRepository(
      * Append a new host entry with a freshly-generated UUID and persist it.
      *
      * @param label user-visible display name for the host.
-     * @param host hostname or IP address of the server.
-     * @param port TCP port of the server.
+     * @param addresses the endpoints to try, in order; the host editor
+     *   guarantees at least one, since an entry with none cannot be connected
+     *   to and would be discarded at the next load.
      * @return the newly-created [HostEntry].
+     * @throws IllegalArgumentException when [addresses] is empty.
      */
     @Throws(CancellationException::class, Exception::class)
-    suspend fun addHost(label: String, host: String, port: Int): HostEntry {
-        val entry = HostEntry(id = randomUuid(), label = label, host = host, port = port)
+    suspend fun addHost(label: String, addresses: List<HostPort>): HostEntry {
+        require(addresses.isNotEmpty()) { "a host entry needs at least one address" }
+        val entry = HostEntry(id = randomUuid(), label = label, addresses = addresses)
         mutate { it.copy(hosts = it.hosts + entry) }
         return entry
     }
@@ -217,9 +242,9 @@ class LocalRepository(
     /**
      * Append a host entry created from a scanned pairing QR and persist it.
      * Unlike [addHost], the entry is born with the server's TLS pin (verify
-     * mode from the very first connect — no TOFU window), the full candidate
-     * endpoint list to try in order, and the one-time pairing token that the
-     * next connect spends to skip the desktop approval dialog.
+     * mode from the very first connect — no TOFU window) and the one-time
+     * pairing token that the next connect spends to skip the desktop approval
+     * dialog.
      *
      * Called by the Android hosts screen's `handlePairingUri` and the iOS
      * `HostsViewModel.handlePairingUri`, after a successful QR scan or
@@ -227,31 +252,28 @@ class LocalRepository(
      *
      * @param label user-visible display name (the payload's server name or a
      *   placeholder).
-     * @param host preferred endpoint host to try first.
-     * @param port preferred endpoint port.
+     * @param addresses every advertised endpoint, in the server's suggested
+     *   order; the first is tried first.
      * @param pinnedFingerprintHex lowercase hex SHA-256 of the server's leaf
      *   cert from the pairing payload.
-     * @param candidates every advertised endpoint as `host[:port]` strings.
      * @param pairingToken the single-use pairing token from the payload.
      * @return the newly-created [HostEntry].
+     * @throws IllegalArgumentException when [addresses] is empty.
      * @see se.soderbjorn.lunamux.PairingPayload
      */
     @Throws(CancellationException::class, Exception::class)
     suspend fun addPairedHost(
         label: String,
-        host: String,
-        port: Int,
+        addresses: List<HostPort>,
         pinnedFingerprintHex: String,
-        candidates: List<String>,
         pairingToken: String,
     ): HostEntry {
+        require(addresses.isNotEmpty()) { "a paired host entry needs at least one address" }
         val entry = HostEntry(
             id = randomUuid(),
             label = label,
-            host = host,
-            port = port,
+            addresses = addresses,
             pinnedFingerprintHex = pinnedFingerprintHex,
-            candidates = candidates,
             pairingToken = pairingToken,
         )
         mutate { it.copy(hosts = it.hosts + entry) }

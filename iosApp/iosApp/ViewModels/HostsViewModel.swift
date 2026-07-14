@@ -36,10 +36,20 @@ final class HostsViewModel {
     /// The saved hosts, mirrored from the repository's `LocalState.hosts`.
     var hosts: [HostEntryLocal] = []
     var connectingId: String?
-    /// The address the connect walk is currently trying, or nil when not
-    /// connecting. Surfaced on the row so a walk that spends the full
-    /// per-candidate budget on each dead address reads as progress, not a hang.
-    var attemptingAddress: String?
+    /// The in-flight connect, surfaced in `ConnectingSheet` rather than on the
+    /// row: a walk can spend the full per-candidate budget on each dead
+    /// address, which a row-sized spinner cannot explain. Nil for the demo,
+    /// which is instant and needs no progress UI.
+    var connectingEntry: HostEntryLocal?
+    /// The addresses being tried, in order, so the progress UI can say
+    /// "address 2 of 3".
+    var connectingWalk: [Client.HostPort] = []
+    /// The address the walk is trying right now, or nil before the first
+    /// attempt is reported.
+    var attemptingAddress: Client.HostPort?
+    /// Backs Cancel — a three-address walk is over half a minute, which the
+    /// user must be able to abort without force-quitting.
+    private var connectTask: Task<Void, Never>?
     var errorMessage: String?
     /// Set when the latest connect attempt failed because the server's leaf
     /// cert no longer matches the stored pin. The view binds a dedicated
@@ -105,32 +115,29 @@ final class HostsViewModel {
         }
     }
 
-    /// Connect to a saved host entry: walks its candidate endpoints in order
-    /// (a paired entry carries every address the server advertised) and, on
-    /// success, persists the winner in one write — preferred host/port
-    /// promoted, TOFU pin captured if this was a pinless first connect, spent
-    /// pairing token cleared. Mirrors the Android `connectToEntry` lambda.
+    /// Connect to a saved host entry: walks its addresses in order (a paired
+    /// entry carries every address the server advertised) and, on success,
+    /// persists the winner in one write — winning address promoted to the head
+    /// of the list, TOFU pin captured if this was a pinless first connect,
+    /// spent pairing token cleared. Mirrors the Android `connectToEntry`
+    /// lambda.
     ///
     /// - Parameters:
     ///   - entry: the host to connect to.
     ///   - only: connect using just this address instead of walking them all —
     ///     the long-press picker's path. `nil` for the normal walk.
-    func connect(entry: HostEntryLocal, only: String? = nil) {
+    func connect(entry: HostEntryLocal, only: Client.HostPort? = nil) {
+        let walk = only.map { [$0] } ?? entry.addresses
         connectingId = entry.id
+        connectingEntry = entry
+        connectingWalk = walk
         attemptingAddress = nil
         errorMessage = nil
-        Task {
+        connectTask = Task {
             do {
                 let token = try await repository.getOrCreateAuthToken()
-                // The last endpoint that actually worked goes first; the rest
-                // of the advertised set follows, minus that duplicate.
-                let preferred = Client.HostPort(host: entry.host, port: entry.port)
-                    .toCandidateString(defaultPort: nil)
-                let candidates = only.map { [$0] }
-                    ?? ([preferred] + entry.candidates.filter { $0 != preferred })
                 let connection = try await ConnectionHolder.shared.connectMulti(
-                    candidates: candidates,
-                    defaultPort: entry.port,
+                    addresses: walk,
                     authToken: token,
                     pinnedFingerprintHex: entry.pinnedFingerprintHex,
                     pairingToken: entry.pairingToken,
@@ -143,9 +150,10 @@ final class HostsViewModel {
                 // strict-verify mode.
                 let pin = entry.pinnedFingerprintHex
                     ?? (connection.client.observedFingerprint.value as? String)
-                var updated = entry
-                updated.host = connection.endpoint.host
-                updated.port = connection.endpoint.port
+                // The address that answered leads the walk next time. Note this
+                // promotes into `entry.addresses` even on the `only:` path, so
+                // a picked address is remembered like any other winner.
+                var updated = entry.promoting(connection.endpoint)
                 updated.pinnedFingerprintHex = pin
                 updated.pairingToken = nil
                 if updated != entry {
@@ -157,14 +165,14 @@ final class HostsViewModel {
                 if let client = ConnectionHolder.shared.client {
                     Palette.config = try? await client.fetchThemeConfig()
                 }
-                await MainActor.run {
-                    connectingId = nil
-                    attemptingAddress = nil
-                }
+                await MainActor.run { clearConnecting() }
             } catch {
                 await MainActor.run {
-                    connectingId = nil
-                    attemptingAddress = nil
+                    clearConnecting()
+                    // The user pressed Cancel; they already know. Saying
+                    // "couldn't reach the Mac" would blame the network for
+                    // something they did on purpose.
+                    if error is CancellationError || Task.isCancelled { return }
                     if ConnectionHolder.shared.lastPinMismatch {
                         pinMismatchEntry = entry
                     } else {
@@ -173,6 +181,29 @@ final class HostsViewModel {
                 }
             }
         }
+    }
+
+    /// Abort the in-flight connect. Cancelling the task unwinds the shared
+    /// `CandidateConnector`, which tears down the attempt it was waiting on;
+    /// `disconnect()` additionally drops a socket that phase 2 had already
+    /// published, which cancellation alone would leave live.
+    ///
+    /// Main-actor isolated because `ConnectionHolder.disconnect()` is, and the
+    /// only caller is the Cancel button.
+    @MainActor
+    func cancelConnect() {
+        connectTask?.cancel()
+        ConnectionHolder.shared.disconnect()
+        clearConnecting()
+    }
+
+    /// Drop every trace of an in-flight connect, dismissing the progress UI.
+    private func clearConnecting() {
+        connectingId = nil
+        connectingEntry = nil
+        connectingWalk = []
+        attemptingAddress = nil
+        connectTask = nil
     }
 
     /// Handle a scanned QR / deep-linked pairing URI: parse, dedupe against
@@ -187,12 +218,11 @@ final class HostsViewModel {
     /// - Parameter uri: the raw `lunamux://pair?...` string.
     func handlePairingUri(_ uri: String) {
         guard let payload = Client.PairingPayload.companion.parse(uri: uri),
-              let preferred = payload.candidates.first else {
+              !payload.candidates.isEmpty else {
             errorMessage = "That doesn't look like a Lunamux pairing code"
             return
         }
         Task {
-            let candidateStrings = payload.candidates.map { $0.toCandidateString(defaultPort: nil) }
             // Identity is the TLS cert and nothing else. An address is not a
             // machine: 192.168.1.5 is whoever's Wi-Fi you are on, so matching
             // on endpoint overlap would merge a colleague's Mac into your entry
@@ -209,19 +239,19 @@ final class HostsViewModel {
 
             if let existing {
                 var updated = HostEntryLocal(from: existing)
-                updated.host = preferred.host
-                updated.port = preferred.port
                 updated.pinnedFingerprintHex = payload.fingerprintHex
                 // Augment, don't replace: re-pairing at home must not cost the
-                // entry its work addresses. See HostEntry.mergeCandidates.
-                let merged = Client.HostEntry.companion.mergeCandidates(
-                    fresh: candidateStrings,
-                    existing: existing.candidates
+                // entry its work addresses. The scanned set leads, so the
+                // network the user is standing on is tried first. See
+                // HostEntry.mergeAddresses.
+                let merged = Client.HostEntry.companion.mergeAddresses(
+                    fresh: payload.candidates,
+                    existing: existing.addresses
                 )
                 // Count what actually landed, not what the QR offered: the merge
                 // caps its result, so some fresh addresses may not have made it in.
-                let added = merged.filter { !existing.candidates.contains($0) }.count
-                updated.candidates = merged
+                let added = merged.filter { !existing.addresses.contains($0) }.count
+                updated.addresses = merged
                 updated.pairingToken = payload.token
                 try? await repository.updateHost(entry: updated.toShared())
                 // Deliberately no auto-connect here, unlike a first pairing.
@@ -233,11 +263,9 @@ final class HostsViewModel {
                 await MainActor.run { rePairResult = RePairResult(entry: updated, added: added) }
             } else {
                 let created = try? await repository.addPairedHost(
-                    label: payload.serverName ?? "Paired Mac",
-                    host: preferred.host,
-                    port: preferred.port,
+                    label: payload.serverName ?? "Paired server",
+                    addresses: payload.candidates,
                     pinnedFingerprintHex: payload.fingerprintHex,
-                    candidates: candidateStrings,
                     pairingToken: payload.token
                 )
                 guard let created else {
@@ -272,7 +300,7 @@ final class HostsViewModel {
         // a revoked device). Its raw text is developer-facing, so translate the
         // known case into something the user can act on.
         if error.localizedDescription.contains("before sending a config") {
-            return "The Mac declined this connection. On your Mac, in Lunamux, go to "
+            return "The server declined this connection. On your Mac, in Lunamux, go to "
                 + "\"Settings > Server & Security… > Devices\" to re-pair or approve this device."
         }
         // Reachability advice only when we genuinely couldn't reach the server.
@@ -281,12 +309,18 @@ final class HostsViewModel {
         guard error is ServerUnreachableError else {
             return error.localizedDescription
         }
-        return "Couldn't reach the Mac. Make sure this iPhone is on the same Wi-Fi "
+        return "Couldn't reach the Lunamux server. Make sure this iPhone is on the same Wi-Fi "
             + "network as your computer, or on a VPN that can reach it."
     }
 
-    func addHost(label: String, host: String, port: Int32) {
-        Task { try? await repository.addHost(label: label, host: host, port: port) }
+    /// Save a manually-typed host. The edit sheet guarantees at least one
+    /// address, which the shared `addHost` requires.
+    ///
+    /// - Parameters:
+    ///   - label: user-visible display name.
+    ///   - addresses: the endpoints to try, in the order the user arranged them.
+    func addHost(label: String, addresses: [Client.HostPort]) {
+        Task { try? await repository.addHost(label: label, addresses: addresses) }
     }
 
     func updateHost(_ entry: HostEntryLocal) {

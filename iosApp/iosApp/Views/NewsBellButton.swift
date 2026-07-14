@@ -2,13 +2,14 @@ import SwiftUI
 
 /// Pulsing "News & Updates" toolbar bell for the Lunamux iOS app.
 ///
-/// Shared by the Hosts and Sessions toolbars (see `HostsView` / `TreeView`). The
-/// bell is *always* shown so the "News & Updates" screen — and its Restore
+/// Shared by the Servers and Sessions toolbars (see `HostsView` / `TreeView`).
+/// The bell is *always* shown so the "News & Updates" screen — and its Restore
 /// button — is reachable at any time; when there is nothing new it renders
-/// muted/grayed rather than hidden. With content the warning colour shows, and it
-/// pulses continuously when there is actual news so it reads as a call-to-action,
-/// mirroring the desktop and Android bells. When only a version update is
-/// available (no news) the bell shows coloured but static.
+/// muted/grayed rather than hidden. With content the theme accent shows,
+/// matching the other toolbar icons, and it pulses continuously when there is
+/// actual news so it reads as a call-to-action, mirroring the desktop and
+/// Android bells. When only a version update is available (no news) the bell
+/// shows coloured but static.
 ///
 /// The bell observes the app-wide `NewsUpdatesViewModel.shared` directly and
 /// derives its appearance (`muted` / pulsing) from that `@Observable` inside its
@@ -53,7 +54,7 @@ struct NewsBellButton: View {
         .onChange(of: hasNews) { _, value in pulsing = value }
     }
 
-    /// The bell glyph, grayed when `muted`, otherwise warning-coloured (pulsing
+    /// The bell glyph, grayed when `muted`, otherwise accent-coloured (pulsing
     /// between full and faded when there is news).
     ///
     /// - Parameter muted: when `true`, render grayed (nothing new) and never pulse.
@@ -64,7 +65,7 @@ struct NewsBellButton: View {
                 .foregroundStyle(Palette.textSecondary)
         } else {
             Image(systemName: "bell.badge")
-                .foregroundStyle(pulsing ? Palette.warn : Palette.warn.opacity(0.35))
+                .foregroundStyle(pulsing ? Palette.headerAccent : Palette.headerAccent.opacity(0.35))
                 .animation(
                     .easeInOut(duration: 1.3).repeatForever(autoreverses: true),
                     value: pulsing

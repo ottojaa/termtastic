@@ -39,60 +39,63 @@ enum AppRepository {
 struct HostEntryLocal: Identifiable, Equatable {
     let id: String
     var label: String
-    var host: String
-    var port: Int32
+    /// Every endpoint this server is known to answer at, in the order the
+    /// connect walk tries them — `[0]` is tried first and is whatever last
+    /// connected. Mirrors `HostEntry.addresses`; see `promoting(_:)` for how
+    /// the winner reaches the front.
+    var addresses: [Client.HostPort]
     var pinnedFingerprintHex: String?
-    /// Full candidate endpoint set from a QR pairing (empty for manual hosts);
-    /// carried verbatim so a round-trip through `toShared()` preserves it.
-    var candidates: [String]
-    /// One-time QR pairing token, or nil; also preserved on round-trip.
+    /// One-time QR pairing token, or nil; preserved on round-trip through
+    /// `toShared()` so an edit cannot cost the entry its unspent token.
     var pairingToken: String?
 
-    /// Every address this entry can be reached at, in the order the connect
-    /// walk would try them: the preferred endpoint first, then the stored
-    /// candidates.
-    ///
-    /// Backs both the long-press picker's list and the check for whether there
-    /// is anything to pick between — a one-address host has no choice to offer,
-    /// so it gets no picker. Mirrors the Android `HostEntry.allAddresses()`.
-    var allAddresses: [String] {
-        let preferred = Client.HostPort(host: host, port: port)
-            .toCandidateString(defaultPort: nil)
-        return [preferred] + candidates.filter { $0 != preferred }
-    }
+    /// The address a connect tries first: the last one that worked. Backs the
+    /// row subtitle and the cert-changed alert, both of which name one address
+    /// rather than the whole list.
+    var primary: Client.HostPort? { addresses.first }
 
     init(
         id: String,
         label: String,
-        host: String,
-        port: Int32,
+        addresses: [Client.HostPort],
         pinnedFingerprintHex: String? = nil,
-        candidates: [String] = [],
         pairingToken: String? = nil
     ) {
         self.id = id
         self.label = label
-        self.host = host
-        self.port = port
+        self.addresses = addresses
         self.pinnedFingerprintHex = pinnedFingerprintHex
-        self.candidates = candidates
         self.pairingToken = pairingToken
     }
 
     /// Map a shared KMP `HostEntry` (from `LocalState.hosts`) into the native value.
     ///
-    /// `candidates` and `pairingToken` are carried through verbatim so an edit
+    /// `addresses` and `pairingToken` are carried through verbatim so an edit
     /// that round-trips a QR-paired entry through `toShared()` does not
     /// silently drop them — which would cost the entry its multi-endpoint
     /// connect and its unspent pairing token.
     init(from entry: Client.HostEntry) {
         self.id = entry.id
         self.label = entry.label
-        self.host = entry.host
-        self.port = entry.port
+        self.addresses = entry.addresses
         self.pinnedFingerprintHex = entry.pinnedFingerprintHex
-        self.candidates = entry.candidates
         self.pairingToken = entry.pairingToken
+    }
+
+    /// This entry with `endpoint` moved to the front of `addresses`.
+    ///
+    /// Called after every successful connect: the address that answered is the
+    /// one most likely to answer next time, and position is worth a full
+    /// per-candidate timeout for each address ahead of it in the walk. Mirrors
+    /// the shared `HostEntry.promoting(endpoint:)`, reimplemented here because
+    /// this is the native mirror and never holds the Kotlin value.
+    ///
+    /// - Parameter endpoint: the address that just connected.
+    /// - Returns: a copy with `endpoint` first, remaining order preserved.
+    func promoting(_ endpoint: Client.HostPort) -> HostEntryLocal {
+        var copy = self
+        copy.addresses = [endpoint] + addresses.filter { $0 != endpoint }
+        return copy
     }
 
     /// Convert back to the shared KMP `HostEntry` for persistence through the
@@ -104,10 +107,8 @@ struct HostEntryLocal: Identifiable, Equatable {
         Client.HostEntry(
             id: id,
             label: label,
-            host: host,
-            port: port,
+            addresses: addresses,
             pinnedFingerprintHex: pinnedFingerprintHex,
-            candidates: candidates,
             pairingToken: pairingToken
         )
     }

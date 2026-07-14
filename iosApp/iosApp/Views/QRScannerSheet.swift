@@ -116,7 +116,7 @@ struct QRScannerSheet: View {
             Label("Camera access needed", systemImage: "camera.fill")
         } description: {
             Text("Lunamux needs the camera to scan your Mac's pairing code. "
-                 + "You can turn it on in Settings, or add the Mac's address manually.")
+                 + "You can turn it on in Settings, or add the server's address manually.")
         } actions: {
             // UIApplication.openSettingsURLString deep-links straight to this
             // app's own Settings page, where the camera toggle lives.
@@ -134,7 +134,7 @@ struct QRScannerSheet: View {
         ContentUnavailableView {
             Label("No camera available", systemImage: "camera.fill")
         } description: {
-            Text("This device has no camera to scan with. Add the Mac's address manually instead.")
+            Text("This device has no camera to scan with. Add the server's address manually instead.")
         }
     }
 
