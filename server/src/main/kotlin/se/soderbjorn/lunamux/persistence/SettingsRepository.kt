@@ -766,15 +766,22 @@ class SettingsRepository(dbFile: File) {
     /**
      * Whether the MCP endpoint (`/mcp`) is enabled — the global MCP kill
      * switch surfaced in the settings dialog's MCP section. Defaults to
-     * `true`: the endpoint is only usable with an explicitly minted
-     * MCP-labelled token, so leaving it on exposes nothing by itself.
+     * `false`: nothing the server exposes should be on until the user asks
+     * for it, even a surface that is localhost-only and needs a minted
+     * token. Symmetric with [isAllowRemoteConnections] — only the literal
+     * `"true"` enables it, so an unset key reads as off.
      * Checked per-request by `McpRoutes`, so flipping the switch takes
      * effect immediately without a restart.
      *
-     * @return true unless the user has switched MCP off.
+     * Note this reads as off for installs that predate the default flip and
+     * never touched the switch, including ones with minted MCP tokens: their
+     * key is unset, which is indistinguishable from a fresh install. Such
+     * users re-enable it once in settings.
+     *
+     * @return true only once the user has switched MCP on.
      */
     fun isMcpEnabled(): Boolean =
-        getString(MCP_ENABLED_KEY)?.equals("false", ignoreCase = true) != true
+        getString(MCP_ENABLED_KEY)?.equals("true", ignoreCase = true) == true
 
     /**
      * Toggle the global MCP kill switch.

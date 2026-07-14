@@ -53,8 +53,24 @@ class McpRoutesTest {
         }
 
     @Test
+    fun `mcp is disabled until the user switches it on`() {
+        val repo = tempRepo()
+        // Default-off: a minted token is not enough on a fresh install, and
+        // the kill switch answers before the token is even looked at.
+        DeviceAuth.addTrustedToken(repo, "tok", DeviceAuth.MCP_LABEL, DeviceAuth.MCP_SCOPE_READ)
+        app(repo) { client ->
+            val resp = client.post("/mcp") {
+                header("X-Termtastic-Auth", "tok")
+                setBody("""{"jsonrpc":"2.0","id":1,"method":"ping"}""")
+            }
+            assertEquals(HttpStatusCode.Forbidden, resp.status)
+        }
+    }
+
+    @Test
     fun `requests without a valid mcp token are rejected`() {
         val repo = tempRepo()
+        repo.setMcpEnabled(true)
         app(repo) { client ->
             // No token at all.
             val none = client.post("/mcp") { setBody("""{"jsonrpc":"2.0","id":1,"method":"ping"}""") }
@@ -86,6 +102,7 @@ class McpRoutesTest {
     @Test
     fun `initialize then tools list and call over http`() {
         val repo = tempRepo()
+        repo.setMcpEnabled(true)
         DeviceAuth.addTrustedToken(repo, "tok", DeviceAuth.MCP_LABEL, DeviceAuth.MCP_SCOPE_READ)
         app(repo) { client ->
             val init = client.post("/mcp") {
@@ -137,6 +154,7 @@ class McpRoutesTest {
     @Test
     fun `sse-accepting tool calls stream the result as an event`() {
         val repo = tempRepo()
+        repo.setMcpEnabled(true)
         DeviceAuth.addTrustedToken(repo, "tok", DeviceAuth.MCP_LABEL, DeviceAuth.MCP_SCOPE_READ)
         app(repo) { client ->
             val resp = client.post("/mcp") {

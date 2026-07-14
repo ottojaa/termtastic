@@ -1,4 +1,5 @@
 import SwiftUI
+import Client
 
 @main
 struct LunamuxApp: App {
@@ -7,6 +8,18 @@ struct LunamuxApp: App {
     var body: some Scene {
         WindowGroup {
             RootNavigationView()
+                // Pairing deep link: scanning the QR with the system Camera
+                // (or any app opening a lunamux:// URL) routes here. The URL
+                // is parked in PendingPairingUri rather than handled inline
+                // because a cold launch delivers it before the hosts screen
+                // has mounted. The scheme is declared in Info.plist's
+                // CFBundleURLTypes and must match PairingPayload.URI_PREFIX.
+                .onOpenURL { url in
+                    let prefix = Client.PairingPayload.companion.URI_PREFIX
+                        .replacingOccurrences(of: "?", with: "")
+                    guard url.absoluteString.hasPrefix(prefix) else { return }
+                    PendingPairingUri.shared.post(url.absoluteString)
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             // Re-validate the `/window` connection whenever the app returns

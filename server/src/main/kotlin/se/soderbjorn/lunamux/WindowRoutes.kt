@@ -57,6 +57,28 @@ internal fun ApplicationCall.readAuthToken(): String? {
 }
 
 /**
+ * Read the one-time QR pairing token, if the client sent one, from either:
+ *  1. `pairToken` query parameter (WebSocket upgrades can't set headers)
+ *  2. `X-Termtastic-Pair-Token` header (REST requests)
+ *
+ * Threaded into [DeviceAuth.checkFastPath]/[DeviceAuth.authorize] by the
+ * `/window` and `/pty` auth call sites — a freshly-scanned device's first
+ * request is always the `/window` upgrade, so those are the endpoints that
+ * need it. The `/agent` and `/mcp` routes don't carry a pairing token: they
+ * are only ever reached by an already-trusted device.
+ *
+ * @return the raw pairing token, or `null` when absent.
+ * @see se.soderbjorn.termtastic.auth.PairingTokens
+ */
+internal fun ApplicationCall.readPairingToken(): String? {
+    val query = request.queryParameters["pairToken"]
+    if (!query.isNullOrBlank()) return query
+    val header = request.header("X-Termtastic-Pair-Token")
+    if (!header.isNullOrBlank()) return header
+    return null
+}
+
+/**
  * Build a [DeviceAuth.ClientInfo] from the incoming request.
  *
  * Uses `origin.remoteAddress` (the raw socket IP), NOT `origin.remoteHost`:
@@ -74,7 +96,8 @@ internal fun ApplicationCall.readClientInfo(): DeviceAuth.ClientInfo {
         if (!h.isNullOrBlank()) return h
         return null
     }
-    val type = first("X-Termtastic-Client-Type", "clientType")?.takeIf { it.isNotBlank() } ?: "Unknown"
+    val type = first("X-Termtastic-Client-Type", "clientType")?.takeIf { it.isNotBlank() }
+        ?: DeviceAuth.UNKNOWN_CLIENT_TYPE
     val hostname = first("X-Termtastic-Client-Host", "clientHost")
     val selfIp = first("X-Termtastic-Client-Ip", "clientIp")
     val version = first("X-Termtastic-Client-Version", "clientVersion")
@@ -293,7 +316,7 @@ internal fun Route.uiSettingsRoutes(settingsRepo: SettingsRepository) {
     get("/api/ui-settings") {
         val token = call.readAuthToken()
         val info = call.readClientInfo()
-        when (DeviceAuth.authorize(token, info, settingsRepo)) {
+        when (DeviceAuth.authorize(token, info, settingsRepo, call.readPairingToken())) {
             // Merge in the synthesized legacy compat keys so pre-revamp mobile
             // apps still render approximately right; new apps read the v2 keys.
             DeviceAuth.Decision.APPROVED -> call.respond(settingsRepo.getUiSettingsWithLegacy())
@@ -304,7 +327,7 @@ internal fun Route.uiSettingsRoutes(settingsRepo: SettingsRepository) {
     post("/api/ui-settings") {
         val token = call.readAuthToken()
         val info = call.readClientInfo()
-        when (DeviceAuth.authorize(token, info, settingsRepo)) {
+        when (DeviceAuth.authorize(token, info, settingsRepo, call.readPairingToken())) {
             DeviceAuth.Decision.APPROVED -> {
                 val incoming = call.receive<JsonObject>()
                 settingsRepo.mergeUiSettings(incoming)
@@ -337,17 +360,18 @@ internal fun Route.windowRoutes(
     webSocket("/window") {
         val token = call.readAuthToken()
         val info = call.readClientInfo()
+        val pairToken = call.readPairingToken()
         // Two-phase auth: the fast path resolves known/denied tokens
         // without blocking. Unknown tokens require the interactive
         // dialog, so we send a PendingApproval frame first — this lets
         // the client show "Waiting for approval…" instead of timing out.
-        val decision = DeviceAuth.checkFastPath(token, info, settingsRepo)
+        val decision = DeviceAuth.checkFastPath(token, info, settingsRepo, pairToken)
             ?: run {
                 val pending = windowJson.encodeToString<WindowEnvelope>(
                     WindowEnvelope.PendingApproval("Waiting for approval on the server…")
                 )
                 send(Frame.Text(pending))
-                DeviceAuth.authorize(token, info, settingsRepo)
+                DeviceAuth.authorize(token, info, settingsRepo, pairToken)
             }
         when (decision) {
             DeviceAuth.Decision.APPROVED -> Unit

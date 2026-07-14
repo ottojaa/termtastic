@@ -158,6 +158,15 @@ dependencies {
     // Published darkness toolkit Compose components (the world switcher globe).
     implementation(libs.darkness.compose)
 
+    // QR scanner for device pairing: the Google code scanner, which supplies
+    // its own scanning UI and runs the camera inside a Play Services process,
+    // so the app needs no CAMERA permission at all. Requires Play Services at
+    // runtime -- the only such dependency in this APK -- and degrades to an
+    // error message where it is unavailable (see HostsScreen.startScan); the
+    // manual add-host path still works there.
+    // Unrelated to the server's zxing-core, which only *generates* the QR.
+    implementation(libs.play.services.code.scanner)
+
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)

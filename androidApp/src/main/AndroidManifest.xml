@@ -1,6 +1,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Normal permission (no prompt): lets connection-failure messages say
+         whether the phone is on Wi-Fi or mobile data. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- No CAMERA permission: the QR pairing scanner is the Google code
+         scanner, which captures inside a Play Services process and hands back
+         only the decoded string. Declaring CAMERA here would re-introduce the
+         runtime prompt we get this library to avoid. -->
+
+    <!-- Camera is only needed for pairing; the app works without one. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:label="Lunamux"
@@ -8,14 +21,33 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.Lunamux">
+        <!-- Have Play Services fetch the code-scanner module at install time.
+             Without this it downloads on first scan, so the very first pairing
+             (the one where the user is already standing at the Mac) would
+             stall behind a network fetch. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode_ui" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Pairing deep link: scanning the QR with the system camera (or
+                 any browser hitting lunamux://pair) opens the app straight
+                 into the pairing flow. singleTask + onNewIntent above keep an
+                 already-running app in place instead of relaunching it.
+                 The scheme must match PairingPayload.URI_PREFIX. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lunamux" android:host="pair" />
             </intent-filter>
         </activity>
     </application>

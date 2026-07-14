@@ -93,17 +93,24 @@ data class ClientIdentity(
  * @param identity  self-reported client metadata sent to the server.
  * @param pinnedFingerprintHex lowercase hex SHA-256 of the server's leaf
  *   cert, or `null` to run capture mode on first connect.
+ * @param pairingToken one-time pairing token from a scanned QR payload, sent
+ *   alongside the auth token so the server can trust this device without an
+ *   approval dialog. `null` (the default) outside the pairing flow. Safe to
+ *   re-send after consumption: the server falls through to its trusted-device
+ *   list, so reconnects don't need a token-free client.
  * @param scope     coroutine scope for socket reader loops; defaults to a
  *   [SupervisorJob] on [Dispatchers.Default].
  *
  * @see createLunamuxClient
  * @see createPinnedHttpClient
+ * @see se.soderbjorn.termtastic.PairingPayload
  */
 class LunamuxClient(
     val serverUrl: ServerUrl,
     val authToken: String,
     val identity: ClientIdentity,
     val pinnedFingerprintHex: String? = null,
+    val pairingToken: String? = null,
     scope: CoroutineScope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger(),
     ),
@@ -252,6 +259,9 @@ class LunamuxClient(
         identity.version?.takeIf { it.isNotBlank() }?.let {
             sb.append("&clientVersion=").append(urlEncode(it))
         }
+        pairingToken?.takeIf { it.isNotBlank() }?.let {
+            sb.append("&pairToken=").append(urlEncode(it))
+        }
         return sb.toString()
     }
 
@@ -272,6 +282,9 @@ class LunamuxClient(
         }
         identity.version?.takeIf { it.isNotBlank() }?.let {
             out += "X-Termtastic-Client-Version" to it
+        }
+        pairingToken?.takeIf { it.isNotBlank() }?.let {
+            out += "X-Termtastic-Pair-Token" to it
         }
         return out
     }
@@ -342,15 +355,18 @@ private fun uncaughtCoroutineLogger(): CoroutineExceptionHandler =
  * @param identity see [LunamuxClient].
  * @param pinnedFingerprintHex lowercase hex SHA-256 of the server's leaf
  *   cert, or `null` to run capture mode on first connect.
+ * @param pairingToken one-time QR pairing token, or `null` outside pairing.
  */
 fun createLunamuxClient(
     serverUrl: ServerUrl,
     authToken: String,
     identity: ClientIdentity,
     pinnedFingerprintHex: String? = null,
+    pairingToken: String? = null,
 ): LunamuxClient = LunamuxClient(
     serverUrl = serverUrl,
     authToken = authToken,
     identity = identity,
     pinnedFingerprintHex = pinnedFingerprintHex,
+    pairingToken = pairingToken,
 )

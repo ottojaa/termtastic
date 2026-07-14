@@ -2212,8 +2212,9 @@ body.appearance-light .git-graphical-connector {
     line-height: 1.4;
 }
 
-/* Top navigation: a stack of full-width jump buttons (Themes / Appearance,
-   plus the muted "Open server settings…" button on Electron). */
+/* Top navigation: a stack of full-width jump buttons (Themes / Appearance /
+   Keyboard Shortcuts, plus "Server & Security…" on Electron). All carry the
+   same weight — they are all routes to a settings surface. */
 .lunamux-app-settings-nav {
     display: flex;
     flex-direction: column;
@@ -2260,23 +2261,6 @@ body.appearance-light .git-graphical-connector {
 .lunamux-app-settings-nav-button:focus-visible {
     outline: 2px solid var(--t-accent);
     outline-offset: 2px;
-}
-
-/* Muted variant — the conditional "Open server settings…" jump, made
-   deliberately less prominent than the Themes / Appearance buttons. */
-.lunamux-app-settings-nav-button--muted {
-    padding: 7px 12px;
-    font-weight: 500;
-    font-size: 12px;
-    color: var(--t-text-dim, var(--text-secondary));
-    background: transparent;
-    border-color: transparent;
-}
-
-.lunamux-app-settings-nav-button--muted:hover {
-    color: var(--t-text, var(--text-primary));
-    background: color-mix(in srgb, var(--t-surface) 60%, transparent);
-    border-color: var(--t-border, var(--separator));
 }
 
 /* Grouped section card. */
@@ -2403,11 +2387,6 @@ body.appearance-light .lunamux-app-settings-help-popover {
 body.appearance-light .lunamux-app-settings-nav-button {
     background: transparent;
     border-color: rgba(0, 0, 0, 0.10);
-}
-
-body.appearance-light .lunamux-app-settings-nav-button--muted {
-    background: transparent;
-    border-color: transparent;
 }
 
 body.appearance-light .lunamux-app-settings-section {

@@ -1,0 +1,198 @@
+/**
+ * Multi-candidate connection walker: tries each advertised server endpoint in
+ * order and hands back the first one that completes a WebSocket handshake.
+ *
+ * A Lunamux server usually has several addresses (multiple LAN interfaces
+ * today; VPN and IPv6 candidates in the future), and the pairing QR advertises
+ * all of them. [CandidateConnector.connectFirstReachable] encapsulates the
+ * "try them in order, keep the winner" logic in shared code so Android and
+ * (later) iOS get identical behaviour.
+ *
+ * Lives in `commonMain` next to [LunamuxClient]; the platform connection
+ * holders remain the owners of connection lifecycle — this object only
+ * *establishes* connections.
+ *
+ * @see LunamuxClient
+ * @see se.soderbjorn.lunamux.HostPort
+ */
+package se.soderbjorn.lunamux.client
+
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import se.soderbjorn.lunamux.HostPort
+
+/**
+ * The successful outcome of [CandidateConnector.connectFirstReachable]: a
+ * live client + window socket pair and the endpoint that won the race.
+ *
+ * The caller owns both handles — typically it finishes the second handshake
+ * phase (`awaitInitialConfig`) and then stores them in its connection holder,
+ * persisting [endpoint] as the host entry's new preferred `host`/`port` so
+ * the next connect tries the known-good address first.
+ *
+ * @property client the connected [LunamuxClient]; close on failure/teardown.
+ * @property windowSocket the `/window` socket whose handshake completed.
+ * @property endpoint the candidate that connected.
+ */
+data class CandidateConnection(
+    val client: LunamuxClient,
+    val windowSocket: WindowSocket,
+    val endpoint: HostPort,
+)
+
+/**
+ * Raised by [CandidateConnector.connectFirstReachable] when a candidate was
+ * rejected for presenting a leaf certificate that does not match the entry's
+ * pin, on a platform whose HTTP engine does not preserve the
+ * `"pin-mismatch:"` marker in the failure's cause chain (iOS Darwin cancels
+ * the auth challenge with a generic error).
+ *
+ * The connector detects that case from the client's [LunamuxClient.observedMismatch]
+ * side-channel, but that flow belongs to a client the connector owns and closes
+ * before rethrowing — so the signal has to travel *with* the exception or the
+ * caller loses it. Wrapping restores the one invariant every UI depends on:
+ * [isPinMismatch] is true for anything this function throws after a mismatch,
+ * on every platform.
+ *
+ * JVM-backed targets already throw a marker-bearing `CertificateException`, so
+ * their failure propagates unwrapped and never becomes one of these.
+ *
+ * @property observedFingerprintHex the leaf fingerprint the server actually
+ *   presented, or `null` if the engine did not surface one.
+ * @param cause the underlying transport failure.
+ * @see isPinMismatch
+ */
+class PinMismatchException(
+    val observedFingerprintHex: String?,
+    cause: Throwable?,
+) : Exception("pin-mismatch: server certificate does not match the stored pin", cause)
+
+/**
+ * Stateless helper that walks candidate endpoints sequentially. Shared by the
+ * Android and iOS `ConnectionHolder.connectMulti` paths, and the home of the
+ * pin-mismatch cause-chain scan that used to live in the Android connection
+ * holder.
+ */
+object CandidateConnector {
+
+    /**
+     * Try [candidates] in order and return the first endpoint whose
+     * WebSocket handshake completes within [perCandidateTimeoutMs].
+     *
+     * Each attempt builds a fresh [LunamuxClient] (same [authToken],
+     * [identity], [pinnedFingerprintHex], and [pairingToken] for every
+     * candidate — they all point at the same server) and awaits
+     * [WindowSocket.awaitSessionReady]. A failed attempt is torn down and the
+     * walk moves on; the caller still has to run the second handshake phase
+     * ([WindowSocket.awaitInitialConfig]) on the returned socket.
+     *
+     * When every candidate fails, a pin-mismatch failure is rethrown in
+     * preference to a generic one: a stale candidate that now points at a
+     * *stranger's* server (DHCP reuse, changed network) must not bury the
+     * one signal the user has to act on.
+     *
+     * @param candidates ordered `host[:port]` strings (bracketed IPv6);
+     *   unparseable entries are skipped, duplicates collapsed.
+     * @param defaultPort port for candidates without an explicit `:port`.
+     * @param authToken the device-auth token (see
+     *   [se.soderbjorn.lunamux.client.storage.LocalRepository.getOrCreateAuthToken]).
+     * @param identity self-reported client metadata for every attempt.
+     * @param pinnedFingerprintHex the entry's TLS pin, or `null` for TOFU
+     *   capture (manually-added hosts only — QR entries always have a pin).
+     * @param pairingToken one-time pairing token, or `null` outside pairing.
+     * @param perCandidateTimeoutMs handshake budget per candidate. 12 s
+     *   covers a TLS + WS handshake on a sleepy Wi-Fi radio while keeping a
+     *   multi-candidate walk under a minute.
+     * @return the winning [CandidateConnection]; the caller owns its handles.
+     * @throws IllegalArgumentException when no candidate is parseable.
+     * @throws PinMismatchException when a candidate's cert failed the pin
+     *   check on a platform that drops the marker (see the class doc).
+     * @throws Throwable the pin-mismatch failure if any candidate saw one,
+     *   otherwise the last candidate's failure. Whatever comes out of a
+     *   mismatch satisfies [isPinMismatch] on every platform.
+     * @see isPinMismatch
+     * @see PinMismatchException
+     */
+    suspend fun connectFirstReachable(
+        candidates: List<String>,
+        defaultPort: Int,
+        authToken: String,
+        identity: ClientIdentity,
+        pinnedFingerprintHex: String? = null,
+        pairingToken: String? = null,
+        perCandidateTimeoutMs: Long = 12_000,
+    ): CandidateConnection {
+        val endpoints = candidates
+            .mapNotNull { HostPort.parseCandidate(it, defaultPort) }
+            .distinct()
+        require(endpoints.isNotEmpty()) { "no parseable candidates in $candidates" }
+
+        var pinMismatch: Throwable? = null
+        var lastFailure: Throwable? = null
+        for (endpoint in endpoints) {
+            val client = LunamuxClient(
+                serverUrl = ServerUrl(host = endpoint.host, port = endpoint.port),
+                authToken = authToken,
+                identity = identity,
+                pinnedFingerprintHex = pinnedFingerprintHex,
+                pairingToken = pairingToken,
+            )
+            val socket = client.openWindowSocket()
+            try {
+                withTimeout(perCandidateTimeoutMs) { socket.awaitSessionReady() }
+                return CandidateConnection(client = client, windowSocket = socket, endpoint = endpoint)
+            } catch (t: TimeoutCancellationException) {
+                closeQuietly(socket, client)
+                lastFailure = t
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                // The *caller* was cancelled (not our per-candidate timeout,
+                // which is caught above) — clean up and propagate.
+                closeQuietly(socket, client)
+                throw c
+            } catch (t: Throwable) {
+                closeQuietly(socket, client)
+                // iOS Darwin swallows the rejection cause, so also honour the
+                // uniform observedMismatch signal the client publishes. When
+                // that side-channel is the only evidence, wrap: it lives on a
+                // client we are about to drop, so an unwrapped rethrow would
+                // strand the caller with an unclassifiable error.
+                val observed = client.observedMismatch.value
+                if (isPinMismatch(t)) {
+                    pinMismatch = t
+                } else if (observed != null) {
+                    pinMismatch = PinMismatchException(observed, t)
+                } else {
+                    lastFailure = t
+                }
+            }
+        }
+        throw pinMismatch ?: lastFailure ?: IllegalStateException("no candidates attempted")
+    }
+
+    /**
+     * Walk a throwable's cause chain looking for the `"pin-mismatch:"` marker
+     * thrown by [createPinnedHttpClient] when the server's leaf cert no
+     * longer matches the stored pin. UI layers use this to choose between a
+     * generic error snackbar and the cert-changed re-pair dialog.
+     *
+     * @param t the throwable to inspect (typically a connect failure).
+     * @return `true` if any link in the cause chain is a pin-mismatch.
+     */
+    fun isPinMismatch(t: Throwable): Boolean {
+        var c: Throwable? = t
+        var depth = 0
+        while (c != null && depth < 16) {
+            val msg = c.message
+            if (msg != null && msg.startsWith("pin-mismatch:")) return true
+            c = c.cause
+            depth++
+        }
+        return false
+    }
+
+    /** Best-effort teardown of a failed attempt; failures here are moot. */
+    private suspend fun closeQuietly(socket: WindowSocket, client: LunamuxClient) {
+        runCatching { socket.close() }
+        runCatching { client.close() }
+    }
+}

@@ -4,6 +4,11 @@ import Client
 /// Host list screen — add, edit, delete saved servers and connect.
 /// Mirrors the Android `HostsScreen` composable.
 ///
+/// The screen is also the QR pairing entry point: the toolbar scanner (and the
+/// `lunamux://pair` deep link relayed through `PendingPairingUri`) parses a
+/// `PairingPayload`, saves or updates the host entry, and connects immediately
+/// — scan → connected, with no approval dialog.
+///
 /// Unlike the workspace screens (tree, terminal, …), this screen renders
 /// before any server connection exists, so no server-driven theme can apply
 /// yet. It therefore uses native system colors and standard iOS list styling
@@ -18,7 +23,11 @@ struct HostsView: View {
 
     @State private var editTarget: HostEntryLocal?
     @State private var showAddSheet = false
+    @State private var showScanSheet = false
     @State private var deleteTarget: HostEntryLocal?
+
+    /// Deep-linked pairing URIs parked by `LunamuxApp.onOpenURL`.
+    private let pendingPairing = PendingPairingUri.shared
 
     var body: some View {
         baseView
@@ -26,6 +35,22 @@ struct HostsView: View {
             .onChange(of: ConnectionHolder.shared.client != nil) { _, connected in
                 if connected { onConnected() }
             }
+            // Pairing deep link (system camera / browser → lunamux://pair).
+            // `onAppear` catches a cold-launch link posted before this screen
+            // existed; `onChange` catches one that arrives while it is up.
+            // `consume()` clears the slot either way, so a re-render cannot
+            // pair twice.
+            .onAppear { consumePendingPairing() }
+            .onChange(of: pendingPairing.uri) { _, uri in
+                if uri != nil { consumePendingPairing() }
+            }
+    }
+
+    /// Drain the pairing mailbox into the view model, if anything is waiting.
+    private func consumePendingPairing() {
+        if let uri = pendingPairing.consume() {
+            viewModel.handlePairingUri(uri)
+        }
     }
 
     /// Base list/empty-state view plus toolbar and sheets. Split out so the
@@ -61,6 +86,12 @@ struct HostsView: View {
                 NewsBellButton(action: onOpenNews)
             }
             ToolbarItem(placement: .topBarTrailing) {
+                Button { showScanSheet = true } label: {
+                    Label("Scan pairing code", systemImage: "qrcode.viewfinder")
+                }
+                .tint(Palette.headerAccent)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { showAddSheet = true } label: {
                     Label("Add Host", systemImage: "plus")
                 }
@@ -79,6 +110,15 @@ struct HostsView: View {
                 showAddSheet = false
             }
         }
+        .sheet(isPresented: $showScanSheet) {
+            // Dismiss first, then pair: the connect drives this screen's
+            // spinner and, on success, the push to the tree — none of which
+            // is visible under a presented sheet.
+            QRScannerSheet { uri in
+                showScanSheet = false
+                viewModel.handlePairingUri(uri)
+            }
+        }
         .sheet(item: $editTarget) { entry in
             HostEditSheet(initial: entry) { label, host, port in
                 var updated = entry
@@ -91,17 +131,27 @@ struct HostsView: View {
         }
     }
 
+    /// Empty state. Pairing by QR is the primary path (scan → connected, no
+    /// typing, no approval dialog); manual entry is demoted to a secondary
+    /// action. Mirrors the Android `EmptyState` composable.
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("No Hosts", systemImage: "server.rack")
+            Label("No Hosts", systemImage: "qrcode.viewfinder")
         } description: {
-            Text("Add a server to get started.")
+            Text("On your Mac: Lunamux > Settings > Server & Security… > Devices > "
+                 + "Pair a device, then scan the code here.")
         } actions: {
-            Button { showAddSheet = true } label: {
-                Text("Add Host")
+            Button { showScanSheet = true } label: {
+                Text("Scan pairing code")
             }
             .buttonStyle(.borderedProminent)
             .tint(Palette.headerAccent)
+
+            Button { showAddSheet = true } label: {
+                Text("Add manually")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
     }
 

@@ -1,6 +1,16 @@
 import Foundation
 import Client
 
+/// Thrown by `ConnectionHolder.connectMulti` when no candidate endpoint could
+/// be reached (a phase-1 failure that is not a pin mismatch). Distinguishes a
+/// reachability problem — the case where "check your Wi-Fi" advice is correct
+/// — from a phase-2 failure where the server WAS reached but rejected the
+/// device. Mirrors the Android `ServerUnreachableException`.
+struct ServerUnreachableError: Error {
+    /// The last underlying transport failure.
+    let underlying: Error
+}
+
 /// Process-scoped singleton holding the live `LunamuxClient` and
 /// `WindowSocket`. Mirrors the Android `ConnectionHolder` singleton.
 @Observable
@@ -31,6 +41,11 @@ final class ConnectionHolder {
     private var approvalObserver: Client.FlowObserver?
 
     /// Tear down any existing client and create a fresh one for the given URL.
+    ///
+    /// Retained for the built-in demo path only (see `HostsViewModel.connectDemo`);
+    /// real hosts go through `connectMulti`, which walks every candidate
+    /// endpoint a paired entry carries. Mirrors Android, where `connect` was
+    /// narrowed to the demo for the same reason.
     ///
     /// `pinnedFingerprintHex` selects between the TOFU capture mode (nil,
     /// first-connect to a new host — the leaf cert's SHA-256 is observed
@@ -63,7 +78,11 @@ final class ConnectionHolder {
             serverUrl: serverUrl,
             authToken: authToken,
             identity: identity,
-            pinnedFingerprintHex: pinnedFingerprintHex
+            pinnedFingerprintHex: pinnedFingerprintHex,
+            // Pairing tokens only ever ride the `connectMulti` path; this
+            // single-endpoint connect is the demo's, which has no server to
+            // pair with.
+            pairingToken: nil
         )
         let socket = fresh.openWindowSocket()
         // Watch for PendingApproval so we can update the UI while
@@ -109,6 +128,133 @@ final class ConnectionHolder {
         approvalObserver = nil
         self.client = fresh
         self.windowSocket = socket
+    }
+
+    /// Try every candidate endpoint of a host entry in order and keep the
+    /// first that connects. Used by the hosts screen for saved entries — a
+    /// QR-paired entry carries every address the server advertised, and even
+    /// manually-added ones benefit from the same code path.
+    ///
+    /// Phase 1 (per candidate, inside the shared `CandidateConnector`):
+    /// WebSocket handshake with a 12 s budget. Phase 2 (winner only): wait for
+    /// the initial Config envelope, up to 5 min so a server-side approval
+    /// dialog can be answered. The client is published before phase 2 so
+    /// `pendingApproval` is observable while waiting.
+    ///
+    /// Mirrors the Android `ConnectionHolder.connectMulti`, down to the
+    /// phase-1/phase-2 error split: only an unreachable phase 1 is blamed on
+    /// the network.
+    ///
+    /// - Parameters:
+    ///   - candidates: ordered `host[:port]` strings; see `HostEntry.candidates`.
+    ///   - defaultPort: port for candidates without an explicit `:port`.
+    ///   - authToken: the device-auth token.
+    ///   - pinnedFingerprintHex: TLS pin (verify mode), or `nil` for TOFU
+    ///     capture on first connect.
+    ///   - pairingToken: one-time QR pairing token, or `nil` outside pairing.
+    /// - Returns: the winning `CandidateConnection`; the caller persists its
+    ///   endpoint as the entry's new preferred address.
+    /// - Throws: `ServerUnreachableError` when no candidate answered, or the
+    ///   underlying failure otherwise. Pin mismatches propagate so the caller
+    ///   can check `lastPinMismatch`.
+    @MainActor
+    @discardableResult
+    func connectMulti(
+        candidates: [String],
+        defaultPort: Int32,
+        authToken: String,
+        pinnedFingerprintHex: String? = nil,
+        pairingToken: String? = nil
+    ) async throws -> Client.CandidateConnection {
+        disconnect()
+        pendingApproval = false
+        lastPinMismatch = false
+
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let identity = Client.ClientIdentity(
+            type: "iOS",
+            hostname: ProcessInfo.processInfo.hostName,
+            selfReportedIp: Self.firstNonLoopbackIPv4(),
+            version: appVersion
+        )
+
+        // Phase 1 — reach a candidate. A pin mismatch is re-surfaced through
+        // `lastPinMismatch` so the UI can show the cert-changed dialog; any
+        // other phase-1 failure means no candidate answered, which is a
+        // reachability problem, so tag it as such. Phase-2 failures below are
+        // the opposite (we reached the server but it didn't send a config —
+        // an auth rejection) and must NOT be mislabelled as a network problem.
+        let connection: Client.CandidateConnection
+        do {
+            connection = try await Client.CandidateConnector.shared.connectFirstReachable(
+                candidates: candidates,
+                defaultPort: defaultPort,
+                authToken: authToken,
+                identity: identity,
+                pinnedFingerprintHex: pinnedFingerprintHex,
+                pairingToken: pairingToken,
+                // Matches the shared default, which does not bridge to Swift.
+                perCandidateTimeoutMs: 12_000
+            )
+        } catch {
+            if Self.isPinMismatch(error) {
+                lastPinMismatch = true
+                throw error
+            }
+            throw ServerUnreachableError(underlying: error)
+        }
+
+        // Publish before the config wait so the approval-pending flow is
+        // observable while the server-side dialog (if any) is up.
+        let observer = Client.FlowObserver()
+        approvalObserver = observer
+        observer.observe(flow: connection.client.windowState.pendingApproval) { [weak self] value in
+            DispatchQueue.main.async {
+                self?.pendingApproval = (value as? Bool) == true
+            }
+        }
+        self.client = connection.client
+        self.windowSocket = connection.windowSocket
+
+        do {
+            try await withTimeout(seconds: 300) {
+                try await connection.windowSocket.awaitInitialConfig()
+            }
+        } catch {
+            NSLog("[ConnectionHolder] connectMulti failed awaiting config: %@",
+                  error.localizedDescription)
+            pendingApproval = false
+            observer.clear()
+            approvalObserver = nil
+            disconnect()
+            throw error
+        }
+        pendingApproval = false
+        observer.clear()
+        approvalObserver = nil
+        return connection
+    }
+
+    /// Whether `error` is the shared connector's pin-mismatch signal.
+    ///
+    /// Kotlin exceptions crossing into Swift arrive as an `NSError` carrying
+    /// the original throwable under `KotlinException`, so the cause-chain scan
+    /// that Android runs directly is reachable here too — but only because
+    /// `CandidateConnector` wraps the Darwin case in a `PinMismatchException`
+    /// first. Darwin's `URLSessionDelegate` cancels the auth challenge with a
+    /// generic error, so without that wrapper there would be nothing to match.
+    ///
+    /// - Parameter error: a failure thrown out of `connectFirstReachable`.
+    /// - Returns: `true` when the server's leaf cert failed the pin check.
+    private static func isPinMismatch(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if let thrown = nsError.userInfo["KotlinException"] as? Client.KotlinThrowable,
+           Client.CandidateConnector.shared.isPinMismatch(t: thrown) {
+            return true
+        }
+        // Fallback: the boxed throwable is the documented carrier, but the
+        // marker also survives into the bridged description.
+        return nsError.localizedDescription.contains("pin-mismatch:")
     }
 
     @MainActor

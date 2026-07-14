@@ -30,6 +30,12 @@ See: https://lunamux.dev/
 * Full support for running the app in a web browser (local or remote).
 * Android and iOS apps mirror most of the functionality but in limited form, allowing you to observe and type in terminal windows and operate the file and change viewers in a rudimentary way.
 
+#### Pairing a phone
+
+* On the desktop, open **Lunamux > Settings > Server & Security… > Devices > Pair a device** to show a QR code, then scan it from the Android or iOS app's Hosts screen (or with the system camera — the code is a `lunamux://pair` link). The phone connects immediately: no addresses to type and no approval dialog to click.
+* The pairing code carries the server's TLS certificate fingerprint, so a paired phone verifies the server's identity from the very first connection (stronger than the trust-on-first-use flow used by manual entries). It also carries a single-use pairing token that expires after 5 minutes — treat the on-screen code like a password.
+* Pairing requires the phone and the computer to be on the same network. A pairing implicitly enables *Allow connections from other devices*; that toggle remains the master switch and can be turned off again at any time.
+
 ### Bonus Features
 
 * Built-in file viewer showing the folders and files of your project and their contents. Supports filters, sorting, syntax highlighting for popular file types, and custom display of Markdown documents.

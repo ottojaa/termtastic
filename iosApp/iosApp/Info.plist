@@ -35,6 +35,34 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!--
+		Camera access for QR device pairing (QRScannerSheet). iOS has no
+		out-of-process code scanner like the Google code scanner Android uses,
+		so the app drives AVCaptureSession itself and must carry this string.
+		Pairing is the only feature that touches the camera; the app is fully
+		usable without granting it (hosts can be added manually).
+	-->
+	<key>NSCameraUsageDescription</key>
+	<string>Lunamux uses the camera to scan the pairing code shown by Lunamux on your Mac.</string>
+	<!--
+		Pairing deep link: lets the system Camera app (and anything else that
+		opens a URL) hand a scanned lunamux://pair code straight to the app.
+		The scheme must match PairingPayload.URI_PREFIX; LunamuxApp.onOpenURL
+		is the receiving end. Mirrors the Android manifest's intent-filter.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>se.soderbjorn.lunamux.pair</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>lunamux</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIAppFonts</key>
 	<array>
 		<string>JetBrainsMono-Regular.ttf</string>

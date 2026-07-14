@@ -3,13 +3,15 @@
  *
  * This file contains [SettingsDialog], a process-wide singleton Compose
  * Desktop window that provides the Lunamux settings interface. The
- * controls are split across two tabs so the MCP configuration doesn't
+ * controls are split across three tabs so the MCP configuration doesn't
  * clutter the everyday network/device controls:
- *  - **General** tab:
- *    - Network settings (allow remote connections, display listening port/IPs).
- *    - Claude Code usage polling toggle.
- *    - Trusted device management (list, revoke).
+ *  - **Devices** tab:
+ *    - Connections (listening port/IPs, allow-remote toggle, "Pair a
+ *      device" QR dialog — see [PairingDialog]).
+ *    - Approved device management (list, revoke).
  *    - Denied device management (list, unban).
+ *  - **Features** tab:
+ *    - Claude Code usage polling toggle.
  *  - **MCP** tab:
  *    - MCP server kill switch, token minting/scoping/revoking, the
  *      ready-to-paste `.mcp.json` snippet, recent agent-activity log, and
@@ -82,13 +84,13 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import org.slf4j.LoggerFactory
 import se.soderbjorn.lunamux.ClaudeUsageMonitor
+import se.soderbjorn.lunamux.SERVER_TLS_PORT
 import se.soderbjorn.lunamux.auth.DeviceAuth
+import se.soderbjorn.lunamux.net.LocalAddresses
 import se.soderbjorn.lunamux.persistence.SettingsRepository
 import se.soderbjorn.lunamux.tls.CertStore
 import java.awt.GraphicsEnvironment
 import javax.swing.SwingUtilities
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -126,6 +128,13 @@ object SettingsDialog {
     fun setListeningPort(port: Int) {
         listeningPort = port
     }
+
+    /**
+     * The `clientType` the Electron shell reports (see the UA sniff in the
+     * web client's `start()`). Generic because the shell doesn't know its
+     * platform; [deviceTitle] renders it as "Mac".
+     */
+    private const val DESKTOP_CLIENT_TYPE = "Computer"
 
     /** Lunamux dark-theme blue used for accents throughout the dialog. */
     private val lunamuxBlue = Color(0xFF0A84FF)
@@ -180,7 +189,7 @@ object SettingsDialog {
         val currentRepo = repo
 
         val windowState = rememberWindowState(
-            size = DpSize(560.dp, 620.dp),
+            size = DpSize(640.dp, 780.dp),
             position = WindowPosition.Aligned(Alignment.Center),
         )
 
@@ -214,10 +223,11 @@ object SettingsDialog {
      * unkeyed `remember { }` would otherwise cache the lists for the
      * lifetime of the process.
      *
-     * The sections are split across two tabs so the MCP configuration
+     * The sections are split across three tabs so the MCP configuration
      * (token minting, scopes, the `.mcp.json` snippet, agent-activity log,
      * TLS-trust line) doesn't clutter the everyday network/device controls:
-     *  - **General** — Network, Claude Code, Trusted / Denied devices.
+     *  - **Devices** — Connections, Approved / Denied devices.
+     *  - **Features** — [ClaudeUsageSection] on its own.
      *  - **MCP** — [McpSection] on its own.
      *
      * The header and the tab bar stay pinned at the top; only the selected
@@ -234,7 +244,14 @@ object SettingsDialog {
     private fun SettingsContent(repo: SettingsRepository, isShowing: Boolean) {
         val scrollState = rememberScrollState()
         var selectedTab by remember { mutableStateOf(0) }
-        val tabs = listOf("General", "MCP")
+        val tabs = listOf("Devices", "Features", "MCP")
+
+        // Bumped when a flow outside this window may have mutated settings —
+        // currently the pairing dialog, whose QR approval adds a trusted
+        // device. Paired with isShowing so both reopening the window and
+        // closing the pairing dialog force a fresh repo read.
+        var settingsRefresh by remember { mutableStateOf(0) }
+        val refreshKey: Any = Pair(isShowing, settingsRefresh)
 
         Column(
             modifier = Modifier
@@ -293,16 +310,17 @@ object SettingsDialog {
                 ) {
                     when (selectedTab) {
                         1 -> {
-                            McpSection(repo, isShowing)
+                            ClaudeUsageSection(repo)
+                        }
+                        2 -> {
+                            McpSection(repo, refreshKey)
                         }
                         else -> {
-                            NetworkSection(repo)
+                            ConnectionsSection(repo, refreshKey, onPairingDialogClosed = { settingsRefresh++ })
                             Spacer(Modifier.height(16.dp))
-                            ClaudeUsageSection(repo)
+                            TrustedDevicesSection(repo, refreshKey)
                             Spacer(Modifier.height(16.dp))
-                            TrustedDevicesSection(repo, isShowing)
-                            Spacer(Modifier.height(16.dp))
-                            DeniedDevicesSection(repo, isShowing)
+                            DeniedDevicesSection(repo, refreshKey)
                         }
                     }
                 }
@@ -335,12 +353,35 @@ object SettingsDialog {
         Spacer(Modifier.height(8.dp))
     }
 
+    /**
+     * Render the "Connections" section: how this server can be reached
+     * (addresses + port), the allow-remote master switch, and the "Pair a
+     * device" entry point to the QR pairing dialog.
+     *
+     * Called from [SettingsContent] on the General tab.
+     *
+     * "Pair via QR code" is gated on the allow-remote toggle: pairing can
+     * only trust devices the network gate already admits, so the button and
+     * its description are absent entirely while the switch is off.
+     *
+     * @param repo settings repository backing the allow-remote toggle.
+     * @param refreshKey changing this value re-reads settings state from the
+     *   repo, so reopening the window shows what is actually stored.
+     * @param onPairingDialogClosed invoked when the pairing dialog closes so
+     *   the parent can bump the refresh counter — a completed pairing adds a
+     *   trusted device that the sections below must pick up.
+     * @see PairingDialog
+     */
     @Composable
-    private fun NetworkSection(repo: SettingsRepository) {
-        SectionHeader("Network")
+    private fun ConnectionsSection(
+        repo: SettingsRepository,
+        refreshKey: Any,
+        onPairingDialogClosed: () -> Unit,
+    ) {
+        SectionHeader("Connections")
 
         val port = listeningPort
-        val addresses = remember { localIpv4Addresses() }
+        val addresses = remember { LocalAddresses.ipv4() }
 
         Text("Loopback: 127.0.0.1", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
         if (addresses.isEmpty()) {
@@ -362,25 +403,47 @@ object SettingsDialog {
 
         Spacer(Modifier.height(8.dp))
 
-        var allowRemote by remember { mutableStateOf(repo.isAllowRemoteConnections()) }
-        val toggleAllowRemote = {
-            allowRemote = !allowRemote
-            repo.setAllowRemoteConnections(allowRemote)
-            log.info("Settings: allow-remote toggled to {}", allowRemote)
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.clickable(onClick = toggleAllowRemote),
+        // Keyed on refreshKey so reopening the window re-reads the stored
+        // value rather than showing whatever this composable last had.
+        var allowRemote by remember(refreshKey) { mutableStateOf(repo.isAllowRemoteConnections()) }
+        var showPairing by remember { mutableStateOf(false) }
+        SettingToggleRow(
+            title = "Allow connections from other devices",
+            description = "When off, connections are only accepted from this " +
+                "computer. They still need individual approval.",
+            checked = allowRemote,
         ) {
-            Checkbox(
-                checked = allowRemote,
-                onCheckedChange = {
-                    allowRemote = it
-                    repo.setAllowRemoteConnections(it)
-                    log.info("Settings: allow-remote toggled to {}", it)
+            allowRemote = it
+            repo.setAllowRemoteConnections(it)
+            // Switching off closes an open QR window: the code it shows would
+            // no longer get a scanning device past the network gate.
+            if (!it) showPairing = false
+            log.info("Settings: allow-remote toggled to {}", it)
+        }
+
+        // Pairing only ever trusts devices the network gate already admits,
+        // so the whole control is absent until the user opts into remote
+        // connections — there is nothing it could usefully do while off.
+        if (allowRemote) {
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = { showPairing = true }) {
+                Text("Pair via QR code")
+            }
+            Text(
+                "Shows a QR code the Lunamux mobile app can scan to connect " +
+                    "instantly — no addresses to type, no approval dialog.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+        }
+        if (showPairing) {
+            PairingDialog(
+                port = port ?: SERVER_TLS_PORT,
+                onClose = {
+                    showPairing = false
+                    onPairingDialogClosed()
                 },
             )
-            Text("Allow connections from other devices", fontSize = 14.sp)
         }
 
         HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
@@ -391,32 +454,19 @@ object SettingsDialog {
         SectionHeader("Claude Code")
 
         var pollUsage by remember { mutableStateOf(repo.isClaudeUsagePollEnabled()) }
-        val togglePollUsage = {
-            pollUsage = !pollUsage
-            repo.setClaudeUsagePollEnabled(pollUsage)
+        SettingToggleRow(
+            title = "Poll Claude Code usage data",
+            description = "Periodically polls usage data and displays it in the " +
+                "Mac app's sidebar.",
+            checked = pollUsage,
+        ) {
+            pollUsage = it
+            repo.setClaudeUsagePollEnabled(it)
             val monitor = usageMonitor
             if (monitor != null) {
-                if (pollUsage) monitor.start() else monitor.stop()
+                if (it) monitor.start() else monitor.stop()
             }
-            log.info("Settings: claude-usage-poll toggled to {}", pollUsage)
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.clickable(onClick = togglePollUsage),
-        ) {
-            Checkbox(
-                checked = pollUsage,
-                onCheckedChange = {
-                    pollUsage = it
-                    repo.setClaudeUsagePollEnabled(it)
-                    val monitor = usageMonitor
-                    if (monitor != null) {
-                        if (it) monitor.start() else monitor.stop()
-                    }
-                    log.info("Settings: claude-usage-poll toggled to {}", it)
-                },
-            )
-            Text("Poll Claude Code usage data", fontSize = 14.sp)
+            log.info("Settings: claude-usage-poll toggled to {}", it)
         }
 
         HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
@@ -461,7 +511,7 @@ object SettingsDialog {
                     log.info("Settings: MCP enabled toggled to {}", it)
                 },
             )
-            Text("Enable MCP server (/mcp, localhost only)", fontSize = 14.sp)
+            Text("Enable MCP server (local connections only)", fontSize = 14.sp)
         }
 
         Spacer(Modifier.height(8.dp))
@@ -501,7 +551,7 @@ object SettingsDialog {
                 fontSize = 13.sp,
             )
         } else {
-            val df = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT) }
+            val df = remember { SimpleDateFormat("d MMM yyyy 'at' HH:mm", Locale.ENGLISH) }
             tokens.forEach { token ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -618,11 +668,13 @@ object SettingsDialog {
     }
 
     /**
-     * Render the "Trusted devices" section.
+     * Render the "Approved devices" section.
      *
-     * Called from [SettingsContent]. Lists every device persisted by
-     * [DeviceAuth.persistApprovedDevice] and offers a "Revoke" action per
-     * row. The list is read from [repo] each time [refreshKey] changes —
+     * Called from [SettingsContent] on the Devices tab. Lists every approved
+     * device and offers a "Revoke" action per row. ("Trusted" survives in the
+     * identifiers and the persisted `auth.trusted_devices.v1` blob — only the
+     * user-facing wording is "approved".) The list is read from [repo] each time
+     * [refreshKey] changes —
      * callers pass the dialog's visibility flag so a fresh snapshot is
      * loaded whenever the window becomes visible (the Window stays in
      * the composition tree, so an unkeyed `remember { }` would only read
@@ -636,26 +688,38 @@ object SettingsDialog {
      */
     @Composable
     private fun TrustedDevicesSection(repo: SettingsRepository, refreshKey: Any) {
-        SectionHeader("Trusted devices")
+        SectionHeader("Approved devices")
 
         var devices by remember(refreshKey) { mutableStateOf(DeviceAuth.listTrustedDevices(repo)) }
-        val df = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT) }
+        val df = remember { SimpleDateFormat("d MMM yyyy 'at' HH:mm", Locale.ENGLISH) }
 
         if (devices.isEmpty()) {
             Text(
-                "No trusted devices yet.",
+                "No approved devices yet.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp,
             )
         } else {
             devices.forEach { device ->
                 DeviceRow(
-                    label = device.label?.takeIf { it.isNotBlank() } ?: "Device",
+                    title = deviceTitle(device.label, device.connections),
                     hashPrefix = device.tokenHash.take(10),
-                    lastSeen = "last seen ${df.format(Date(device.lastSeenEpochMs))} from ${device.lastIp}",
+                    tag = viaTag(device.trustedVia),
+                    // A trusted record is only ever built at the moment of
+                    // approval and never rewritten, so first-seen is the
+                    // approval instant — including on entries that predate
+                    // the trustedVia tag, which still get a correct date.
+                    stamp = "Approved ${df.format(Date(device.firstSeenEpochMs))}",
                     connections = device.connections,
                     actionLabel = "Revoke",
                     df = df,
+                    // The auto-approved device is this machine's own client —
+                    // the one that opened this window. Revoking it is what
+                    // makes the approval dialog the only way back in, and that
+                    // dialog's Deny button bans the token for good, with no
+                    // path left to reach "Unban": the settings window is only
+                    // reachable over the /window socket of an approved client.
+                    actionEnabled = device.trustedVia != DeviceAuth.TRUSTED_VIA_AUTO,
                     onAction = {
                         val removed = DeviceAuth.revokeTrustedDevice(repo, device.tokenHash)
                         log.info(
@@ -696,7 +760,7 @@ object SettingsDialog {
         SectionHeader("Denied devices")
 
         var devices by remember(refreshKey) { mutableStateOf(DeviceAuth.listDeniedDevices(repo)) }
-        val df = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT) }
+        val df = remember { SimpleDateFormat("d MMM yyyy 'at' HH:mm", Locale.ENGLISH) }
 
         if (devices.isEmpty()) {
             Text(
@@ -707,9 +771,10 @@ object SettingsDialog {
         } else {
             devices.forEach { device ->
                 DeviceRow(
-                    label = "Denied",
+                    title = deviceTitle(null, device.connections),
                     hashPrefix = device.tokenHash.take(10),
-                    lastSeen = "last attempt ${df.format(Date(device.lastSeenEpochMs))} from ${device.lastIp}",
+                    tag = null,
+                    stamp = "Denied ${df.format(Date(device.firstSeenEpochMs))}",
                     connections = device.connections,
                     actionLabel = "Unban",
                     df = df,
@@ -728,15 +793,98 @@ object SettingsDialog {
         }
     }
 
+    /**
+     * The client type is what a user actually recognises a device by
+     * ("Mac", "Android"), so it heads the row. An explicit [label] wins
+     * where one exists \u2014 that is the [DeviceAuth.MCP_LABEL] trust class,
+     * which is a more meaningful name than the type would be.
+     *
+     * The desktop shell reports the generic `"Computer"`; since it only ships
+     * for macOS, that is rendered as "Mac". Interpreting at display time
+     * rather than changing what the client sends means rows already stored as
+     * "Computer" read correctly too, with no new connection entry (the type
+     * is part of a connection's identity, so changing it would fork one).
+     * If the shell ever ships for another platform, this mapping is the lie
+     * to fix \u2014 by sending a real platform, not by extending the guess.
+     *
+     * Called from [TrustedDevicesSection] and [DeniedDevicesSection].
+     *
+     * @param label the persisted trust-class label, or `null` for ordinary
+     *   interactive devices.
+     * @param connections the device's connection history; the most recent
+     *   entry supplies the type.
+     * @return a display title, falling back to "Device" when the type is
+     *   absent or the server's `"Unknown"` placeholder.
+     */
+    private fun deviceTitle(
+        label: String?,
+        connections: List<DeviceAuth.ClientConnectionInfo>,
+    ): String {
+        label?.takeIf { it.isNotBlank() }?.let { return it }
+        val type = connections
+            .maxByOrNull { it.lastSeenEpochMs }
+            ?.type
+            ?.takeIf { it.isNotBlank() && it != DeviceAuth.UNKNOWN_CLIENT_TYPE }
+        return when (type) {
+            null -> "Device"
+            DESKTOP_CLIENT_TYPE -> "Mac"
+            else -> type
+        }
+    }
+
+    /**
+     * Human-readable tag for how a device came to be trusted.
+     *
+     * Called from [TrustedDevicesSection]. Returns `null` for devices
+     * persisted before provenance was recorded, which are deliberately shown
+     * untagged: the approval date still renders, and an absent tag reads as
+     * "predates this" rather than implying a fact we do not have.
+     *
+     * @param via the persisted [DeviceAuth.TRUSTED_VIA_AUTO] / `_QR` /
+     *   `_DIALOG` value, or `null`.
+     * @return the tag to render beside the hash, or `null` for no tag.
+     */
+    private fun viaTag(via: String?): String? = when (via) {
+        DeviceAuth.TRUSTED_VIA_AUTO -> "auto-approved (first install)"
+        DeviceAuth.TRUSTED_VIA_QR -> "paired via QR"
+        DeviceAuth.TRUSTED_VIA_DIALOG -> "approved in dialog"
+        else -> null
+    }
+
+    /**
+     * Render one device as a title line, an approval/denial stamp, and its
+     * address history.
+     *
+     * Called from [TrustedDevicesSection] and [DeniedDevicesSection]. The
+     * most recently used address is always visible and doubles as the "last
+     * seen" line; any older addresses collapse behind a chevron, so the
+     * common single-address device is just two lines and only a device that
+     * has actually roamed can be expanded.
+     *
+     * @param title display name from [deviceTitle].
+     * @param hashPrefix short form of the token hash, shown as `#abc123`.
+     * @param tag optional provenance tag from [viaTag].
+     * @param stamp the approval/denial line, already formatted.
+     * @param connections the device's address history; empty renders as
+     *   "Never connected" (an MCP token minted but never used).
+     * @param actionLabel text for the trailing button ("Revoke"/"Unban").
+     * @param df formatter shared with the caller for stable timestamps.
+     * @param onAction invoked when the trailing button is clicked.
+     * @param actionEnabled false greys the trailing button out; see the
+     *   auto-approved carve-out in [TrustedDevicesSection].
+     * @see ConnectionLine
+     */
     @Composable
     private fun DeviceRow(
-        label: String,
+        title: String,
         hashPrefix: String,
-        lastSeen: String,
+        tag: String?,
+        stamp: String,
         connections: List<DeviceAuth.ClientConnectionInfo>,
         actionLabel: String,
         df: SimpleDateFormat,
         onAction: () -> Unit,
+        actionEnabled: Boolean = true,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -744,72 +892,115 @@ object SettingsDialog {
             verticalAlignment = Alignment.Top,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Row {
-                    Text(label, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(Modifier.width(6.dp))
                     Text(
                         "#$hashPrefix",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp,
                     )
+                    if (tag != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            tag,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                    }
                 }
                 Text(
-                    lastSeen,
+                    stamp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                 )
-                if (connections.isNotEmpty()) {
+                val sorted = remember(connections) {
+                    connections.sortedByDescending { it.lastSeenEpochMs }
+                }
+                if (sorted.isEmpty()) {
                     Text(
-                        "clients:",
+                        "  Never connected",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 2.dp),
                     )
-                    val sorted = connections.sortedByDescending { it.lastSeenEpochMs }
-                    sorted.forEach { c ->
-                        val host = c.hostname?.takeIf { it.isNotBlank() }
-                        val selfIp = c.selfReportedIp?.takeIf { it.isNotBlank() }
-                        val hostPart = when {
-                            host != null && selfIp != null -> "$host ($selfIp)"
-                            host != null -> host
-                            selfIp != null -> selfIp
-                            else -> c.remoteAddress
+                } else {
+                    // Keyed on the hash, not the list position: the sections
+                    // re-read and re-render on refresh, so unkeyed state would
+                    // stay bound to the slot and a revoke would hand this
+                    // device's expansion to whichever row slid up into it.
+                    var expanded by remember(hashPrefix) { mutableStateOf(false) }
+                    val older = sorted.drop(1)
+                    ConnectionLine(
+                        c = sorted.first(),
+                        df = df,
+                        prefix = when {
+                            older.isEmpty() -> "  "
+                            expanded -> "\u25be "
+                            else -> "\u25b8 "
+                        },
+                        onClick = if (older.isEmpty()) null else ({ expanded = !expanded }),
+                    )
+                    if (expanded) {
+                        older.forEach { c ->
+                            ConnectionLine(c = c, df = df, prefix = "   ", onClick = null)
                         }
-                        val lastSeenClient = df.format(Date(c.lastSeenEpochMs))
-                        Text(
-                            "  \u2022 ${c.type} \u2014 $hostPart ($lastSeenClient)",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                        )
                     }
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Button(onClick = onAction) {
+            Button(onClick = onAction, enabled = actionEnabled) {
                 Text(actionLabel)
             }
         }
     }
 
     /**
-     * Enumerate all non-loopback IPv4 addresses on the machine's network
-     * interfaces. Used by the Network section to show available LAN addresses.
+     * Render a single address the device has connected from.
      *
-     * @return distinct list of IPv4 address strings
+     * Called from [DeviceRow] for both the always-visible most-recent line
+     * and each collapsed older one. Leads with `remoteAddress` because that
+     * is the only field here the server observed; the hostname and
+     * self-reported IP are client-supplied and untrusted, so they are
+     * demoted into parentheses where they cannot be mistaken for verified
+     * facts.
+     *
+     * The client type is deliberately absent: [deviceTitle] already heads the
+     * row with it, so repeating it here only added noise — and worse, it
+     * repeated the *raw* type, so a desktop row read "Mac … (Computer)".
+     *
+     * @param c the connection to render.
+     * @param df formatter for the last-seen timestamp, rendered inline after
+     *   the address rather than justified to the far edge.
+     * @param prefix indent or chevron glyph.
+     * @param onClick toggles expansion; `null` renders a non-clickable line.
      */
-    private fun localIpv4Addresses(): List<String> {
-        val result = mutableListOf<String>()
-        runCatching {
-            val nics = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
-            for (nic in nics) {
-                if (!nic.isUp || nic.isLoopback || nic.isVirtual) continue
-                for (addr in nic.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
-                        result.add(addr.hostAddress)
-                    }
-                }
-            }
-        }.onFailure { log.warn("Failed to enumerate network interfaces", it) }
-        return result.distinct()
+    @Composable
+    private fun ConnectionLine(
+        c: DeviceAuth.ClientConnectionInfo,
+        df: SimpleDateFormat,
+        prefix: String,
+        onClick: (() -> Unit)?,
+    ) {
+        val extras = listOfNotNull(
+            c.hostname?.takeIf { it.isNotBlank() },
+            c.selfReportedIp?.takeIf { it.isNotBlank() && it != c.remoteAddress },
+        )
+        val addr =
+            if (extras.isEmpty()) c.remoteAddress
+            else "${c.remoteAddress} (${extras.joinToString(", ")})"
+        // One Text, not an address/timestamp pair justified to opposite
+        // edges: the row is as wide as the dialog, so weighting the address
+        // stranded the timestamp under the action button with a canyon of
+        // empty space between the two facts that belong together.
+        // fillMaxWidth stays so the chevron's click target spans the row.
+        val base = Modifier.fillMaxWidth().padding(top = 2.dp)
+        Row(modifier = if (onClick != null) base.clickable(onClick = onClick) else base) {
+            Text(
+                "$prefix$addr · ${df.format(Date(c.lastSeenEpochMs))}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+        }
     }
+
 }

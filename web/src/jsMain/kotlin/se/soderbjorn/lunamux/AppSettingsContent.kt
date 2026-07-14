@@ -13,18 +13,17 @@
  * Contents (in order):
  *  1. A **navigation** section of full-width buttons that jump to the
  *     other settings surfaces:
+ *       - **"Server & Security…"** — dispatches the same
+ *         [WindowCommand.OpenSettings] the old macOS app-menu entry did,
+ *         surfacing the JVM Swing Settings dialog (device trust, pairing).
+ *         Rendered first, and only shown when running inside the bundled
+ *         Electron app ([isElectronClient]) — the dialog opens on the
+ *         server's desktop, which a remote browser can't see.
  *       - **"Themes"** / **"Appearance"** — activate the toolkit's topbar
  *         Theme Manager / Appearance buttons (via [activateTopbarButton]),
  *         so they have the exact same effect — including the mutual
  *         exclusion that closes this sidebar — as clicking those toolbar
  *         icons directly.
- *       - **"Server Settings"** — dispatches the same
- *         [WindowCommand.OpenSettings] the old macOS app-menu entry did,
- *         surfacing the JVM Swing Settings dialog. Rendered last, as a
- *         deliberately low-prominence ("muted") button, and only shown
- *         when running inside the bundled Electron app ([isElectronClient])
- *         — the dialog opens on the server's desktop, which a remote
- *         browser can't see.
  *  2. A **General** section with persisted toggles for stable,
  *     enabled-by-default features that have graduated out of Experimental:
  *       - **Enable 3D app switcher** (ships on) plus its dependent **style**
@@ -211,9 +210,13 @@ private const val ICON_APPEARANCE =
 private const val ICON_HOTKEYS =
     """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="10"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="18" y1="10" x2="18" y2="10"/><line x1="8" y1="14" x2="16" y2="14"/></svg>"""
 
-/** Monitor glyph for the "Server Settings" navigation button. */
-private const val ICON_SERVER_SETTINGS =
-    """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>"""
+/**
+ * Padlock glyph for the "Server & Security…" navigation button, matching the
+ * stroke weight and 24-unit box of the other nav glyphs. The dialog it opens
+ * owns device trust and pairing, so the mark leads on the security half.
+ */
+private const val ICON_SERVER_SECURITY =
+    """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"""
 
 /**
  * Question-mark-in-a-circle glyph for the per-setting help trigger. Rendered
@@ -524,16 +527,19 @@ fun buildAppSettingsContent(): HTMLElement {
  * The top navigation section: a stack of full-width jump buttons.
  *
  * Order:
- *  1. **"Themes"** — same effect as the toolkit's topbar palette button.
- *  2. **"Appearance"** — same effect as the toolkit's topbar "Aa" button.
- *  3. **"Server Settings"** (muted, Electron-only) — opens the JVM
- *     Swing dialog on the server's desktop. Useful only when the client IS
- *     the server's desktop (the bundled Electron app); for a remote browser
- *     the dialog would pop on another machine, so the button is hidden.
+ *  1. **"Server & Security…"** (Electron-only) — opens the JVM Swing dialog
+ *     on the server's desktop. Heads the section: it is the only jump that
+ *     leaves the browser, and it owns device trust and pairing. Useful only
+ *     when the client IS the server's desktop (the bundled Electron app);
+ *     for a remote browser the dialog would pop on another machine, so the
+ *     button is hidden and the section simply starts at "Themes".
+ *  2. **"Themes"** — same effect as the toolkit's topbar palette button.
+ *  3. **"Appearance"** — same effect as the toolkit's topbar "Aa" button.
+ *  4. **"Keyboard Shortcuts"** — opens the toolkit's hotkeys sidebar.
  *
- * The Themes / Appearance buttons are shown on every client (the toolkit
- * panels they open work in a plain browser too); only the server-settings
- * jump is gated behind [isElectronClient].
+ * The last three are shown on every client (the toolkit panels they open
+ * work in a plain browser too); only the server-settings jump is gated
+ * behind [isElectronClient].
  *
  * @return the freshly-built navigation container element.
  */
@@ -541,16 +547,21 @@ private fun buildNavigationSection(): HTMLElement {
     val nav = document.createElement("div") as HTMLElement
     nav.className = "lunamux-app-settings-nav"
 
+    if (isElectronClient) {
+        nav.appendChild(buildNavButton(
+            label = "Server & Security…",
+            iconHtml = ICON_SERVER_SECURITY,
+            onClick = { launchCmd(WindowCommand.OpenSettings) },
+        ))
+    }
     nav.appendChild(buildNavButton(
         label = "Themes",
         iconHtml = ICON_THEMES,
-        muted = false,
         onClick = { activateTopbarButton(TOPBAR_TITLE_THEMES) },
     ))
     nav.appendChild(buildNavButton(
         label = "Appearance",
         iconHtml = ICON_APPEARANCE,
-        muted = false,
         onClick = { activateTopbarButton(TOPBAR_TITLE_APPEARANCE) },
     ))
     // "Hotkeys" opens the dedicated keyboard-shortcuts sidebar. Unlike
@@ -560,17 +571,8 @@ private fun buildNavigationSection(): HTMLElement {
     nav.appendChild(buildNavButton(
         label = "Keyboard Shortcuts",
         iconHtml = ICON_HOTKEYS,
-        muted = false,
         onClick = { openHotkeysSidebar() },
     ))
-    if (isElectronClient) {
-        nav.appendChild(buildNavButton(
-            label = "Server Settings",
-            iconHtml = ICON_SERVER_SETTINGS,
-            muted = true,
-            onClick = { launchCmd(WindowCommand.OpenSettings) },
-        ))
-    }
 
     return nav
 }
@@ -578,24 +580,24 @@ private fun buildNavigationSection(): HTMLElement {
 /**
  * Builds one full-width navigation button (leading icon + label).
  *
+ * Every jump in this section carries the same visual weight: they are all
+ * routes to a settings surface, and the one that used to recede ("Server &
+ * Security…") is the entry point for device pairing and trust, which is no
+ * more secondary than picking a theme.
+ *
  * @param label    the visible button text.
  * @param iconHtml inline SVG markup for the leading glyph.
- * @param muted    when `true`, applies the low-prominence modifier class so
- *   the button recedes visually (used for the secondary "Server Settings"
- *   jump).
  * @param onClick  invoked on click.
  * @return the freshly-built button element.
  */
 private fun buildNavButton(
     label: String,
     iconHtml: String,
-    muted: Boolean,
     onClick: () -> Unit,
 ): HTMLElement {
     val button = document.createElement("button") as HTMLElement
     (button.asDynamic()).type = "button"
-    button.className = "lunamux-app-settings-nav-button" +
-        if (muted) " lunamux-app-settings-nav-button--muted" else ""
+    button.className = "lunamux-app-settings-nav-button"
     // innerHTML seeds the leading icon; the label then rides in its own
     // span so the flex row can give it the remaining width.
     button.innerHTML = iconHtml
