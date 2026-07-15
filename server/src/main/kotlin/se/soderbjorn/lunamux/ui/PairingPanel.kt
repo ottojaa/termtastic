@@ -43,11 +43,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.FilterQuality
@@ -74,6 +77,13 @@ import java.awt.image.BufferedImage
 import java.net.InetAddress
 
 private val log = LoggerFactory.getLogger("se.soderbjorn.lunamux.ui.PairingPanel")
+
+/**
+ * How often the panel checks whether the QR on screen has been claimed. Only
+ * runs while the pairing panel is open, and a pairing is a human-paced event,
+ * so this is deliberately lazy rather than a tight loop.
+ */
+private const val CLAIM_POLL_MS: Long = 1_000
 
 /**
  * Height cap on the expanded address list before it scrolls internally.
@@ -104,9 +114,26 @@ private val ADDRESS_LIST_MAX_HEIGHT = 190.dp
  */
 @Composable
 internal fun PairingPanel(port: Int, onBack: () -> Unit) {
-    val token = remember { PairingTokens.mint() }
+    // A token is claimable by exactly one device, so the code on screen goes
+    // dead the moment someone scans it. Pairing a second phone from the same
+    // still-displayed QR would then skip the pairing path and land in the
+    // approval dialog, so mint a replacement as soon as the current one is
+    // claimed and let the QR redraw.
+    var token by remember { mutableStateOf(PairingTokens.mint()) }
+    val minted = remember { mutableStateListOf(token) }
+    LaunchedEffect(token) {
+        while (PairingTokens.isClaimed(token).not()) {
+            delay(CLAIM_POLL_MS)
+        }
+        // The claimed token is deliberately left alive: its device attaches it
+        // to every request until the connect completes, and killing it here
+        // would drop that device back into the dialog we are avoiding. It
+        // lapses on its own at PairingTokens.TTL_MS.
+        token = PairingTokens.mint()
+        minted.add(token)
+    }
     DisposableEffect(Unit) {
-        onDispose { PairingTokens.invalidate(token) }
+        onDispose { minted.forEach { PairingTokens.invalidate(it) } }
     }
 
     val fingerprint = DeviceAuth.serverCertFingerprintHex

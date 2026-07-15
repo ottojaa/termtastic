@@ -7,9 +7,9 @@
  * [PairingTokens.consume] to trust the device without an approval dialog.
  *
  * Tokens are 256-bit SecureRandom values. Only their SHA-256 hashes are held
- * here (never the raw string), each entry is single-use, and every entry
- * expires [PairingTokens.TTL_MS] after minting — so a photographed QR code
- * goes stale in minutes and can never be replayed after use.
+ * here (never the raw string), each entry is claimable by a single device, and
+ * every entry expires [PairingTokens.TTL_MS] after minting — so a photographed
+ * QR code goes stale in minutes and can never be redeemed by a second device.
  *
  * State is process-lifetime and deliberately not persisted: a pairing token
  * is only meaningful while the pairing dialog is on screen.
@@ -36,13 +36,23 @@ object PairingTokens {
     /** Lifetime of a minted token; QR codes older than this must be re-shown. */
     const val TTL_MS: Long = 5 * 60_000
 
-    /** sha256-hex(raw token) → expiry epoch-millis. Guarded by @Synchronized. */
-    private val pending = HashMap<String, Long>()
+    /**
+     * A minted token's server-side state.
+     *
+     * [claimedBy] is null until the first successful [consume] and then holds
+     * the sha256 of the device token that spent it, which is what makes the
+     * single-use rule "one token, one device" rather than "one token, one
+     * request" — see [consume].
+     */
+    private data class Entry(val expiresAtMs: Long, var claimedBy: String? = null)
+
+    /** sha256-hex(raw token) → entry. Guarded by @Synchronized. */
+    private val pending = HashMap<String, Entry>()
 
     /**
-     * Mint a fresh single-use pairing token and register its hash for
-     * [TTL_MS]. Called by the pairing dialog each time it opens, so every
-     * showing of the QR carries a brand-new secret.
+     * Mint a fresh pairing token, claimable by one device, and register its
+     * hash for [TTL_MS]. Called by the pairing dialog each time it opens, so
+     * every showing of the QR carries a brand-new secret.
      *
      * @param nowMs the current clock, injectable for tests.
      * @return the raw base64url token to embed in the QR payload — the only
@@ -56,34 +66,82 @@ object PairingTokens {
         val bytes = ByteArray(32)
         SecureRandom().nextBytes(bytes)
         val raw = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-        pending[sha256Hex(raw)] = nowMs + TTL_MS
+        pending[sha256Hex(raw)] = Entry(expiresAtMs = nowMs + TTL_MS)
         log.info("PairingTokens: minted pairing token (ttl {} s, {} outstanding)", TTL_MS / 1000, pending.size)
         return raw
     }
 
     /**
-     * Spend [candidate] if it matches a live token. Comparison is
-     * constant-time on the hash, the entry is removed on success
-     * (single-use), and stale entries are evicted first.
+     * Spend [candidate] on behalf of the device identified by [deviceHash].
+     * Comparison is constant-time on the hash and stale entries are evicted
+     * first.
+     *
+     * The first caller claims the token for its device. Later calls from that
+     * *same* device succeed idempotently until the entry expires; calls from
+     * any other device fail. This is deliberate: a scanning client attaches
+     * its `pairToken` to every request until the connect succeeds, so `/window`,
+     * `/api/ui-settings` and the `/pty` sockets routinely present one token
+     * concurrently. Removing the entry on first spend made all but one of those
+     * race the trusted-device write and fall through to the approval dialog —
+     * a spurious prompt in the middle of a pairing that had already succeeded.
+     * Claiming rather than removing keeps the single-use guarantee where it
+     * actually matters (a second device cannot replay a photographed QR) while
+     * letting one device's own parallel requests agree.
      *
      * Called by [DeviceAuth]'s pairing approval path on every connect that
      * carries a `pairToken`.
      *
      * @param candidate the raw token string received from the client.
+     * @param deviceHash sha256 of the connecting device's token; the identity
+     *   the claim is bound to.
      * @param nowMs the current clock, injectable for tests.
-     * @return `true` exactly once per minted token, within its TTL.
+     * @return `true` if this device may pair with [candidate] right now.
+     * @see mint
      */
     @Synchronized
-    fun consume(candidate: String, nowMs: Long = System.currentTimeMillis()): Boolean {
+    fun consume(candidate: String, deviceHash: String, nowMs: Long = System.currentTimeMillis()): Boolean {
         evictExpired(nowMs)
-        if (candidate.isBlank()) return false
+        if (candidate.isBlank() || deviceHash.isBlank()) return false
         val hash = sha256Hex(candidate)
         val match = pending.keys.firstOrNull {
             MessageDigest.isEqual(it.toByteArray(), hash.toByteArray())
         } ?: return false
-        pending.remove(match)
-        log.info("PairingTokens: pairing token consumed ({} outstanding)", pending.size)
-        return true
+        val entry = pending.getValue(match)
+        val claimedBy = entry.claimedBy
+        if (claimedBy == null) {
+            entry.claimedBy = deviceHash
+            log.info("PairingTokens: pairing token claimed by device {}", deviceHash.take(10))
+            return true
+        }
+        if (MessageDigest.isEqual(claimedBy.toByteArray(), deviceHash.toByteArray())) {
+            // Same device presenting its own token again: no new grant, just
+            // agreement with the claim it already holds.
+            return true
+        }
+        log.info(
+            "PairingTokens: refusing pairing token already claimed by another device (requester {})",
+            deviceHash.take(10),
+        )
+        return false
+    }
+
+    /**
+     * Has [rawToken] already been claimed by a device?
+     *
+     * The pairing panel polls this so it can mint a replacement once the
+     * on-screen QR has been spent: a displayed code that silently stops
+     * working is what sends the *second* device someone scans into the
+     * approval dialog instead of pairing it.
+     *
+     * @param rawToken the raw token returned by [mint].
+     * @return `true` if a device has claimed it; `false` if it is unclaimed,
+     *   expired, or unknown.
+     * @see consume
+     */
+    @Synchronized
+    fun isClaimed(rawToken: String, nowMs: Long = System.currentTimeMillis()): Boolean {
+        evictExpired(nowMs)
+        return pending[sha256Hex(rawToken)]?.claimedBy != null
     }
 
     /**
@@ -101,7 +159,7 @@ object PairingTokens {
 
     /** Drop entries whose expiry has passed; callers hold the monitor. */
     private fun evictExpired(nowMs: Long) {
-        pending.entries.removeAll { it.value <= nowMs }
+        pending.entries.removeAll { it.value.expiresAtMs <= nowMs }
     }
 
     /** Lowercase-hex SHA-256, matching [DeviceAuth]'s token hashing. */

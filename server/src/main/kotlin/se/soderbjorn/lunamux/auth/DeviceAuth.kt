@@ -34,11 +34,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import se.soderbjorn.lunamux.ui.SettingsDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +61,7 @@ import androidx.compose.ui.window.DialogWindow
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberDialogState
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -202,12 +205,65 @@ object DeviceAuth {
     // The CompletableDeferred is completed with the user's decision.
     private data class PendingApproval(
         val client: ClientInfo,
-        val result: CompletableDeferred<Boolean>,
+        val result: CompletableDeferred<ApprovalChoice>,
     )
 
     private var pendingApproval by mutableStateOf<PendingApproval?>(null)
 
     enum class Decision { APPROVED, REJECTED, HEADLESS }
+
+    /**
+     * What the user did with the approval dialog.
+     *
+     * [DISMISS] exists so closing the window is not silently equivalent to
+     * [DENY]: only [APPROVE] and [DENY] persist anything, while [DISMISS]
+     * rejects the connection at hand and leaves the device's status untouched
+     * so a later attempt prompts again.
+     *
+     * @see promptOrReject
+     */
+    internal enum class ApprovalChoice { APPROVE, DENY, DISMISS }
+
+    /** The real prompt: shows the Compose dialog and waits for the user. */
+    internal val defaultApprovalPrompt: suspend (ClientInfo) -> ApprovalChoice = { showApprovalDialog(it) }
+
+    /**
+     * Seam for the approval prompt. Production points at the Compose dialog;
+     * tests swap it to drive the deny/dismiss branches, which are otherwise
+     * unreachable headlessly because they run off a real window, and restore
+     * [defaultApprovalPrompt] afterwards.
+     *
+     * @see showApprovalDialog
+     */
+    internal var approvalPrompt: suspend (ClientInfo) -> ApprovalChoice = defaultApprovalPrompt
+
+    /**
+     * Seam for the headless check that guards [approvalPrompt]. Production
+     * asks the JVM; tests force it false so they can drive [approvalPrompt]
+     * (the test JVM is headless, which would otherwise short-circuit to
+     * [Decision.HEADLESS] before the prompt is ever reached).
+     */
+    internal var headlessCheck: () -> Boolean = { GraphicsEnvironment.isHeadless() }
+
+    /**
+     * Seam for the wall clock used by the prompt-suppression caches. Tests
+     * substitute it to span [RECENT_DECISION_TTL_MS] without sleeping, the way
+     * a dialog left open on a real desktop does.
+     */
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
+    /**
+     * Drop the short-lived prompt suppressions ([recentDecisions],
+     * [recentIpDenials]). Both normally lapse on their own within seconds; this
+     * exists so tests can stand for "…and later, once they had", and so that
+     * this object's process-wide state can't leak between them.
+     */
+    internal fun clearTransientSuppressions() = runBlocking {
+        approvalMutex.withLock {
+            recentDecisions.clear()
+            recentIpDenials.clear()
+        }
+    }
 
     /**
      * Self-reported client metadata sent alongside the device token. All
@@ -887,7 +943,7 @@ object DeviceAuth {
             )
             return null
         }
-        if (!PairingTokens.consume(pairToken)) return null
+        if (!PairingTokens.consume(pairToken, deviceHash)) return null
         val hash = persistTrustedDevice(token, client, repo, TRUSTED_VIA_QR)
         log.info(
             "DeviceAuth: pairing token consumed; trusted device from {} hashPrefix={}",
@@ -957,7 +1013,7 @@ object DeviceAuth {
     ): Decision = approvalMutex.withLock {
         val remoteAddress = client.remoteAddress
         val hash = tokenToPersist?.let { sha256Hex(it) }
-        val now = System.currentTimeMillis()
+        val now = clock()
 
         // Evict expired cache entries so the maps don't grow without bound.
         recentDecisions.entries.removeAll { it.value.expiresAtMs <= now }
@@ -993,23 +1049,53 @@ object DeviceAuth {
             return@withLock Decision.REJECTED
         }
 
-        if (GraphicsEnvironment.isHeadless()) {
+        if (headlessCheck()) {
             log.warn(
                 "Rejecting connection from {}: no token or unknown token, and JVM is headless so no approval dialog can be shown",
                 remoteAddress,
             )
             return@withLock Decision.HEADLESS
         }
-        val approved = showApprovalDialog(client)
-        if (!approved) {
-            log.info("User denied device from {}", remoteAddress)
+        val choice = approvalPrompt(client)
+        // Re-read the clock: [now] was taken before the dialog went up, and a
+        // dialog sits on a human's desk for as long as it takes them to read
+        // it. Stamping the suppressions and the persisted entry with [now]
+        // would date them from when the prompt *opened* — so a dialog left up
+        // longer than RECENT_DECISION_TTL_MS wrote an already-expired cache
+        // entry, and every connection queued behind it re-prompted and
+        // appended its own duplicate denial.
+        val decidedAt = clock()
+
+        // Dismissal is not a denial. The user closed the window without
+        // deciding, so reject the connection in hand but persist nothing: no
+        // denied entry, no first-decision latch. The in-memory suppressions
+        // below still apply — they expire on their own, which is exactly the
+        // "not now" this means — so the sibling requests racing this one
+        // (/window + /api/ui-settings + several /pty sockets on a single boot)
+        // don't each pop their own dialog.
+        if (choice == ApprovalChoice.DISMISS) {
+            log.info("User dismissed the approval dialog for {}; no decision persisted", remoteAddress)
             if (!isLoopback(remoteAddress)) {
-                recentIpDenials[remoteAddress] = now
+                recentIpDenials[remoteAddress] = decidedAt
             }
             if (hash != null) {
                 recentDecisions[hash] = CachedDecision(
                     Decision.REJECTED,
-                    now + RECENT_DECISION_TTL_MS,
+                    decidedAt + RECENT_DECISION_TTL_MS,
+                )
+            }
+            return@withLock Decision.REJECTED
+        }
+
+        if (choice == ApprovalChoice.DENY) {
+            log.info("User denied device from {}", remoteAddress)
+            if (!isLoopback(remoteAddress)) {
+                recentIpDenials[remoteAddress] = decidedAt
+            }
+            if (hash != null) {
+                recentDecisions[hash] = CachedDecision(
+                    Decision.REJECTED,
+                    decidedAt + RECENT_DECISION_TTL_MS,
                 )
                 // Persist the denial so the next attempt from this token
                 // doesn't re-prompt. The entry is revocable from the settings
@@ -1019,17 +1105,36 @@ object DeviceAuth {
                     hostname = client.hostname,
                     selfReportedIp = client.selfReportedIp,
                     remoteAddress = remoteAddress,
-                    firstSeenEpochMs = now,
-                    lastSeenEpochMs = now,
+                    firstSeenEpochMs = decidedAt,
+                    lastSeenEpochMs = decidedAt,
                 )
                 val added = DeniedDevice(
                     tokenHash = hash,
-                    firstSeenEpochMs = now,
-                    lastSeenEpochMs = now,
+                    firstSeenEpochMs = decidedAt,
+                    lastSeenEpochMs = decidedAt,
                     lastIp = remoteAddress,
                     connections = listOf(initialConnection),
                 )
-                updateDenied(repo) { current -> DeniedDevices(current.devices + added) }
+                updateDenied(repo) { current ->
+                    // Fold into the existing row rather than appending a twin:
+                    // one device denied twice is still one denied device, and
+                    // duplicates read as separate phones in the settings list.
+                    // Mirrors the re-check persistTrustedDevice does under the
+                    // same lock.
+                    if (current.devices.any { it.tokenHash == hash }) {
+                        DeniedDevices(
+                            current.devices.map {
+                                if (it.tokenHash == hash) it.copy(
+                                    lastSeenEpochMs = decidedAt,
+                                    lastIp = remoteAddress,
+                                    connections = mergeConnections(it.connections, client, decidedAt),
+                                ) else it
+                            },
+                        )
+                    } else {
+                        DeniedDevices(current.devices + added)
+                    }
+                }
                 // A deny is a decision too: the user was here and said no, so
                 // this install is no longer fresh even if the denial is later
                 // unbanned and the list goes empty again.
@@ -1049,7 +1154,7 @@ object DeviceAuth {
         persistTrustedDevice(tokenToPersist, client, repo, TRUSTED_VIA_DIALOG)
         recentDecisions[hash] = CachedDecision(
             Decision.APPROVED,
-            now + RECENT_DECISION_TTL_MS,
+            decidedAt + RECENT_DECISION_TTL_MS,
         )
         // Read back immediately and log what we just persisted so we can
         // tell mid-debug if the write/read round-trip is broken.
@@ -1070,8 +1175,8 @@ object DeviceAuth {
      * the returned [CompletableDeferred] is completed when the user clicks OK
      * or dismisses the window.
      */
-    private suspend fun showApprovalDialog(client: ClientInfo): Boolean {
-        val deferred = CompletableDeferred<Boolean>()
+    private suspend fun showApprovalDialog(client: ClientInfo): ApprovalChoice {
+        val deferred = CompletableDeferred<ApprovalChoice>()
         // Mutate on the AWT EDT so Compose Desktop's recomposer observes the change.
         SwingUtilities.invokeLater {
             pendingApproval = PendingApproval(client, deferred)
@@ -1095,13 +1200,13 @@ object DeviceAuth {
         if (pending != null) {
             ApprovalDialog(
                 client = pending.client,
-                onResult = { approved -> pending.result.complete(approved) },
+                onResult = { choice -> pending.result.complete(choice) },
             )
         }
     }
 
     @Composable
-    private fun ApprovalDialog(client: ClientInfo, onResult: (Boolean) -> Unit) {
+    private fun ApprovalDialog(client: ClientInfo, onResult: (ApprovalChoice) -> Unit) {
         var selectedApprove by remember { mutableStateOf<Boolean?>(null) }
 
         val dialogState = rememberDialogState(
@@ -1110,7 +1215,8 @@ object DeviceAuth {
         )
 
         DialogWindow(
-            onCloseRequest = { onResult(false) },
+            // Closing the window decides nothing \u2014 see ApprovalChoice.DISMISS.
+            onCloseRequest = { onResult(ApprovalChoice.DISMISS) },
             title = "Lunamux \u2014 New device",
             state = dialogState,
             icon = iconPainter,
@@ -1202,8 +1308,23 @@ object DeviceAuth {
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.End,
                         ) {
+                            // Gives dismissal a visible home. Without it the
+                            // only way out without deciding is the window's
+                            // close box, which reads as an accident.
+                            TextButton(onClick = { onResult(ApprovalChoice.DISMISS) }) {
+                                Text("Not now")
+                            }
+                            Spacer(Modifier.width(8.dp))
                             Button(
-                                onClick = { onResult(selectedApprove == true) },
+                                onClick = {
+                                    onResult(
+                                        if (selectedApprove == true) {
+                                            ApprovalChoice.APPROVE
+                                        } else {
+                                            ApprovalChoice.DENY
+                                        },
+                                    )
+                                },
                                 enabled = selectedApprove != null,
                             ) {
                                 Text("OK")
@@ -1283,7 +1404,7 @@ object DeviceAuth {
      * device with [tokenHash]. No-op if the device was concurrently revoked.
      */
     private fun touchTrustedDevice(repo: SettingsRepository, tokenHash: String, client: ClientInfo) {
-        val now = System.currentTimeMillis()
+        val now = clock()
         updateTrusted(repo) { current ->
             TrustedDevices(
                 current.devices.map {
@@ -1299,7 +1420,7 @@ object DeviceAuth {
 
     /** Denied-list counterpart of [touchTrustedDevice]. */
     private fun touchDeniedDevice(repo: SettingsRepository, tokenHash: String, client: ClientInfo) {
-        val now = System.currentTimeMillis()
+        val now = clock()
         updateDenied(repo) { current ->
             DeniedDevices(
                 current.devices.map {

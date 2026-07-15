@@ -213,6 +213,67 @@ class DeviceAuthPairingTest {
     }
 
     /**
+     * One device, one pairing token, many simultaneous requests — the shape a
+     * real scan produces, since the client attaches its pairToken to /window,
+     * /api/ui-settings and every /pty socket until the connect succeeds.
+     *
+     * A remove-on-first-spend token let exactly one of these win and dropped
+     * the rest through to the approval dialog, so a pairing that had already
+     * succeeded still popped a prompt. Every request must resolve to APPROVED
+     * off the token's own claim.
+     */
+    @Test
+    fun `one device's parallel requests all pair off a single token`() {
+        val repo = tempRepo()
+        repo.setAllowRemoteConnections(true)
+        val pairToken = PairingTokens.mint()
+        val n = 8
+        val ready = CountDownLatch(n)
+        val go = CountDownLatch(1)
+        val decisions = java.util.Collections.synchronizedList(mutableListOf<DeviceAuth.Decision?>())
+        val threads = (0 until n).map {
+            thread {
+                ready.countDown()
+                go.await()
+                decisions.add(
+                    DeviceAuth.checkFastPath("device-token-parallel", remoteClient(), repo, pairToken),
+                )
+            }
+        }
+        ready.await()
+        go.countDown()
+        threads.forEach { it.join() }
+
+        // null would mean "fall through to the interactive prompt" — the bug.
+        assertEquals(n, decisions.size)
+        assertTrue(
+            decisions.all { it == DeviceAuth.Decision.APPROVED },
+            "every parallel request must pair, got $decisions",
+        )
+        assertEquals(1, DeviceAuth.listTrustedDevices(repo).size, "the device must be trusted exactly once")
+    }
+
+    @Test
+    fun `a second device cannot claim an already-claimed pairing token`() {
+        val repo = tempRepo()
+        repo.setAllowRemoteConnections(true)
+        val pairToken = PairingTokens.mint()
+
+        assertEquals(
+            DeviceAuth.Decision.APPROVED,
+            DeviceAuth.checkFastPath("device-first", remoteClient("192.168.1.60"), repo, pairToken),
+        )
+
+        // Single-use still holds where it matters: someone who photographed the
+        // QR must not be able to redeem it behind the real device's back.
+        assertNull(
+            DeviceAuth.checkFastPath("device-second", remoteClient("192.168.1.61"), repo, pairToken),
+            "a foreign device must fall through to the prompt, not pair",
+        )
+        assertEquals(1, DeviceAuth.listTrustedDevices(repo).size)
+    }
+
+    /**
      * Seed a trusted entry in the pre-provenance on-disk format: no
      * `trustedVia` key at all, exactly as [DeviceAuth] wrote it before the
      * field existed. Hand-rolled rather than round-tripped through the
