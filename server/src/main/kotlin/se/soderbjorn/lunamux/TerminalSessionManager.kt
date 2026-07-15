@@ -6,7 +6,8 @@
  * `s<n>` ids, and torn down when the last referencing pane closes.
  *
  * [TerminalSession] is a single PTY-backed session: it owns the
- * `PtyProcess`, replays a 128 kB ring buffer to reconnecting clients, runs
+ * `PtyProcess`, replays recent output to reconnecting clients from a pair of
+ * ring buffers split by screen buffer (see [AltScreenTracker]), runs
  * a headless [ScreenEmulator] in parallel for AI-state detection, and
  * negotiates a per-PTY winsize via latest-active-client arbitration
  * (tmux `window-size latest` semantics — see
@@ -44,6 +45,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import se.soderbjorn.lunamux.pty.AltScreenTracker
 import se.soderbjorn.lunamux.pty.ClientSizeArbiter
 import se.soderbjorn.lunamux.pty.OscScanner
 import se.soderbjorn.lunamux.pty.ProcessCwdReader
@@ -179,6 +181,18 @@ interface TermSession {
 
     /** Recent output for reconnect replay. */
     fun snapshot(): ByteArray
+
+    /**
+     * Recent output to persist for a restore after the server exits.
+     *
+     * Split from [snapshot] because a restore replays into a fresh shell with
+     * the recorded program gone, while a reconnect attaches to one that is
+     * still running and still painting. Defaults to [snapshot] for sessions
+     * with no such distinction to draw.
+     *
+     * @see ScrollbackSaver.saveAll
+     */
+    fun persistSnapshot(): ByteArray = snapshot()
 
     /** The currently rendered viewport as plain text. */
     fun screenText(): String
@@ -443,12 +457,53 @@ class TerminalSession private constructor(
 
     private val screen = ScreenEmulator(initialCols = initialCols, initialRows = initialRows)
 
-    // Ring buffer of recent bytes for reconnect replay.
-    private val ringCapacity = 128 * 1024
-    private val ring = ByteArray(ringCapacity)
-    private var ringSize = 0
-    private var ringStart = 0
+    // Recent output for replay, split by which screen buffer produced it.
+    // Interleaving the two in one ring is what made restored scrollback show a
+    // dead TUI's frame where the shell history belonged: a full-screen program
+    // out-writes the ring many times over, so the `?1049h` that entered the
+    // alternate buffer slides off the head and the surviving redraw bytes
+    // replay into the *normal* buffer of a fresh terminal.
+    //
+    // [mainRing] therefore only ever holds normal-buffer traffic. It is the
+    // ceiling on how much scrollback survives a reconnect or a restart (both
+    // reset the client grid and reseed it from here), and it is what gets
+    // persisted — so its size is a memory *and* SQLite write-volume cost per
+    // active pane. Excluding redraw traffic is what lets it stay small: a TUI
+    // can no longer evict real history.
+    private val mainRing = ByteRing(MAIN_RING_CAPACITY)
+
+    // Traffic from the full-screen program currently holding the alternate
+    // buffer, replayed to clients reconnecting mid-session so a running vim or
+    // Claude Code still appears. Discarded the moment the program returns to
+    // the normal buffer: at that point the frame is gone from a real terminal
+    // too, and keeping it would resurrect it as phantom scrollback.
+    private val altRing = ByteRing(ALT_RING_CAPACITY)
+
+    private val altTracker = AltScreenTracker()
     private val ringLock = Any()
+
+    /**
+     * Routes tracked output into [mainRing] / [altRing]. Guarded by
+     * [ringLock] via its callers; never invoked concurrently.
+     */
+    private val ringSink = object : AltScreenTracker.Sink {
+        override fun onSegment(chunk: ByteArray, from: Int, until: Int, alt: Boolean) {
+            (if (alt) altRing else mainRing).append(chunk, from, until)
+        }
+
+        override fun onSpanClosed() {
+            altRing.clear()
+        }
+
+        override fun onOrphanExit() {
+            // Only meaningful while ingesting a blob persisted by a server
+            // that predates span tracking (see [ingestRestoredBlob]).
+            if (ingestingRestoredBlob) mainRing.clear()
+        }
+    }
+
+    /** True only for the duration of the restored-blob ingest in `init`. */
+    private var ingestingRestoredBlob = false
 
     @Volatile
     private var bytesWritten: Long = 0
@@ -457,12 +512,7 @@ class TerminalSession private constructor(
 
     init {
         if (initialScrollback != null && initialScrollback.isNotEmpty()) {
-            // Blobs persisted by older server versions still contain terminal
-            // query sequences (DSR, DA, OSC color reads, …); strip them once
-            // at ingestion so every future replay of this ring is clean.
-            // Newly persisted blobs are already sanitized (the saver persists
-            // [snapshot], which strips on the way out).
-            appendToRing(ReplaySanitizer.stripQueries(initialScrollback))
+            ingestRestoredBlob(initialScrollback)
             // The restored scrollback may contain DECSET sequences from a
             // full-screen app (vim, htop, …) that died with the old server:
             // mouse tracking, focus reporting, bracketed paste, application
@@ -470,14 +520,59 @@ class TerminalSession private constructor(
             // the client terminal generating mouse/focus escape reports that
             // the fresh shell receives as garbage input — and nothing ever
             // sends the matching DECRST (issue #91). Neutralize those modes
-            // right here in the ring, before the marker, so every future
-            // replay of this scrollback ends in a sane state. The new shell's
-            // own output follows later in the ring and re-enables anything it
-            // actually wants (e.g. readline's bracketed paste).
-            appendToRing(RESTORE_MODE_RESET)
-            val marker = "\r\n\r\n[2m[session restored — previous process ended][0m\r\n\r\n"
-                .toByteArray(Charsets.UTF_8)
-            appendToRing(marker)
+            // right here in the ring, before the new shell's output, so every
+            // future replay of this scrollback ends in a sane state. The new
+            // shell's own output follows later in the ring and re-enables
+            // anything it actually wants (e.g. readline's bracketed paste).
+            //
+            // Appended straight to [mainRing] rather than through the tracker:
+            // it carries an alternate-buffer *exit*, which the tracker would
+            // (correctly, for real PTY output) read as evidence that
+            // everything before it was orphaned TUI paint.
+            synchronized(ringLock) {
+                mainRing.append(RESTORE_MODE_RESET, 0, RESTORE_MODE_RESET.size)
+                // Blank line so the restored scrollback doesn't run straight
+                // into the new shell's first prompt.
+                val gap = "\r\n\r\n".toByteArray(Charsets.UTF_8)
+                mainRing.append(gap, 0, gap.size)
+            }
+        }
+    }
+
+    /**
+     * Load a persisted scrollback blob into [mainRing], dropping any
+     * alternate-buffer content it carries.
+     *
+     * Blobs written by the current server hold normal-buffer bytes only, plus
+     * (when a program was mid-flight) an inert rendered frame — nothing here
+     * has to fire. The work is for blobs persisted *before* spans were
+     * tracked, which are raw interleaved rings:
+     *  - A complete alternate span is recognized and discarded like any other.
+     *  - A span whose enter sequence was already evicted looks like an exit
+     *    with nothing open. Everything before it is then orphaned TUI paint,
+     *    not scrollback, so the ring is dropped up to that point — this is the
+     *    one-time cleanup that stops a dead program's frame from reappearing
+     *    after upgrading. It can in principle discard real history if a
+     *    program emitted a defensive `?1049l` it never matched with an enter;
+     *    a lost blob tail beats a permanently corrupted restore.
+     *
+     * The tracker is reset afterwards so a blob that ends mid-span cannot
+     * misroute the *live* shell's first bytes into [altRing].
+     */
+    private fun ingestRestoredBlob(blob: ByteArray) = synchronized(ringLock) {
+        ingestingRestoredBlob = true
+        try {
+            // Older blobs still contain terminal query sequences (DSR, DA, OSC
+            // color reads, …); strip them once at ingestion so every future
+            // replay of this ring is clean. Newly persisted blobs are already
+            // sanitized (the saver persists [persistSnapshot], which strips on
+            // the way out).
+            val clean = ReplaySanitizer.stripQueries(blob)
+            altTracker.feed(clean, clean.size, ringSink)
+        } finally {
+            ingestingRestoredBlob = false
+            altRing.clear()
+            altTracker.reset()
         }
     }
 
@@ -646,16 +741,18 @@ class TerminalSession private constructor(
      */
     override fun snapshot(): ByteArray {
         val ringBytes = synchronized(ringLock) {
-            if (ringSize == 0) return@synchronized ByteArray(0)
-            val out = ByteArray(ringSize)
-            if (ringStart + ringSize <= ringCapacity) {
-                System.arraycopy(ring, ringStart, out, 0, ringSize)
+            if (!altTracker.inAltScreen) {
+                mainRing.copy()
             } else {
-                val tail = ringCapacity - ringStart
-                System.arraycopy(ring, ringStart, out, 0, tail)
-                System.arraycopy(ring, 0, out, tail, ringSize - tail)
+                // A program owns the alternate buffer right now and is still
+                // running, so replay its traffic verbatim and let it keep
+                // painting. When its own `?1049h` has already been evicted
+                // from [altRing], synthesize one: without it the client would
+                // render the redraws into the normal buffer, over the
+                // scrollback [mainRing] just replayed.
+                val enter = if (altRing.overflowed) ENTER_ALT_SCREEN else ByteArray(0)
+                mainRing.copy() + enter + altRing.copy()
             }
-            out
         }
         // Ring-buffer replay can end mid-render with a trailing DECTCEM hide
         // (ESC[?25l) and no matching show. Append a show to the replay tail;
@@ -664,16 +761,43 @@ class TerminalSession private constructor(
         return ReplaySanitizer.stripQueries(ringBytes) + SHOW_CURSOR_SUFFIX
     }
 
+    /**
+     * Build the blob to persist for a restore after the server exits.
+     *
+     * Differs from [snapshot] in what it does about a program holding the
+     * alternate buffer, because the two callers face opposite situations. A
+     * reconnecting client attaches to a *live* program that will carry on
+     * painting, so [snapshot] hands it the raw traffic. A restore has no such
+     * program — it died with the server — and the pane comes back as a fresh
+     * shell, so raw traffic would be unrepaintable, always truncated part-way
+     * through a frame, and would replay into the normal buffer as phantom
+     * scrollback. Instead the live frame is frozen into inert styled text
+     * ([ScreenEmulator.renderAlternateScreenFrame]) and appended below the
+     * scrollback, which is as close to the screen at the moment of death as
+     * anything reconstructible — the new shell's prompt then continues under
+     * it.
+     *
+     * When no program holds the alternate buffer this is just the
+     * normal-buffer history: the same thing a real terminal shows once a TUI
+     * exits.
+     *
+     * @return sanitized bytes for `pane_scrollback`.
+     * @see ScrollbackSaver.saveAll
+     */
+    override fun persistSnapshot(): ByteArray {
+        val history = synchronized(ringLock) { mainRing.copy() }
+        val clean = ReplaySanitizer.stripQueries(history)
+        val frame = screen.renderAlternateScreenFrame() ?: return clean
+        return clean + FRAME_SEPARATOR + frame
+    }
+
+    /**
+     * Record [chunk] into the replay rings, splitting it by screen buffer.
+     *
+     * Called from the PTY read loop for every byte the session emits.
+     */
     private fun appendToRing(chunk: ByteArray) = synchronized(ringLock) {
-        for (b in chunk) {
-            val writeIdx = (ringStart + ringSize) % ringCapacity
-            ring[writeIdx] = b
-            if (ringSize < ringCapacity) {
-                ringSize++
-            } else {
-                ringStart = (ringStart + 1) % ringCapacity
-            }
-        }
+        altTracker.feed(chunk, chunk.size, ringSink)
         bytesWritten += chunk.size
     }
 
@@ -685,18 +809,60 @@ class TerminalSession private constructor(
          * mouse tracking plus the UTF-8, SGR and urxvt mouse encodings
          * (9, 1000-1003, 1005, 1006, 1015), focus-event reporting (1004),
          * bracketed paste (2004), application cursor keys (DECCKM, 1) and
-         * the alternate screen buffer (1049 — a no-op when not active),
-         * then DECKPNM (`ESC >`) to restore the normal keypad.
+         * the alternate screen buffer (1047), then DECKPNM (`ESC >`) to
+         * restore the normal keypad.
+         *
+         * Alt-screen exit is 1047 and NOT 1049 on purpose. Both select the
+         * normal buffer, but 1049 additionally performs a DECRC cursor
+         * restore, and that restore is unconditional — xterm.js runs it even
+         * when the normal buffer was already active and no cursor was ever
+         * saved, in which case `savedX`/`savedY` are still their initial 0
+         * and the cursor teleports to the top-left of the viewport. Restored
+         * scrollback usually contains no matching DECSET 1049, so the common
+         * case is a teleport: the marker below then lands at the top of the
+         * screen and the fresh shell's prompt erases the rest of the replayed
+         * transcript with an ED (`ESC[J`). 1047 selects the normal buffer
+         * without touching the cursor, so the replay stays where it ended.
          *
          * Used only on the killed-server restore path, never on live
          * reconnect replays ([snapshot]), where a running TUI still owns
          * these modes legitimately.
          */
         private val RESTORE_MODE_RESET =
-            "[?9;1000;1001;1002;1003;1005;1006;1015l[?1004l[?2004l[?1l[?1049l>"
+            "[?9;1000;1001;1002;1003;1005;1006;1015l[?1004l[?2004l[?1l[?1047l>"
                 .toByteArray(Charsets.US_ASCII)
 
         private val SHOW_CURSOR_SUFFIX = "[?25h".toByteArray(Charsets.US_ASCII)
+
+        /**
+         * DECSET 1049 — enter the alternate buffer. Synthesized ahead of
+         * [altRing] on reconnect when that ring has overflowed and lost the
+         * real one, so a running TUI's redraws land in the alternate buffer
+         * where they belong instead of painting over replayed scrollback.
+         */
+        private val ENTER_ALT_SCREEN = "[?1049h".toByteArray(Charsets.US_ASCII)
+
+        /** Blank line between replayed scrollback and a frozen TUI frame. */
+        private val FRAME_SEPARATOR = "\r\n".toByteArray(Charsets.US_ASCII)
+
+        /**
+         * Normal-buffer replay capacity — the ceiling on scrollback surviving
+         * a reconnect or restart. Holds roughly 3000 rows of shell output.
+         * Modest by design and affordable *because* it is modest: it is copied
+         * per reconnect and written to SQLite per pane every 10 s. Alternate-
+         * buffer redraws are excluded ([altRing]), so a single `vim` or
+         * `claude` run can no longer evict real history from it.
+         */
+        private const val MAIN_RING_CAPACITY = 256 * 1024
+
+        /**
+         * Alternate-buffer replay capacity — enough for a full repaint of a
+         * large grid, which is all a reconnecting client needs. Never
+         * persisted and dropped when the program exits, so overshooting only
+         * costs resident memory while a TUI is actually running; undershooting
+         * is handled by [ENTER_ALT_SCREEN].
+         */
+        private const val ALT_RING_CAPACITY = 256 * 1024
 
         /**
          * Floor for a **forced** resize ([forceClientSize]) — the smallest grid a
@@ -762,5 +928,68 @@ class TerminalSession private constructor(
                 .start()
             return TerminalSession(pty, initialScrollback, cols, rows)
         }
+    }
+}
+
+/**
+ * Fixed-capacity byte ring for replay history: appends never block or grow,
+ * and once full each new byte evicts the oldest.
+ *
+ * [TerminalSession] keeps one per screen buffer. Reads copy the whole ring, so
+ * capacity is a direct cost per reconnect and per persistence pass.
+ *
+ * Not thread-safe; callers serialize on the session's ring lock.
+ *
+ * @property capacity maximum bytes retained.
+ * @see TerminalSession
+ */
+private class ByteRing(private val capacity: Int) {
+    private val buf = ByteArray(capacity)
+    private var size = 0
+    private var start = 0
+
+    /**
+     * Whether the ring has ever evicted a byte — i.e. its contents no longer
+     * begin at the start of the recorded stream.
+     *
+     * [TerminalSession.snapshot] reads this to tell a truncated alternate-span
+     * replay (whose enter sequence is gone and must be synthesized) from a
+     * complete one.
+     */
+    var overflowed = false
+        private set
+
+    /** Append `chunk[from, until)`, evicting oldest bytes when full. */
+    fun append(chunk: ByteArray, from: Int, until: Int) {
+        for (i in from until until) {
+            buf[(start + size) % capacity] = chunk[i]
+            if (size < capacity) {
+                size++
+            } else {
+                start = (start + 1) % capacity
+                overflowed = true
+            }
+        }
+    }
+
+    /** @return the contents, oldest byte first. */
+    fun copy(): ByteArray {
+        if (size == 0) return ByteArray(0)
+        val out = ByteArray(size)
+        if (start + size <= capacity) {
+            System.arraycopy(buf, start, out, 0, size)
+        } else {
+            val tail = capacity - start
+            System.arraycopy(buf, start, out, 0, tail)
+            System.arraycopy(buf, 0, out, tail, size - tail)
+        }
+        return out
+    }
+
+    /** Drop everything, including the [overflowed] mark. */
+    fun clear() {
+        size = 0
+        start = 0
+        overflowed = false
     }
 }

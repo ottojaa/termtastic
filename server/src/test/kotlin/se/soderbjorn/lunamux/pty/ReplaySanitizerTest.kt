@@ -126,7 +126,7 @@ class ReplaySanitizerTest {
     fun keepsRestoreModeResetSequences() {
         // The exact bytes TerminalSession stamps into restored rings — these
         // must never be stripped or the issue-#91 mode neutralization breaks.
-        val reset = "$esc[?9;1000;1001;1002;1003;1005;1006;1015l$esc[?1004l$esc[?2004l$esc[?1l$esc[?1049l$esc>"
+        val reset = "$esc[?9;1000;1001;1002;1003;1005;1006;1015l$esc[?1004l$esc[?2004l$esc[?1l$esc[?1047l$esc>"
         assertKept(reset)
         assertKept("$esc[?25h") // SHOW_CURSOR_SUFFIX
     }

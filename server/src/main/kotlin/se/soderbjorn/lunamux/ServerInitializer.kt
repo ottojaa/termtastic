@@ -75,7 +75,7 @@ class ScrollbackSaver internal constructor(
             // is at worst off by one resize and gets corrected by the client's
             // post-restore reassert.
             val (cols, rows) = session.sizeEvents.value
-            val snapshot = session.snapshot()
+            val snapshot = session.persistSnapshot()
             runCatching { repo.saveScrollback(leafId, snapshot, cols, rows) }
                 .onSuccess { lastSavedBytes[leafId] = current }
                 .onFailure { LoggerFactory.getLogger("ScrollbackPersistence").warn("Failed to save scrollback for $leafId", it) }

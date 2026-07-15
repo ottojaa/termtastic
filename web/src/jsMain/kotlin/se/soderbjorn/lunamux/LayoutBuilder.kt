@@ -356,6 +356,11 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
         "fontFamily" to resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily),
         "fontSize" to 13,
         "minimumContrastRatio" to 4.5,
+        // xterm's default is 1000 lines, which a single verbose command can
+        // blow through — and a reconnect RIS-resets the grid and reseeds it
+        // from the server ring, so this is the ceiling on retained history
+        // rather than a soft cap over a longer local buffer.
+        "scrollback" to 10_000,
         "theme" to buildXtermTheme()
     ))
     val fit = FitAddon()
