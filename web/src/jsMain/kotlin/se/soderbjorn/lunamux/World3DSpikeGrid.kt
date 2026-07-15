@@ -60,18 +60,100 @@ internal fun zoomFront(step: Int) {
 }
 
 /**
+ * Zoom comparisons that decide "already at the bound" tolerate this much float drift,
+ * so a clamped target that differs from the live one only by rounding reads as equal
+ * (and refuses) rather than as a real change worth persisting.
+ */
+private const val ZOOM_EPSILON = 1e-6
+
+/**
+ * Formats a zoom multiplier for the console at two decimals — bare [Double] logging
+ * prints the full binary expansion (`2.1599999999999997`), which buries the number the
+ * reader is actually checking against the bound.
+ *
+ * @param zoom the multiplier to format. @return e.g. `"2.16"`.
+ */
+private fun fmtZoom(zoom: Double): String = zoom.asDynamic().toFixed(2) as String
+
+/**
+ * True when a plane of box [boxW] × [boxH] (CSS px, the wrapper's full box including
+ * its title strip) still renders inside the browser window at visual zoom [zoom].
+ *
+ * **The window is the bound, and it is not cosmetic.** A CSS3D plane is rasterized at
+ * its *projected* size, and the compositor's tile-memory budget is derived from the
+ * viewport. A plane rendered materially larger than the window blows that budget, and
+ * the compositor starts evicting and re-rastering tiles it cannot afford to keep —
+ * which paints as the whole world strobing at once (every plane *and* the chrome,
+ * because the budget is global, not per-element). The threshold really is the window
+ * rather than any absolute size: the same plane that strobes in a small window is
+ * calm in a large one. The opaque-sky backstop in [openWorld3dSpike] treats a
+ * momentary version of this; the guards below keep us out of it entirely.
+ *
+ * [PLANE_WINDOW_FIT] is the fraction of the window a plane may span; it also absorbs the
+ * small projection drift [zoomFrontFit] documents.
+ *
+ * @param boxW the plane's unscaled width in CSS px ([RingPane.baseCw]).
+ * @param boxH the plane's unscaled height in CSS px ([RingPane.baseCh] + [TITLE_H]).
+ * @param zoom the visual zoom the plane would render at.
+ * @return `true` if the projected plane fits the window on both axes.
+ * @see maxZoomWithinWindow @see growGridAxis
+ */
+internal fun planeFitsWindow(boxW: Double, boxH: Double, zoom: Double): Boolean =
+    boxW * zoom <= window.innerWidth * PLANE_WINDOW_FIT &&
+        boxH * zoom <= window.innerHeight * PLANE_WINDOW_FIT
+
+/**
+ * The largest visual zoom at which pane [p]'s plane still renders no larger than the
+ * window — the upper bound every zoom shortcut is clamped to, and the reason a `+`
+ * eventually refuses (see [planeFitsWindow] for why the window is the bound).
+ *
+ * Pure arithmetic: the front pane sits at exactly 1:1 when its scale is 1 (the render
+ * loop re-parks the camera at [perspDistance] every frame, so the pose survives window
+ * resizes), which makes its projected size simply `baseCw × zoom` by
+ * `(baseCh + TITLE_H) × zoom`. No measuring, so this is safe to call per frame.
+ *
+ * Normally ≥ 1.0 — a pane's native grid comes from its 2D pane, which by construction
+ * fits the window — so the everyday `⇧0` 1:1 preset is unaffected. It drops below 1.0
+ * only for a plane whose *own box* already exceeds the window (a 3D grid override, or
+ * a window shrunk after the fact), where sub-1:1 is the only alternative to strobing.
+ *
+ * @param p the pane to bound.
+ * @return the largest zoom within [ZOOM_MIN]..[ZOOM_MAX] whose plane fits the window.
+ * @see zoomFrontTo @see zoomFrontFit @see planeFitsWindow
+ */
+internal fun maxZoomWithinWindow(p: RingPane): Double {
+    val boxW = p.baseCw.toDouble()
+    val boxH = (p.baseCh + TITLE_H).toDouble()
+    // A pane measured before its first present has no box yet; bound nothing rather
+    // than clamp it to a bogus floor derived from a zero box.
+    if (boxW <= 0.0 || boxH <= 0.0) return ZOOM_MAX
+    val fit = min(
+        window.innerWidth * PLANE_WINDOW_FIT / boxW,
+        window.innerHeight * PLANE_WINDOW_FIT / boxH,
+    )
+    return fit.coerceIn(ZOOM_MIN, ZOOM_MAX)
+}
+
+/**
  * Sets the front pane's visual zoom target to an **absolute** level, clamped to
- * [ZOOM_MIN]..[ZOOM_MAX] — the shared tail of every zoom shortcut: [zoomFront]
- * multiplies into it, the ⇧ presets ([zoomFrontFit], ⇧− min) jump straight to a
- * level. Same settle guard, per-pane memory ([spikeZoomByPane]) and server
- * write-through ([WindowCommand.SetPaneZoom]) as [zoomFront] has always had.
- * No-op unless a front pane is settled.
+ * [ZOOM_MIN]..[ZOOM_MAX] *and* to [maxZoomWithinWindow] — the shared tail of every
+ * zoom shortcut: [zoomFront] multiplies into it, the ⇧ presets ([zoomFrontFit], ⇧−
+ * min) jump straight to a level. Same settle guard, per-pane memory
+ * ([spikeZoomByPane]) and server write-through ([WindowCommand.SetPaneZoom]) as
+ * [zoomFront] has always had. No-op unless a front pane is settled.
+ *
+ * A zoom that would render the plane larger than the window is clamped to the largest
+ * that fits, and a further press at that bound **refuses** (warns and returns) rather
+ * than magnifying into the compositor strobe — the same "clamped at bounds" shape the
+ * grid keys have always had. The zoom persisted per pane is therefore always a level
+ * that actually renders.
  *
  * @param target absolute zoom multiplier (1.0 = native), clamped before use.
  * @param glide true when the change should ease at the slow [ZOOM_PRESET_EASE]
  *   instead of the snappy [SCALE_EASE] — passed by the ⇧ presets, whose one-jump
  *   targets are far enough away that the normal ease reads as a snap
  *   ([spikeZoomGlide]).
+ * @see maxZoomWithinWindow
  */
 internal fun zoomFrontTo(target: Double, glide: Boolean = false) {
     val fi = frontIndex()
@@ -85,9 +167,31 @@ internal fun zoomFrontTo(target: Double, glide: Boolean = false) {
         return
     }
     if (spikeSelectionMode) exitSelectionMode()
-    spikeZoomTarget = target.coerceIn(ZOOM_MIN, ZOOM_MAX)
+    val p = spikePanes.getOrNull(fi)
+    val cap = p?.let { maxZoomWithinWindow(it) } ?: ZOOM_MAX
+    val wanted = target.coerceIn(ZOOM_MIN, min(ZOOM_MAX, cap))
+    // Already sitting at the bound this press is trying to cross: refuse it loudly.
+    // The legend flash happens in the key handler before we run, so a silent return
+    // would read as a dead key.
+    if (abs(wanted - spikeZoomTarget) < ZOOM_EPSILON) {
+        if (target > spikeZoomTarget) {
+            console.warn(
+                "[world3d-spike] zoom refused: pane ${p?.paneId} already at the largest zoom " +
+                    "that fits the window (${fmtZoom(spikeZoomTarget)}x, box ${p?.baseCw}x${p?.baseCh}, " +
+                    "window ${window.innerWidth}x${window.innerHeight}) — a bigger plane strobes the compositor"
+            )
+        }
+        return
+    }
+    if (wanted < target - ZOOM_EPSILON) {
+        console.log(
+            "[world3d-spike] zoom clamped to ${fmtZoom(wanted)}x (asked ${fmtZoom(target)}x): " +
+                "largest that fits the window"
+        )
+    }
+    spikeZoomTarget = wanted
     spikeZoomGlide = glide
-    spikePanes.getOrNull(fi)?.let {
+    p?.let {
         spikeZoomByPane[it.paneId] = spikeZoomTarget
         // Persist: rides the config broadcast + debounced DB write on the server.
         runCatching { launchCmd(WindowCommand.SetPaneZoom(it.paneId, spikeZoomTarget)) }
@@ -243,6 +347,26 @@ internal fun growGridAxis(dCols: Int, dRows: Int) {
         console.warn(
             "[world3d-spike] grid resize ignored: already clamped at bounds " +
                 "(${term.cols}x${term.rows}, delta $dCols,$dRows)"
+        )
+        return
+    }
+    // Refuse a step that would render the plane past the window — the grid twin of the
+    // zoom bound in [zoomFrontTo]. A grid step moves the *box* rather than the scale,
+    // so it reaches the same compositor strobe by the other road ([planeFitsWindow]).
+    // Predicting the new box needs no measuring: the box is `cells × cellSize` plus a
+    // constant chrome/padding budget ([presentPaneToGrid]), so a cell delta moves it by
+    // exactly `delta × cellSize`. Shrinking is always allowed, including back out of an
+    // already-oversized box.
+    val (cellW, cellH) = cellMetrics(term)
+    val newBoxW = p.baseCw + (cols - term.cols) * cellW
+    val newBoxH = p.baseCh + (rows - term.rows) * cellH
+    val grows = newBoxW > p.baseCw || newBoxH > p.baseCh
+    if (grows && !planeFitsWindow(newBoxW, newBoxH + TITLE_H, spikeZoomTarget)) {
+        console.warn(
+            "[world3d-spike] grid resize refused: ${cols}x$rows would render " +
+                "${(newBoxW * spikeZoomTarget).roundToInt()}x${((newBoxH + TITLE_H) * spikeZoomTarget).roundToInt()}px " +
+                "at ${fmtZoom(spikeZoomTarget)}x zoom, past the ${window.innerWidth}x${window.innerHeight} " +
+                "window — a bigger plane strobes the compositor. Zoom out (−) first to grow further."
         )
         return
     }

@@ -233,6 +233,26 @@ internal const val ZOOM_PRESET_EASE = 0.03
 internal const val ZOOM_FIT_MARGIN = 0.96
 
 /**
+ * The fraction of the window a plane may render across before the zoom/grid keys refuse
+ * to grow it further ([maxZoomWithinWindow], [planeFitsWindow]).
+ *
+ * **This is a correctness bound, not a cosmetic one** — which is why it is separate from
+ * the visually-similar [ZOOM_FIT_MARGIN] (that one only keeps the glow off the viewport
+ * edge). A CSS3D plane is rasterized at its projected size against a tile-memory budget
+ * derived from the viewport; rendered materially past the window it blows that budget and
+ * the compositor strobes the entire world. Tying the two constants together would mean a
+ * cosmetic tweak silently moved the strobe threshold.
+ *
+ * **The value is empirical.** The safe fraction is a property of the compositor, the
+ * display's device-pixel-ratio (a Retina plane rasterizes ~4× its CSS area) and the GPU —
+ * not something derivable from the scene. It is set a hair under 1 on the theory that the
+ * window's own contents already rasterize fine at exactly window size, so a plane no
+ * bigger than that is affordable too. If the strobe survives at this bound, lower it;
+ * the observed threshold is the authority, not this number.
+ */
+internal const val PLANE_WINDOW_FIT = 0.96
+
+/**
  * Extra depth (world units) each **non-front** pane is pushed back, scaled by its
  * size, so a neighbour reads as clearly recessed behind the centred pane. This is
  * the *aesthetic* recess; the hard occlusion guarantee is the per-frame clamp

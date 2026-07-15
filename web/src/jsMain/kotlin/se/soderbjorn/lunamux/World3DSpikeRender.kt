@@ -444,7 +444,17 @@ internal fun startSpikeLoop() {
                 // Scale first: the front pane at its live zoom, every other pane at its
                 // *remembered* zoom (so a pane you magnified stays magnified when it
                 // drifts off-centre — it no longer snaps back to 1× when unfocused).
-                val targetScale = if (i == fi) spikeZoomTarget
+                //
+                // The front zoom is bounded to what still fits the window
+                // ([maxZoomWithinWindow]) — a plane rendered past the window blows the
+                // compositor's viewport-derived tile budget and strobes the whole world.
+                // The zoom/grid keys already refuse to cross that bound, so this normally
+                // changes nothing; it earns its keep when the bound moves under a settled
+                // pane rather than being crossed by a keypress — shrinking the window,
+                // where there is no press to refuse. Side panes need no bound: [normScale]
+                // has already fitted their box to the ring's screen box, itself a fraction
+                // of the window. @see planeFitsWindow
+                val targetScale = if (i == fi) min(spikeZoomTarget, maxZoomWithinWindow(p))
                     else (spikeZoomByPane[p.paneId] ?: 1.0) * p.normScale
                 // Ease the *logical* scale (kept separate from the birth multiplier
                 // below, so a growing/shrinking pane can't corrupt its own zoom ease).
