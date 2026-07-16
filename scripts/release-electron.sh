@@ -94,6 +94,19 @@ if [[ -n "$IDENTITY" || "$NO_NOTARIZE" == "1" ]]; then TEST_BUILD=1; fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$(pwd)"
 
+# Restore electron/package.json unless we reach a successful PRODUCTION publish, so
+# a failed build, a --no-publish local build, or a fork test publish never leaves
+# the version fields churned (which would double-bump on the next run). KEEP_BUMP
+# flips to 1 only for a real release, where the bump is meant to be committed.
+KEEP_BUMP=0
+PKG_BACKUP="$(mktemp)"
+cp "$ROOT/electron/package.json" "$PKG_BACKUP"
+restore_pkg() {
+    if [[ $KEEP_BUMP -eq 0 ]]; then cp "$PKG_BACKUP" "$ROOT/electron/package.json"; fi
+    rm -f "$PKG_BACKUP"
+}
+trap restore_pkg EXIT
+
 echo "==> Releasing $TAG to $REPO ($([[ $TEST_BUILD == 1 ]] && echo 'TEST build' || echo 'production build'))"
 
 # ── 1. Stamp the version (single source of truth) ────────────────────
@@ -220,6 +233,10 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
 else
     gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes "$NOTES" "${ASSETS[@]}"
 fi
+
+# A real release is published: keep the version bump (the trap won't revert it) so
+# it can be committed. Test/fork publishes leave package.json untouched.
+if [[ $TEST_BUILD == 0 ]]; then KEEP_BUMP=1; fi
 
 echo
 echo "==> Done. Draft release: https://github.com/$REPO/releases"
