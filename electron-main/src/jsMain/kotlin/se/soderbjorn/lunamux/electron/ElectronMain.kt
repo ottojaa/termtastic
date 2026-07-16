@@ -799,6 +799,18 @@ private fun buildAppMenu() {
     val gitHubItem: dynamic = js("({})")
     gitHubItem.label = "Star on GitHub"
     gitHubItem.click = { shell.openExternal(LUNAMUX_GITHUB_URL) }
+    // "Check for Updates…" runs a check now (packaged builds only — a no-op in
+    // dev) and asks the renderer to open the Updates panel so the result is
+    // visible. See [AutoUpdater] / [UpdateChannels].
+    val updatesItem: dynamic = js("({})")
+    updatesItem.label = "Check for Updates…"
+    updatesItem.click = {
+        val w = mainWindow
+        if (w != null && !w.isDestroyed()) {
+            checkForUpdates()
+            w.webContents.send(UpdateChannels.SHOW_PANEL)
+        }
+    }
     val helpSeparator: dynamic = js("({ type: 'separator' })")
     val privacyItem: dynamic = js("({})")
     privacyItem.label = "Privacy Policy"
@@ -810,7 +822,7 @@ private fun buildAppMenu() {
     helpMenu.label = "Help"
     helpMenu.role = "help"
     helpMenu.submenu = arrayOf<dynamic>(
-        docsItem, websiteItem, forumItem, gitHubItem, helpSeparator,
+        docsItem, websiteItem, forumItem, gitHubItem, updatesItem, helpSeparator,
         privacyItem, termsItem,
     )
     template.add(helpMenu)
@@ -1590,6 +1602,10 @@ fun main() {
 
         ensureServerThenCreateWindow().then {
             if (!IS_DEV_LAUNCH) registerGlobalShortcut()
+            // Silent background update check on launch. Packaged builds only:
+            // checkForUpdates itself no-ops when unpackaged (dev/demo have no
+            // app-update.yml), but guarding here avoids the call entirely.
+            if (app.isPackaged) checkForUpdates()
         }
     }
 
@@ -1634,6 +1650,36 @@ fun main() {
         val url = urlArg as? String
         if (url.isNullOrBlank()) "Invalid URL"
         else shell.openExternal(url)
+    }
+
+    // Auto-update: bind electron-updater's lifecycle listeners once (they send
+    // to whatever the live main window is at fire time, so a window rebuild
+    // doesn't sever progress reporting), then expose the three renderer-driven
+    // controls. The Updates panel in the App Settings sidebar invokes these;
+    // lifecycle events flow back on the [UpdateChannels]. See [AutoUpdater].
+    initAutoUpdater { mainWindow }
+    ipcMain.handle(UpdateChannels.CHECK) { _, _ ->
+        checkForUpdates()
+        Unit
+    }
+    ipcMain.handle(UpdateChannels.DOWNLOAD) { _, _ ->
+        downloadUpdate()
+        Unit
+    }
+    ipcMain.handle(UpdateChannels.QUIT_AND_INSTALL) { _, _ ->
+        // Installing an update is an already-confirmed quit. The window-close
+        // and before-quit gates route through the renderer quit-confirmation
+        // modal unless quitConfirmed is set, so mark it before handing off to
+        // Squirrel — otherwise the install-relaunch would be trapped by the modal.
+        quitConfirmed = true
+        // Stop the bundled server first (the same POST /admin/shutdown the
+        // killServer quit path uses), so the relaunched, updated app starts its
+        // own new-version server instead of reconnecting to the old one still
+        // bound to the TLS port. Best-effort and time-bounded: the install
+        // proceeds even if the server never confirms, so a stuck server can
+        // never trap the update.
+        postShutdown(5000).then { _ -> quitAndInstallUpdate() }
+        Unit
     }
 
     app.on("will-quit") { _, _ -> globalShortcut.unregisterAll() }

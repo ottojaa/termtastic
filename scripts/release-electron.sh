@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Cut a Lunamux desktop release and publish it — with all the electron-updater
+# metadata — to a GitHub DRAFT release in one command.
+#
+# Why this exists: electron-updater needs `latest-mac.yml` and the per-artifact
+# `.blockmap` files uploaded ALONGSIDE the installer. Doing GitHub releases by
+# hand, a human eventually forgets one of those and silently breaks auto-update
+# for everyone. This script builds locally (no CI — mac CI is slow/expensive),
+# then uploads a fixed GLOB of every required file, so the metadata can never be
+# left out. It always publishes as a DRAFT: a human reviews it in the GitHub UI
+# and clicks Publish, which is when clients start seeing the update.
+#
+# Usage:
+#   scripts/release-electron.sh <version> [options]
+#
+#   <version>            Semver to release, e.g. 1.9.1. Stamped into
+#                        electron/package.json (version + mac.bundleShortVersion)
+#                        and the integer mac.bundleVersion is bumped by one.
+#
+# Options:
+#   --repo <owner/repo>  Target GitHub repo. Default: soderbjorn/lunamux.
+#                        In a test build (see below) this ALSO sets the publish
+#                        provider baked into app-update.yml, so the built app
+#                        checks that repo for updates.
+#   --identity <name>    Sign with this macOS code-signing identity instead of
+#                        the production Developer ID, and skip notarization.
+#                        Use a free self-signed "Code Signing" cert from Keychain
+#                        to test the auto-update loop without an Apple Developer
+#                        ID — Squirrel.Mac only requires the running app and the
+#                        update to share a signing identity (a MATCH), not
+#                        notarization. Implies a test build.
+#   --no-notarize        Build unsigned (identity=null) and skip notarization.
+#                        Implies a test build. (Unsigned macOS apps cannot
+#                        auto-update; prefer --identity for update testing.)
+#
+# Production build (no --identity / --no-notarize): signs + notarizes with the
+# maintainer's Developer ID (from electron/package.json) and staples the DMG,
+# exactly like build-release-electron.sh. Requires the notarization creds in
+# APPLE_ID_PERSONAL / APPLE_APP_SPECIFIC_PASSWORD_PERSONAL / APPLE_TEAM_ID_PERSONAL.
+#
+# Examples:
+#   # Production draft release to soderbjorn/lunamux:
+#   scripts/release-electron.sh 1.9.1
+#
+#   # Self-signed test release to your fork, to exercise the update loop:
+#   scripts/release-electron.sh 1.9.1 --repo ottojaa/lunamux \
+#       --identity "Lunamux Test Signing"
+#
+# Publishing (upload) uses the `gh` CLI, so `gh auth login` must be done and the
+# token must have write access to the target repo.
+set -euo pipefail
+shopt -s nullglob
+
+# ── Args ─────────────────────────────────────────────────────────────
+VERSION=""
+REPO="soderbjorn/lunamux"
+IDENTITY=""
+NO_NOTARIZE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo) REPO="$2"; shift 2 ;;
+        --identity) IDENTITY="$2"; shift 2 ;;
+        --no-notarize) NO_NOTARIZE=1; shift ;;
+        -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+        -*) echo "Unknown option: $1" >&2; exit 2 ;;
+        *) if [[ -z "$VERSION" ]]; then VERSION="$1"; shift; else echo "Unexpected arg: $1" >&2; exit 2; fi ;;
+    esac
+done
+
+if [[ -z "$VERSION" ]]; then
+    echo "error: <version> is required (e.g. 1.9.1). See --help." >&2
+    exit 2
+fi
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: version '$VERSION' is not semver X.Y.Z." >&2
+    exit 2
+fi
+
+OWNER="${REPO%%/*}"
+REPO_NAME="${REPO##*/}"
+TAG="v$VERSION"
+
+# A test build = anything not signed + notarized with the production Developer ID.
+TEST_BUILD=0
+if [[ -n "$IDENTITY" || "$NO_NOTARIZE" == "1" ]]; then TEST_BUILD=1; fi
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+ROOT="$(pwd)"
+
+echo "==> Releasing $TAG to $REPO ($([[ $TEST_BUILD == 1 ]] && echo 'TEST build' || echo 'production build'))"
+
+# ── 1. Stamp the version (single source of truth) ────────────────────
+# electron-updater compares app.getVersion() (== mac.bundleShortVersion on macOS)
+# against latest-mac.yml's version (== package.json version), so these MUST match.
+VERSION="$VERSION" node -e '
+  const fs = require("fs");
+  const p = "electron/package.json";
+  const j = JSON.parse(fs.readFileSync(p, "utf8"));
+  const v = process.env.VERSION;
+  j.version = v;
+  j.build.mac.bundleShortVersion = v;
+  j.build.mac.bundleVersion = String((parseInt(j.build.mac.bundleVersion, 10) || 0) + 1);
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+  console.error(`==> Stamped version=${v}, bundleShortVersion=${v}, bundleVersion=${j.build.mac.bundleVersion}`);
+'
+
+# ── 2. Build ─────────────────────────────────────────────────────────
+# The mac target is dmg+zip and the publish provider is set (electron/package.json),
+# so electron-builder emits latest-mac.yml + .blockmap files into electron/dist/.
+rm -rf electron/dist
+
+if [[ $TEST_BUILD == 0 ]]; then
+    # Production: the proven signed + notarized path. `:electron:dist` runs the
+    # native-signing staging tasks then electron-builder (which signs, notarizes,
+    # and staples the .app). app-update.yml is baked from the package.json publish
+    # config (soderbjorn/lunamux).
+    if [[ "$REPO" != "soderbjorn/lunamux" ]]; then
+        echo "WARNING: production build bakes app-update.yml from package.json" >&2
+        echo "         (soderbjorn/lunamux), but you're uploading to $REPO — the" >&2
+        echo "         installed app would check soderbjorn/lunamux, not $REPO." >&2
+        echo "         For a fork test build, pass --identity so the repo override" >&2
+        echo "         is applied to app-update.yml too." >&2
+    fi
+    ./gradlew --no-daemon :electron:dist
+else
+    # Test: stage without native signing (mirrors build-electron-no-notarize.sh),
+    # then run electron-builder directly with the overrides. -c.publish.owner/repo
+    # bakes the fork into app-update.yml so the built app checks it.
+    ./gradlew --no-daemon \
+        :electron:npmInstall \
+        :electron:copyServerJar \
+        :electron:bundleJre \
+        :electron:copyMainBundle
+
+    EB_ARGS=(
+        -c.publish.owner="$OWNER"
+        -c.publish.repo="$REPO_NAME"
+        -c.mac.notarize=false
+        # Self-signed / unsigned apps can't satisfy hardened-runtime nested-signing
+        # expectations; turn it off so the test build launches and Squirrel.Mac can
+        # apply the update (it checks the signature MATCH, not hardened runtime).
+        -c.mac.hardenedRuntime=false
+    )
+    if [[ -n "$IDENTITY" ]]; then
+        EB_ARGS+=(-c.mac.identity="$IDENTITY")
+    else
+        EB_ARGS+=(-c.mac.identity=null)
+    fi
+
+    cd electron
+    if [[ -z "$IDENTITY" ]]; then
+        CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "${EB_ARGS[@]}" --publish never
+    else
+        ./node_modules/.bin/electron-builder "${EB_ARGS[@]}" --publish never
+    fi
+    cd "$ROOT"
+fi
+
+DIST="$ROOT/electron/dist"
+
+# electron-updater is useless without this file; fail loudly if the build didn't
+# produce it (usually means the mac `zip` target or the publish config is missing).
+if [[ ! -f "$DIST/latest-mac.yml" ]]; then
+    echo "error: $DIST/latest-mac.yml was not generated — electron-updater needs it." >&2
+    echo "       Check that electron/package.json has mac.target including 'zip' and" >&2
+    echo "       a 'publish' block." >&2
+    exit 1
+fi
+
+# ── 3. Staple the DMG container (production only) ─────────────────────
+# electron-builder signs/notarizes/staples the .app (inside both dmg and zip) but
+# leaves the DMG *container* unsigned, so a downloaded DMG hits Gatekeeper
+# friction. Apple's DMG workflow is sign -> notarize -> staple. (The auto-update
+# path uses the zip, whose .app is already stapled, so this is only for the
+# first-install DMG download.)
+if [[ $TEST_BUILD == 0 ]]; then
+    : "${APPLE_ID_PERSONAL:?set APPLE_ID_PERSONAL for notarization}"
+    : "${APPLE_APP_SPECIFIC_PASSWORD_PERSONAL:?set APPLE_APP_SPECIFIC_PASSWORD_PERSONAL}"
+    : "${APPLE_TEAM_ID_PERSONAL:?set APPLE_TEAM_ID_PERSONAL}"
+    DMG="$(ls -t "$DIST"/Lunamux-*.dmg | head -1)"
+    IDENTITY_FULL="Developer ID Application: Robert Söderbjörn (CCJP95ZXG4)"
+    echo "==> Signing + notarizing + stapling DMG container: $(basename "$DMG")"
+    codesign --force --timestamp --sign "$IDENTITY_FULL" "$DMG"
+    xcrun notarytool submit "$DMG" \
+        --apple-id "$APPLE_ID_PERSONAL" \
+        --password "$APPLE_APP_SPECIFIC_PASSWORD_PERSONAL" \
+        --team-id "$APPLE_TEAM_ID_PERSONAL" --wait
+    xcrun stapler staple "$DMG"
+    xcrun stapler validate "$DMG"
+fi
+
+# ── 4. Publish the draft release with ALL update metadata ────────────
+# The fixed glob is the whole point: dmg + zip + latest-mac.yml + every .blockmap,
+# so nothing electron-updater needs can be forgotten.
+ASSETS=( "$DIST"/*.dmg "$DIST"/*.zip "$DIST"/*.blockmap "$DIST"/latest-mac.yml )
+echo "==> Uploading ${#ASSETS[@]} assets to $REPO draft release $TAG:"
+for a in "${ASSETS[@]}"; do echo "      $(basename "$a")"; done
+
+NOTES="Automated draft for $TAG. Review, then Publish to release the update to clients."
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+    echo "==> Release $TAG already exists — clobbering assets."
+    gh release upload "$TAG" --repo "$REPO" --clobber "${ASSETS[@]}"
+else
+    gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes "$NOTES" "${ASSETS[@]}"
+fi
+
+echo
+echo "==> Done. Draft release: https://github.com/$REPO/releases"
+echo "    Review the draft and click Publish; clients update only once it is published."
+if [[ $TEST_BUILD == 0 ]]; then
+    echo "    Remember to commit the version bump in electron/package.json ($TAG)."
+fi

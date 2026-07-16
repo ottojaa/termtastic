@@ -123,6 +123,10 @@ fun createNewsUpdatesBackingViewModel(
  *   comparison baseline against the manifest's `latestVersionCode`.
  * @param currentVersionName the running build's human-readable version, logged
  *   for context (not used in the comparison).
+ * @param enableUpdateCheck when false, the `versions.json` update comparison is
+ *   skipped entirely (news still flows normally). Used by the desktop/Electron
+ *   build, where electron-updater owns in-app updates and this manifest would
+ *   otherwise double-notify. Defaults to true, so Android/iOS are unchanged.
  * @param scope coroutine scope the check loop runs in; defaults to a background
  *   [SupervisorJob] scope so a failed check never tears down siblings.
  * @param manifestUrl the version manifest URL; overridable for testing.
@@ -137,6 +141,7 @@ class NewsUpdatesBackingViewModel(
     private val platformId: String,
     private val currentVersionCode: Long,
     private val currentVersionName: String,
+    private val enableUpdateCheck: Boolean = true,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val manifestUrl: String = DEFAULT_MANIFEST_URL,
     private val newsUrl: String = DEFAULT_NEWS_URL,
@@ -376,6 +381,11 @@ class NewsUpdatesBackingViewModel(
 
     /** Apply a fetched version manifest to the emitted [State]. */
     private fun applyVersionManifest(manifest: VersionManifest) {
+        // Update checks disabled (desktop/Electron, where electron-updater owns
+        // in-app updates): never advertise a versions.json update. Leaves
+        // updateAvailable at its default false so the bell/screen show no
+        // version-update section; news is unaffected (applyNewsManifest is separate).
+        if (!enableUpdateCheck) return
         if (manifest.schemaVersion > VersionManifest.SUPPORTED_SCHEMA_VERSION) {
             println("NewsUpdates: version schemaVersion=${manifest.schemaVersion} unsupported; no update")
             latestUpdateVersionCode = null

@@ -724,15 +724,28 @@ private fun buildAboutTopbarAction(): TopbarAction = TopbarAction(
  * via the `tt-news-topbar` marker class on its SVG. Replaces the former
  * sidebar-footer news/update pills, matching the mobile toolbar bell.
  *
- * @return the bell topbar action; its click opens the screen using the shared
- *   [newsUpdatesViewModel]'s current state (a no-op before the checker starts).
+ * @return the bell topbar action. News keeps priority (it is the bell's identity
+ *   and is dismissible): the click opens the Updates panel only when a desktop
+ *   update is pending AND there is no unread news; otherwise it opens the combined
+ *   News & Updates screen using the shared [newsUpdatesViewModel]'s current state
+ *   (a no-op before the checker starts). A pending update is always also reachable
+ *   via the "Check for Updates…" menu / App Settings.
  */
 private fun buildNewsTopbarAction(): TopbarAction = TopbarAction(
     id = "tt-topbar-news",
     iconHtml = ICON_NEWS,
     label = "News & updates",
     onActivate = {
-        newsUpdatesViewModel?.let { showNewsDialog(it, it.stateFlow.value) }
+        // The bell is shared between news and the desktop auto-updater. News keeps
+        // priority so it is never stranded behind a pending update; route to the
+        // Updates panel only when an update is pending AND there is no unread news.
+        // See AutoUpdaterPanel.kt / NewsLabel.kt.
+        val hasNews = newsUpdatesViewModel?.stateFlow?.value?.hasNews == true
+        if (electronUpdatePending && !hasNews) {
+            openUpdatesPanel()
+        } else {
+            newsUpdatesViewModel?.let { showNewsDialog(it, it.stateFlow.value) }
+        }
     },
 )
 

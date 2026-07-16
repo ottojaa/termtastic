@@ -595,6 +595,12 @@ private fun start() {
         // build.
         startNewsUpdatesChecker()
 
+        // Wire the in-app auto-updater (electron-updater). Subscribes to the main
+        // process's update lifecycle events, reflects "update available" onto the
+        // top-bar bell, and feeds the Updates panel in App Settings. No-op when the
+        // preload lacks the updater bridge. See AutoUpdaterPanel.kt.
+        initAutoUpdaterListeners()
+
         GlobalScope.launch {
             var prev: Boolean? = null
             appVm.stateFlow
@@ -647,6 +653,18 @@ private fun start() {
     // `show-hotkeys` IPC.
     if (electronApi?.onShowHotkeys != null) {
         electronApi.onShowHotkeys({ openHotkeysSidebar() })
+    }
+
+    // macOS Help menu → "Check for Updates…" opens the in-app Updates panel
+    // (App Settings sidebar). Forwarded from the Electron main process via the
+    // `show-updates-panel` IPC.
+    if (electronApi?.onShowUpdatesPanel != null) {
+        // The menu item triggers a main-process check, so its outcome should show
+        // in the panel (unlike the silent startup check).
+        electronApi.onShowUpdatesPanel({
+            markUserInitiatedUpdateAction()
+            openUpdatesPanel()
+        })
     }
 
     // 3D world → leave engage mode from inside a web pane. A `<webview>`

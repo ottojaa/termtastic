@@ -558,6 +558,9 @@ fun buildAppSettingsContent(): HTMLElement {
 
     container.appendChild(buildNavigationSection())
     container.appendChild(buildGeneralSection())
+    // Auto-update controls — Electron desktop only (electron-updater lives in the
+    // main process; a plain browser has no updater to drive). See AutoUpdaterPanel.kt.
+    if (isElectronClient) container.appendChild(buildUpdatesSection())
     container.appendChild(buildOverview3dSection())
     container.appendChild(buildWorld3dSection())
     container.appendChild(buildExperimentalSection())
