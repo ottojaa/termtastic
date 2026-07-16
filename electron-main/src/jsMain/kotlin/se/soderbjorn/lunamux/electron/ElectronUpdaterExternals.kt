@@ -46,8 +46,11 @@ external interface AutoUpdaterApi {
     var autoDownload: Boolean
 
     /**
-     * When `true` (electron-updater's default), a downloaded-but-not-installed
-     * update is applied automatically on the next app quit. Left at its default.
+     * When `true` (electron-updater's default) a downloaded-but-not-installed
+     * update is applied automatically on the next app quit. Lunamux sets this
+     * `false` in [initAutoUpdater] so updates are **opt-in** — a downloaded update
+     * applies only when the user clicks "Restart to install", never silently on
+     * quit.
      */
     var autoInstallOnAppQuit: Boolean
 

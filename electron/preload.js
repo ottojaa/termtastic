@@ -505,9 +505,10 @@ contextBridge.exposeInMainWorld("electronApi", {
   },
 
   /**
-   * Subscribes to the "show updates panel" request the main process sends when
-   * the user picks "Check for Updates…" from the Help menu, so the renderer
-   * can open its Updates panel (App Settings sidebar).
+   * Subscribes to the request the main process sends when the user picks
+   * "Check for Updates…" from the Help menu. The renderer responds by running a
+   * user-initiated update check, whose result shows in the sidebar-footer update
+   * banner. (Channel name is historical — it no longer opens a panel.)
    *
    * @param {() => void} handler - Called with no arguments.
    * @returns {() => void} Unsubscribe function.

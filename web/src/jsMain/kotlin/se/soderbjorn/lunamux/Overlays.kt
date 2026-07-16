@@ -98,15 +98,25 @@ fun hidePendingApprovalOverlay() {
 }
 
 /**
+ * When `true`, [showDisconnectedModal] no-ops. Set during an intentional teardown
+ * — a desktop update install ("Restart to install") or a confirmed quit that stops
+ * the server — where the server is shut down on purpose and the brief "Connection
+ * lost" flash before the app exits would be misleading.
+ */
+internal var suppressDisconnectedModal = false
+
+/**
  * Shows a full-screen overlay indicating that the WebSocket connection to the
  * server has been lost. Includes a "Retry" button that reloads the page.
  *
  * Called by [updateAggregateStatus] when any PTY connection enters the "disconnected" state.
+ * No-op while [suppressDisconnectedModal] is set (intentional teardown).
  *
  * @see hideDisconnectedModal
  * @see updateAggregateStatus
  */
 fun showDisconnectedModal() {
+    if (suppressDisconnectedModal) return
     if (document.getElementById("disconnected-overlay") != null) return
     val overlay = document.createElement("div") as HTMLElement
     overlay.id = "disconnected-overlay"

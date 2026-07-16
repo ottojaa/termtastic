@@ -86,8 +86,12 @@ private var updaterListenersBound = false
  * @see UpdateChannels for the channels each event maps to.
  */
 fun initAutoUpdater(currentWindow: () -> BrowserWindow?) {
-    // Never download without an explicit user action from the Updates panel.
+    // Never download without an explicit user action from the Updates banner.
     autoUpdater.autoDownload = false
+    // Updates are opt-in: a downloaded update installs ONLY when the user clicks
+    // "Restart to install" (quitAndInstall), never silently on the next app quit
+    // (electron-updater's default would auto-apply a pending download on quit).
+    autoUpdater.autoInstallOnAppQuit = false
 
     if (updaterListenersBound) return
     updaterListenersBound = true
@@ -102,6 +106,7 @@ fun initAutoUpdater(currentWindow: () -> BrowserWindow?) {
     autoUpdater.on("update-available") { info ->
         val payload = js("({})")
         payload.version = info?.version
+        payload.releaseNotesUrl = releaseNotesUrl(info?.version as? String)
         send(UpdateChannels.AVAILABLE, payload)
     }
 
@@ -119,6 +124,7 @@ fun initAutoUpdater(currentWindow: () -> BrowserWindow?) {
     autoUpdater.on("update-downloaded") { info ->
         val payload = js("({})")
         payload.version = info?.version
+        payload.releaseNotesUrl = releaseNotesUrl(info?.version as? String)
         send(UpdateChannels.DOWNLOADED, payload)
     }
 
@@ -175,4 +181,42 @@ fun quitAndInstallUpdate() {
     setImmediate {
         autoUpdater.quitAndInstall()
     }
+}
+
+/** Cached `owner/repo`-derived GitHub release-tag URL base, resolved once. */
+private var cachedReleaseTagBase: String? = null
+
+/** Whether [releaseNotesUrl] has already attempted to resolve [cachedReleaseTagBase]. */
+private var releaseTagBaseResolved = false
+
+/**
+ * Build the GitHub release page URL for [version] — the "What's new" link the
+ * renderer's update banner opens — from the packaged `app-update.yml`
+ * (`owner:` / `repo:`), which electron-updater already ships in
+ * `Contents/Resources`. Resolved and cached on first call.
+ *
+ * @param version the release version (without the leading `v`), e.g. "1.4.1".
+ * @return `https://github.com/<owner>/<repo>/releases/tag/v<version>`, or `null`
+ *   when the manifest is absent (e.g. an unpackaged dev launch) or unparseable.
+ */
+private fun releaseNotesUrl(version: String?): String? {
+    if (version.isNullOrBlank()) return null
+    if (!releaseTagBaseResolved) {
+        releaseTagBaseResolved = true
+        try {
+            val ymlPath = NodePath.join(process.resourcesPath, "app-update.yml")
+            if (NodeFs.existsSync(ymlPath)) {
+                val lines = NodeFs.readFileSync(ymlPath, "utf8").split("\n")
+                val owner = lines.firstOrNull { it.trimStart().startsWith("owner:") }?.substringAfter(":")?.trim()
+                val repo = lines.firstOrNull { it.trimStart().startsWith("repo:") }?.substringAfter(":")?.trim()
+                if (!owner.isNullOrEmpty() && !repo.isNullOrEmpty()) {
+                    cachedReleaseTagBase = "https://github.com/$owner/$repo/releases/tag"
+                }
+            }
+        } catch (_: Throwable) {
+            // Best-effort: no link rather than a crash.
+        }
+    }
+    val base = cachedReleaseTagBase ?: return null
+    return "$base/v$version"
 }

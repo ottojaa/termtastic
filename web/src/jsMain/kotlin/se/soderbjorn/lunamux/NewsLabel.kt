@@ -82,41 +82,7 @@ fun startNewsUpdatesChecker() {
 }
 
 /**
- * The most recent news/update state, retained so [applyNewsTopbarIcon] can
- * re-apply the bell when the *other* signal ([electronUpdatePending]) changes
- * without a fresh news emission.
- */
-private var lastNewsUpdatesState: NewsUpdatesBackingViewModel.State =
-    NewsUpdatesBackingViewModel.State()
-
-/**
- * Whether electron-updater currently has an update available, downloading, or
- * ready to install. Maintained by the desktop auto-updater (see
- * [setUpdaterState] in AutoUpdaterPanel.kt) and OR'd into the bell's lit state
- * by [applyNewsTopbarIcon], so the update and news signals share the one bell
- * without clobbering each other. The versions.json update branch is suppressed
- * on desktop (`enableUpdateCheck = false` above), so this is the sole update
- * source for the bell here.
- */
-internal var electronUpdatePending: Boolean = false
-
-/**
  * Reflect the current news/update state onto the top-bar bell's appearance.
- *
- * Stores [state] as [lastNewsUpdatesState] and defers the actual DOM update to
- * [applyNewsTopbarIcon], so the bell reflects both this news state and the
- * independent [electronUpdatePending] flag.
- *
- * @param state the latest news/update state.
- */
-internal fun refreshNewsTopbarIcon(state: NewsUpdatesBackingViewModel.State) {
-    lastNewsUpdatesState = state
-    applyNewsTopbarIcon()
-}
-
-/**
- * Apply the bell's appearance from [lastNewsUpdatesState] combined with
- * [electronUpdatePending].
  *
  * The bell button (`tt-topbar-news`) always lives in the DOM *and* is always
  * visible and clickable, so the News & Updates screen — and its Restore button —
@@ -124,24 +90,24 @@ internal fun refreshNewsTopbarIcon(state: NewsUpdatesBackingViewModel.State) {
  * mutating the toolkit-owned button, so the state survives the toolkit's topbar
  * rerenders):
  *
- *  - `data-tt-news="1"` when there is unread news **or** a pending desktop
- *    update; absent (rendering the bell muted/grayed via CSS) when there is
- *    nothing new.
+ *  - `data-tt-news="1"` when there is an update or unread news; absent (rendering
+ *    the bell muted/grayed via CSS) when there is nothing new.
  *  - `data-tt-news-pulse="1"` when there is actual news, so the bell pulses; a
- *    pending update on its own shows the bell coloured but static.
+ *    version update on its own shows the bell coloured but static.
  *
- * Called by [refreshNewsTopbarIcon] on each news emission and by the auto-updater
- * whenever [electronUpdatePending] flips.
+ * (Desktop app updates surface in the sidebar-footer update banner — see
+ * AutoUpdaterPanel.kt — not through this bell.)
+ *
+ * @param state the latest news/update state.
  */
-internal fun applyNewsTopbarIcon() {
+internal fun refreshNewsTopbarIcon(state: NewsUpdatesBackingViewModel.State) {
     val body = document.body ?: return
-    val state = lastNewsUpdatesState
-    if (state.hasContent || electronUpdatePending) {
+    if (state.hasContent) {
         body.setAttribute("data-tt-news", "1")
     } else {
         body.removeAttribute("data-tt-news")
     }
-    // Pulse only when there is actual news; a pending update on its own shows
+    // Pulse only when there is actual news; a version update on its own shows
     // the icon coloured (via `data-tt-news`) but leaves it static.
     if (state.hasNews) {
         body.setAttribute("data-tt-news-pulse", "1")

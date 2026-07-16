@@ -724,28 +724,17 @@ private fun buildAboutTopbarAction(): TopbarAction = TopbarAction(
  * via the `tt-news-topbar` marker class on its SVG. Replaces the former
  * sidebar-footer news/update pills, matching the mobile toolbar bell.
  *
- * @return the bell topbar action. News keeps priority (it is the bell's identity
- *   and is dismissible): the click opens the Updates panel only when a desktop
- *   update is pending AND there is no unread news; otherwise it opens the combined
- *   News & Updates screen using the shared [newsUpdatesViewModel]'s current state
- *   (a no-op before the checker starts). A pending update is always also reachable
- *   via the "Check for Updates…" menu / App Settings.
+ * @return the bell topbar action; its click opens the screen using the shared
+ *   [newsUpdatesViewModel]'s current state (a no-op before the checker starts).
+ *   (Desktop app updates are surfaced separately in the sidebar-footer update
+ *   banner — see AutoUpdaterPanel.kt — so this bell is news-only.)
  */
 private fun buildNewsTopbarAction(): TopbarAction = TopbarAction(
     id = "tt-topbar-news",
     iconHtml = ICON_NEWS,
     label = "News & updates",
     onActivate = {
-        // The bell is shared between news and the desktop auto-updater. News keeps
-        // priority so it is never stranded behind a pending update; route to the
-        // Updates panel only when an update is pending AND there is no unread news.
-        // See AutoUpdaterPanel.kt / NewsLabel.kt.
-        val hasNews = newsUpdatesViewModel?.stateFlow?.value?.hasNews == true
-        if (electronUpdatePending && !hasNews) {
-            openUpdatesPanel()
-        } else {
-            newsUpdatesViewModel?.let { showNewsDialog(it, it.stateFlow.value) }
-        }
+        newsUpdatesViewModel?.let { showNewsDialog(it, it.stateFlow.value) }
     },
 )
 
@@ -995,9 +984,11 @@ private fun buildSidebarLogo(): HTMLElement {
 }
 
 /**
- * Builds (once) the sidebar footer for the toolkit's `sidebarFooter` slot: the
- * Claude usage rows. (News and updates now live behind the pulsing top-bar bell
- * — see [buildNewsTopbarAction] — not a footer pill.)
+ * Builds (once) the sidebar footer for the toolkit's `sidebarFooter` slot: on
+ * Electron, the auto-update banner pinned at the top (see
+ * AutoUpdaterPanel.buildUpdateBanner), then the Claude usage rows and the
+ * world-status block. (News still lives behind the pulsing top-bar bell — see
+ * [buildNewsTopbarAction].)
  *
  * The Claude usage bar element keeps its `claude-usage-bar` id and is cached
  * into [usageBar] so subsequent [updateClaudeUsageBadge] writes land here; the
@@ -1013,6 +1004,13 @@ private fun buildSidebarFooter(): HTMLElement {
     sidebarFooterEl?.let { return it }
     val footer = document.createElement("div") as HTMLElement
     footer.className = "tt-sidebar-footer"
+
+    // Desktop auto-update banner, pinned at the TOP of the footer (above the
+    // Claude usage bar) — the lunamux analog of acolite's side-menu updater:
+    // hidden until an update is available / in progress, then an accent title +
+    // status/progress + Download/Restart. Electron only — a plain browser has no
+    // updater to drive. See AutoUpdaterPanel.buildUpdateBanner.
+    if (isElectronClient) footer.appendChild(buildUpdateBanner())
 
     val usage = document.createElement("div") as HTMLElement
     usage.id = "claude-usage-bar"

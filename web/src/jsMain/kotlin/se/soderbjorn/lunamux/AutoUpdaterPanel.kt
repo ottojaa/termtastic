@@ -3,28 +3,30 @@
  * -------------------
  * Renderer half of the Lunamux desktop auto-updater (Electron only).
  *
- * The Electron main process drives electron-updater (see the `electron-main`
- * module's `AutoUpdater.kt`) and forwards each lifecycle event to the renderer
- * over the preload bridge (`window.electronApi.onUpdate*`). This file:
+ * electron-updater runs in the Electron main process (see the electron-main
+ * module's AutoUpdater.kt) and forwards each lifecycle event to the renderer over
+ * the preload bridge (`window.electronApi.onUpdate*`). This file keeps a small
+ * [UpdaterUiState] state machine fed by those events and renders it as a compact
+ * banner pinned to the TOP of the left sidebar footer (mounted from
+ * `LunamuxToolkitBootstrap.buildSidebarFooter`, styled by `.lunamux-update-banner`
+ * in styles.css) — modeled on acolite's side-menu auto-updater: hidden while idle,
+ * appearing with an accent title + version, a "What's new" link (opens the GitHub
+ * release page for the new version), a progress bar, and a Download / Restart
+ * action.
  *
- *  - keeps a tiny [UpdaterUiState] state machine fed by those events
- *    ([initAutoUpdaterListeners]),
- *  - renders it as an **"Updates" section** in the App Settings sidebar
- *    ([buildUpdatesSection], registered from
- *    [buildAppSettingsContent]) with a status line, a download progress bar,
- *    and a single primary button (Check / Download / Restart), and
- *  - reflects "an update is pending" onto the existing top-bar bell (reusing
- *    [electronUpdatePending] / [applyNewsTopbarIcon] in NewsLabel.kt) and opens
- *    the panel on demand ([openUpdatesPanel] — used by the bell click and the
- *    "Check for Updates…" Help-menu item).
+ * The initial (silent) check is fired by the renderer itself in
+ * [initAutoUpdaterListeners], *after* it has subscribed, so the main process can
+ * never emit `update-available` before the renderer is listening
+ * (`webContents.send` does not buffer). [triggerUserUpdateCheck] backs the
+ * "Check for Updates…" Help-menu item.
  *
- * All entry points are safe to call outside Electron: they no-op when the
- * `electronApi` bridge (or its updater methods) is absent, and the section is
- * only appended for [isElectronClient].
+ * All entry points are safe outside Electron: they no-op when the `electronApi`
+ * bridge (or its updater methods) is absent, and the banner is only mounted for
+ * [isElectronClient].
  *
  * @see initAutoUpdaterListeners
- * @see buildUpdatesSection
- * @see openUpdatesPanel
+ * @see buildUpdateBanner
+ * @see triggerUserUpdateCheck
  */
 package se.soderbjorn.lunamux
 
@@ -34,18 +36,15 @@ import kotlin.math.roundToInt
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 
-/** DOM id of the Updates section, so [openUpdatesPanel] can scroll it into view. */
-private const val UPDATES_SECTION_ID = "lunamux-updates-section"
-
 /**
  * The phases of an update, mirroring electron-updater's lifecycle events. Drives
- * the status text and which action the primary button performs.
+ * the banner's title, visibility, and which action its button performs.
  */
 private enum class UpdaterStatus {
-    /** No check has run yet this session. */
+    /** No check has surfaced anything this session; the banner is hidden. */
     IDLE,
 
-    /** A check is in flight. */
+    /** A user-initiated check is in flight. */
     CHECKING,
 
     /** A newer version exists and can be downloaded. */
@@ -57,10 +56,10 @@ private enum class UpdaterStatus {
     /** The update finished downloading and can be installed. */
     DOWNLOADED,
 
-    /** The last check found the app already up to date. */
+    /** The last check found the app already up to date (banner hidden). */
     NOT_AVAILABLE,
 
-    /** The last operation failed. */
+    /** The last user-initiated operation failed. */
     ERROR,
 }
 
@@ -71,45 +70,49 @@ private enum class UpdaterStatus {
  * @property version the target version, when known (available/downloaded).
  * @property percent download progress 0..100, when downloading.
  * @property message an error message, when [status] is [UpdaterStatus.ERROR].
+ * @property releaseNotesUrl the new version's GitHub release page, when known;
+ *   opened by the banner's "What's new" link. Built main-side in AutoUpdater.kt.
  */
 private data class UpdaterUiState(
     val status: UpdaterStatus = UpdaterStatus.IDLE,
     val version: String? = null,
     val percent: Double? = null,
     val message: String? = null,
+    val releaseNotesUrl: String? = null,
 )
 
 /** The live updater state, updated by the events wired in [initAutoUpdaterListeners]. */
 private var updaterState = UpdaterUiState()
 
 /**
- * The mounted panel's re-render callback, or `null` when the Updates section is
- * not currently in the DOM. Set by [buildUpdatesSection] each time the sidebar
- * body is (re)built; only one App Settings sidebar exists at a time, so a single
- * slot suffices. Updates to a since-detached panel are harmless no-ops.
+ * The mounted banner's re-render callback, or `null` before the sidebar footer is
+ * built. Set once by [buildUpdateBanner]; the footer element is cached by the
+ * toolkit bootstrap, so the banner (and this callback) survive toolkit rerenders.
  */
-private var panelRender: ((UpdaterUiState) -> Unit)? = null
+private var bannerRender: ((UpdaterUiState) -> Unit)? = null
 
 /** Guards one-time event subscription in [initAutoUpdaterListeners]. */
 private var listenersInitialized = false
 
 /**
- * Whether the current (or most recent) update lifecycle was started by an
- * explicit user gesture — the panel's button or the "Check for Updates…" menu —
- * as opposed to the silent check at launch. [setUpdaterState] suppresses the
- * non-actionable phases (checking / up-to-date / error) unless this is set, so a
- * silent startup check never plants a stale resting state in the panel.
+ * Whether the current (or most recent) update lifecycle was started by an explicit
+ * user gesture — the banner's button or the "Check for Updates…" menu — as opposed
+ * to the silent check at launch. [setUpdaterState] suppresses the non-actionable
+ * phases (checking / up-to-date / error) unless this is set, so a silent startup
+ * check never surfaces the banner for a no-op or a transient offline error.
  * Available/downloading/downloaded are always surfaced regardless.
  */
 private var userInitiatedAction = false
 
 /**
- * Subscribe once to the main process's update lifecycle events and route them
- * into [updaterState] (+ the bell + any mounted panel).
+ * Subscribe once to the main process's update lifecycle events, then kick off the
+ * initial silent check.
  *
- * Called from `main.kt`'s startup inside the `isElectronClient` branch. No-ops
- * when the `electronApi` bridge or its updater methods are absent (a plain
- * browser, or an older preload), so it is always safe to call.
+ * Called from `main.kt`'s startup inside the `isElectronClient` branch. The check
+ * is fired here — *after* the `onUpdate*` subscriptions are registered — so the
+ * main process cannot emit `update-available` before the renderer is listening
+ * (that race is why an available update previously never showed on launch). No-ops
+ * when the `electronApi` bridge or its updater methods are absent.
  */
 fun initAutoUpdaterListeners() {
     if (listenersInitialized) return
@@ -119,30 +122,42 @@ fun initAutoUpdaterListeners() {
 
     api.onUpdateChecking({ setUpdaterState(UpdaterUiState(UpdaterStatus.CHECKING)) })
     api.onUpdateAvailable({ info: dynamic ->
-        setUpdaterState(UpdaterUiState(UpdaterStatus.AVAILABLE, version = info?.version as? String))
+        setUpdaterState(UpdaterUiState(
+            UpdaterStatus.AVAILABLE,
+            version = info?.version as? String,
+            releaseNotesUrl = info?.releaseNotesUrl as? String,
+        ))
     })
     api.onUpdateNotAvailable({ setUpdaterState(UpdaterUiState(UpdaterStatus.NOT_AVAILABLE)) })
     api.onUpdateProgress({ p: dynamic ->
         setUpdaterState(UpdaterUiState(UpdaterStatus.DOWNLOADING, percent = (p?.percent as? Number)?.toDouble()))
     })
     api.onUpdateDownloaded({ info: dynamic ->
-        setUpdaterState(UpdaterUiState(UpdaterStatus.DOWNLOADED, version = info?.version as? String))
+        setUpdaterState(UpdaterUiState(
+            UpdaterStatus.DOWNLOADED,
+            version = info?.version as? String,
+            releaseNotesUrl = info?.releaseNotesUrl as? String,
+        ))
     })
     api.onUpdateError({ err: dynamic ->
         setUpdaterState(UpdaterUiState(UpdaterStatus.ERROR, message = err?.message as? String))
     })
+
+    // Silent initial check, fired only now that we're subscribed. Not user-initiated,
+    // so a "nothing new" / offline result leaves the banner hidden.
+    if (api.checkForUpdates != null) api.checkForUpdates()
 }
 
 /**
- * Commit a new [UpdaterUiState]: store it, mirror "update pending" onto the
- * top-bar bell, and re-render the panel if it is mounted.
+ * Commit a new [UpdaterUiState] and re-render the banner.
+ *
+ * A silent (startup) check must not surface the banner for a non-actionable
+ * outcome, so checking / up-to-date / error are dropped unless the user asked
+ * ([userInitiatedAction]); available/downloading/downloaded are always applied.
  *
  * @param next the state to apply.
  */
 private fun setUpdaterState(next: UpdaterUiState) {
-    // Don't let the silent startup check plant a resting state: suppress the
-    // non-actionable phases (checking / up-to-date / error) unless the user asked.
-    // Available/downloading/downloaded are always surfaced (actionable regardless).
     when (next.status) {
         UpdaterStatus.CHECKING -> if (!userInitiatedAction) return
         UpdaterStatus.NOT_AVAILABLE, UpdaterStatus.ERROR -> {
@@ -152,154 +167,170 @@ private fun setUpdaterState(next: UpdaterUiState) {
         else -> {}
     }
     updaterState = next
-    // Light the shared bell while an update is available/downloading/ready. The
-    // flag is OR'd with the news state inside applyNewsTopbarIcon, so this never
-    // clobbers a concurrent news signal (and vice versa).
-    electronUpdatePending = when (next.status) {
-        UpdaterStatus.AVAILABLE, UpdaterStatus.DOWNLOADING, UpdaterStatus.DOWNLOADED -> true
-        else -> false
-    }
-    applyNewsTopbarIcon()
-    panelRender?.invoke(next)
+    bannerRender?.invoke(next)
 }
 
 /**
- * Mark the next update lifecycle as user-initiated, so its "Checking…" /
- * "up to date" / error outcome is shown in the panel (the silent startup check
- * is not). Called by `main.kt`'s "Check for Updates…" menu handler, which
- * triggers a main-process check; the panel's own button sets the flag directly.
+ * Run a user-initiated update check (marks the action so its checking / up-to-date
+ * / error outcome shows in the banner, then asks the main process to check).
+ * Backs the "Check for Updates…" Help-menu item (routed via `main.kt`). No-op-safe
+ * outside Electron.
  */
-fun markUserInitiatedUpdateAction() {
+fun triggerUserUpdateCheck() {
+    val api = window.asDynamic().electronApi ?: return
     userInitiatedAction = true
+    if (api.checkForUpdates != null) api.checkForUpdates()
 }
 
 /**
- * Open the App Settings sidebar and scroll the Updates section into view.
+ * Build the update banner for the sidebar footer.
  *
- * Called by the top-bar bell click (when an update is pending, see
- * `buildNewsTopbarAction`) and by the "Check for Updates…" Help-menu item (via
- * the `onShowUpdatesPanel` bridge). No-op-safe outside Electron.
+ * Compact and acolite-style, laid out as two short rows so nothing truncates:
+ *  - title row: an uppercase accent title + a right-aligned version (or, while
+ *    downloading, the percent);
+ *  - action row: a "What's new" link (opens the GitHub release page) or the error
+ *    message, plus a Download / Restart / Try again button — the button fills the
+ *    row when there's no left cell (once downloaded, or when no release URL);
+ *  - a full-width progress bar while downloading.
+ * Hidden entirely while idle / up-to-date. Registers itself as the live
+ * [bannerRender] target and renders the current [updaterState] immediately.
  *
- * @see openAppSettingsSidebar
+ * Mounted once by `LunamuxToolkitBootstrap.buildSidebarFooter` (gated on
+ * [isElectronClient]); the footer is cached, so this is built a single time.
+ * Styled by `.lunamux-update-banner` in styles.css (theme-token colours).
+ *
+ * @return the banner element (initially hidden via its CSS `display:none`).
  */
-fun openUpdatesPanel() {
-    openAppSettingsSidebar()
-    // The sidebar body is (re)built and slid in by the toolkit; wait a beat for
-    // it to mount before scrolling the section into view.
-    window.setTimeout({
-        val section = document.getElementById(UPDATES_SECTION_ID)
-        section?.asDynamic()?.scrollIntoView(js("({ behavior: 'smooth', block: 'start' })"))
-        Unit
-    }, 250)
-}
+fun buildUpdateBanner(): HTMLElement {
+    val banner = document.createElement("div") as HTMLElement
+    banner.className = "lunamux-update-banner"
 
-/**
- * Build the "Updates" section for the App Settings sidebar body.
- *
- * Registers itself as the live [panelRender] target and renders the current
- * [updaterState] immediately, so a section opened after an update was already
- * found shows the right state. Appended by [buildAppSettingsContent], gated on
- * [isElectronClient].
- *
- * @return the freshly-built section element.
- */
-fun buildUpdatesSection(): HTMLElement {
-    val section = document.createElement("section") as HTMLElement
-    section.className = "lunamux-app-settings-section"
-    section.id = UPDATES_SECTION_ID
+    // Title row: title (left) + version / percent chip (right).
+    val titleRow = document.createElement("div") as HTMLElement
+    titleRow.className = "lu-update-row"
+    val titleEl = document.createElement("span") as HTMLElement
+    titleEl.className = "lu-update-title"
+    val versionEl = document.createElement("span") as HTMLElement
+    versionEl.className = "lu-update-version"
+    titleRow.appendChild(titleEl)
+    titleRow.appendChild(versionEl)
+    banner.appendChild(titleRow)
 
-    val title = document.createElement("h3") as HTMLElement
-    title.className = "lunamux-app-settings-section-title"
-    title.textContent = "Updates"
-    section.appendChild(title)
+    // Action row: "What's new" link (or the error message) + the primary action.
+    val bodyRow = document.createElement("div") as HTMLElement
+    bodyRow.className = "lu-update-row"
+    val leftEl = document.createElement("span") as HTMLElement
+    leftEl.className = "lu-update-left"
+    // "What's new" opens the new version's GitHub release page in the browser.
+    // Captured by both this handler (reads) and render (writes).
+    var currentNotesUrl: String? = null
+    leftEl.addEventListener("click", { _: Event -> currentNotesUrl?.let { openExternalUrl(it) } })
+    bodyRow.appendChild(leftEl)
 
-    val row = document.createElement("div") as HTMLElement
-    row.className = "lunamux-app-settings-toggle-row"
-
-    val header = document.createElement("div") as HTMLElement
-    header.className = "lunamux-app-settings-toggle-header"
-    val statusLabel = document.createElement("span") as HTMLElement
-    statusLabel.className = "lunamux-app-settings-toggle-label"
-    header.appendChild(statusLabel)
-    row.appendChild(header)
-
-    // Download progress bar — a thin track with a currentColor fill, shown only
-    // while downloading. currentColor keeps it readable in either theme.
-    val progressTrack = document.createElement("div") as HTMLElement
-    progressTrack.style.height = "4px"
-    progressTrack.style.borderRadius = "2px"
-    progressTrack.style.background = "rgba(127, 127, 127, 0.25)"
-    progressTrack.style.margin = "8px 0"
-    progressTrack.style.setProperty("overflow", "hidden")
-    val progressBar = document.createElement("div") as HTMLElement
-    progressBar.style.height = "100%"
-    progressBar.style.width = "0%"
-    progressBar.style.background = "currentColor"
-    progressBar.style.opacity = "0.8"
-    progressBar.style.transition = "width 120ms linear"
-    progressTrack.appendChild(progressBar)
-    row.appendChild(progressTrack)
-
-    val btnRow = document.createElement("div") as HTMLElement
-    btnRow.className = "dt-settings-button-row"
-    val primaryBtn = document.createElement("button") as HTMLElement
-    (primaryBtn.asDynamic()).type = "button"
-    primaryBtn.className = "dt-settings-choice-btn"
-    // One handler, dispatching on the live status at click time so we never
-    // stack listeners across re-renders.
-    primaryBtn.addEventListener("click", { _: Event ->
+    val actionBtn = document.createElement("button") as HTMLElement
+    (actionBtn.asDynamic()).type = "button"
+    actionBtn.className = "lu-update-action"
+    // One handler, dispatching on the live status at click time. Guards each
+    // method (older preload may lack them), and optimistically advances the UI so
+    // the click feels instant rather than waiting on the first event.
+    actionBtn.addEventListener("click", { _: Event ->
         val api = window.asDynamic().electronApi ?: return@addEventListener
-        // Explicit user action, so its outcome (including errors) is shown.
         userInitiatedAction = true
-        // Guard each method: an older preload (renderer/preload version skew) may
-        // expose electronApi without the updater methods.
         when (updaterState.status) {
-            UpdaterStatus.AVAILABLE -> if (api.downloadUpdate != null) api.downloadUpdate()
-            UpdaterStatus.DOWNLOADED -> if (api.quitAndInstall != null) api.quitAndInstall()
-            else -> if (api.checkForUpdates != null) api.checkForUpdates()
+            UpdaterStatus.AVAILABLE -> {
+                if (api.downloadUpdate != null) api.downloadUpdate()
+                setUpdaterState(UpdaterUiState(UpdaterStatus.DOWNLOADING, percent = 0.0))
+            }
+            UpdaterStatus.DOWNLOADED -> {
+                // The install shuts the server down first (up to a few seconds)
+                // before the app quits, so give immediate feedback, not a dead button.
+                actionBtn.textContent = "Restarting…"
+                (actionBtn.asDynamic()).disabled = true
+                // The server is about to be stopped on purpose; don't flash the
+                // "Connection lost" modal in the moment before the app exits.
+                suppressDisconnectedModal = true
+                hideDisconnectedModal()
+                if (api.quitAndInstall != null) api.quitAndInstall()
+            }
+            else -> {
+                if (api.checkForUpdates != null) api.checkForUpdates()
+                setUpdaterState(UpdaterUiState(UpdaterStatus.CHECKING))
+            }
         }
         Unit
     })
-    btnRow.appendChild(primaryBtn)
-    row.appendChild(btnRow)
+    bodyRow.appendChild(actionBtn)
+    banner.appendChild(bodyRow)
 
-    section.appendChild(row)
+    // Progress row (shown only while downloading): a full-width bar.
+    val progressRow = document.createElement("div") as HTMLElement
+    progressRow.className = "lu-update-progress-row"
+    val track = document.createElement("div") as HTMLElement
+    track.className = "lu-update-progress"
+    val fill = document.createElement("div") as HTMLElement
+    fill.className = "lu-update-progress-fill"
+    fill.style.setProperty("width", "0%")
+    track.appendChild(fill)
+    progressRow.appendChild(track)
+    banner.appendChild(progressRow)
 
-    /** Reflect [s] onto the status line, progress bar, and primary button. */
+    /** Reflect [s] onto the banner: visibility, title/version, link/message, progress, button. */
     fun render(s: UpdaterUiState) {
-        val pct = s.percent?.roundToInt()
-        progressTrack.style.display = if (s.status == UpdaterStatus.DOWNLOADING) "block" else "none"
-        if (s.status == UpdaterStatus.DOWNLOADING) progressBar.style.width = "${pct ?: 0}%"
+        val visible = s.status != UpdaterStatus.IDLE && s.status != UpdaterStatus.NOT_AVAILABLE
+        banner.style.setProperty("display", if (visible) "flex" else "none")
+        if (!visible) return
+        currentNotesUrl = s.releaseNotesUrl
 
-        val (statusText, buttonText, disabled) = when (s.status) {
-            UpdaterStatus.IDLE ->
-                Triple("Check whether a newer version is available.", "Check for updates", false)
-            UpdaterStatus.CHECKING ->
-                Triple("Checking for updates…", "Checking…", true)
-            UpdaterStatus.AVAILABLE ->
-                Triple(
-                    "Update available" + (s.version?.let { " — v$it" } ?: "") + ".",
-                    "Download", false,
-                )
-            UpdaterStatus.DOWNLOADING ->
-                Triple("Downloading update…" + (pct?.let { " $it%" } ?: ""), "Downloading…", true)
-            UpdaterStatus.DOWNLOADED ->
-                Triple(
-                    "Update ready" + (s.version?.let { " (v$it)" } ?: "") + " — restart to install.",
-                    "Restart to install", false,
-                )
-            UpdaterStatus.NOT_AVAILABLE ->
-                Triple("You're on the latest version.", "Check for updates", false)
-            UpdaterStatus.ERROR ->
-                Triple("Update check failed" + (s.message?.let { ": $it" } ?: "") + ".", "Try again", false)
+        val showBody = s.status == UpdaterStatus.AVAILABLE ||
+            s.status == UpdaterStatus.DOWNLOADED ||
+            s.status == UpdaterStatus.ERROR
+        bodyRow.style.setProperty("display", if (showBody) "flex" else "none")
+        progressRow.style.setProperty("display", if (s.status == UpdaterStatus.DOWNLOADING) "flex" else "none")
+
+        // "What's new" shows only when available with a release URL; the error
+        // message uses the same cell. Once downloaded (or when there's no URL) the
+        // button fills the row — installing/downloading is the only action left.
+        val hasNotes = !s.releaseNotesUrl.isNullOrBlank()
+        val showLeft = (s.status == UpdaterStatus.AVAILABLE && hasNotes) || s.status == UpdaterStatus.ERROR
+        val fullButton = s.status == UpdaterStatus.DOWNLOADED || (s.status == UpdaterStatus.AVAILABLE && !hasNotes)
+        leftEl.style.setProperty("display", if (showLeft) "" else "none")
+        actionBtn.classList.toggle("lu-update-action-full", fullButton)
+
+        when (s.status) {
+            UpdaterStatus.CHECKING -> {
+                titleEl.textContent = "Checking for updates"
+                versionEl.textContent = ""
+            }
+            UpdaterStatus.AVAILABLE -> {
+                titleEl.textContent = "Update available"
+                versionEl.textContent = s.version?.let { "v$it" } ?: ""
+                leftEl.className = "lu-update-left lu-update-link"
+                leftEl.textContent = "What's new"
+                actionBtn.textContent = "Download"
+            }
+            UpdaterStatus.DOWNLOADING -> {
+                titleEl.textContent = "Downloading"
+                val pct = s.percent?.roundToInt() ?: 0
+                versionEl.textContent = "$pct%"
+                fill.style.setProperty("width", "$pct%")
+            }
+            UpdaterStatus.DOWNLOADED -> {
+                titleEl.textContent = "Update ready"
+                versionEl.textContent = s.version?.let { "v$it" } ?: ""
+                actionBtn.textContent = "Restart to install"
+            }
+            UpdaterStatus.ERROR -> {
+                titleEl.textContent = "Update failed"
+                versionEl.textContent = ""
+                leftEl.className = "lu-update-left"
+                leftEl.textContent = s.message ?: "Something went wrong"
+                actionBtn.textContent = "Try again"
+            }
+            else -> {}
         }
-        statusLabel.textContent = statusText
-        primaryBtn.textContent = buttonText
-        (primaryBtn.asDynamic()).disabled = disabled
     }
 
-    panelRender = ::render
+    bannerRender = ::render
     render(updaterState)
-
-    return section
+    return banner
 }

@@ -32,6 +32,11 @@
 #   --no-notarize        Build unsigned (identity=null) and skip notarization.
 #                        Implies a test build. (Unsigned macOS apps cannot
 #                        auto-update; prefer --identity for update testing.)
+#   --no-publish         Build locally only — skip creating/uploading the GitHub
+#                        release. For fast local build → install test loops (e.g.
+#                        iterating on the app or the update banner) without
+#                        creating a release each time. Artifacts stay in
+#                        electron/dist/ for you to install by hand.
 #
 # Production build (no --identity / --no-notarize): signs + notarizes with the
 # maintainer's Developer ID (from electron/package.json) and staples the DMG,
@@ -56,12 +61,14 @@ VERSION=""
 REPO="soderbjorn/lunamux"
 IDENTITY=""
 NO_NOTARIZE=0
+NO_PUBLISH=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo) REPO="$2"; shift 2 ;;
         --identity) IDENTITY="$2"; shift 2 ;;
         --no-notarize) NO_NOTARIZE=1; shift ;;
-        -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+        --no-publish) NO_PUBLISH=1; shift ;;
+        -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
         -*) echo "Unknown option: $1" >&2; exit 2 ;;
         *) if [[ -z "$VERSION" ]]; then VERSION="$1"; shift; else echo "Unexpected arg: $1" >&2; exit 2; fi ;;
     esac
@@ -187,6 +194,16 @@ if [[ $TEST_BUILD == 0 ]]; then
         --team-id "$APPLE_TEAM_ID_PERSONAL" --wait
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
+fi
+
+# Build-only: stop before publishing (fast local build → install loops).
+if [[ $NO_PUBLISH == 1 ]]; then
+    echo
+    echo "==> Built locally (--no-publish); no GitHub release created."
+    echo "    Artifacts in $DIST:"
+    for a in "$DIST"/*.dmg "$DIST"/*.zip; do [[ -e "$a" ]] && echo "      $(basename "$a")"; done
+    echo "    Install the .dmg to test the app / update banner."
+    exit 0
 fi
 
 # ── 4. Publish the draft release with ALL update metadata ────────────

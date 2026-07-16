@@ -659,12 +659,9 @@ private fun start() {
     // (App Settings sidebar). Forwarded from the Electron main process via the
     // `show-updates-panel` IPC.
     if (electronApi?.onShowUpdatesPanel != null) {
-        // The menu item triggers a main-process check, so its outcome should show
-        // in the panel (unlike the silent startup check).
-        electronApi.onShowUpdatesPanel({
-            markUserInitiatedUpdateAction()
-            openUpdatesPanel()
-        })
+        // Help menu → "Check for Updates…": run a user-initiated check; the result
+        // shows in the sidebar-footer update banner. See triggerUserUpdateCheck.
+        electronApi.onShowUpdatesPanel({ triggerUserUpdateCheck() })
     }
 
     // 3D world → leave engage mode from inside a web pane. A `<webview>`
@@ -707,6 +704,12 @@ private fun start() {
                 val payload = js("({})")
                 payload.confirmed = result.confirmed
                 payload.killServer = result.killServer
+                // Stopping the server drops the socket; don't flash the "Connection
+                // lost" modal in the moment before the app quits.
+                if (result.confirmed && result.killServer) {
+                    suppressDisconnectedModal = true
+                    hideDisconnectedModal()
+                }
                 electronApi.respondQuitConfirmation(payload)
             }
         })

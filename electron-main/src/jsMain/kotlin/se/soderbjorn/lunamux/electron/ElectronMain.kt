@@ -799,15 +799,16 @@ private fun buildAppMenu() {
     val gitHubItem: dynamic = js("({})")
     gitHubItem.label = "Star on GitHub"
     gitHubItem.click = { shell.openExternal(LUNAMUX_GITHUB_URL) }
-    // "Check for Updates…" runs a check now (packaged builds only — a no-op in
-    // dev) and asks the renderer to open the Updates panel so the result is
-    // visible. See [AutoUpdater] / [UpdateChannels].
+    // "Check for Updates…" asks the renderer to run a user-initiated check; it
+    // fires the update:check IPC (after marking it user-initiated) so the outcome
+    // — checking / up-to-date / error — shows in the sidebar update banner rather
+    // than being silently swallowed. See [AutoUpdater] / [UpdateChannels] and
+    // AutoUpdaterPanel.triggerUserUpdateCheck.
     val updatesItem: dynamic = js("({})")
     updatesItem.label = "Check for Updates…"
     updatesItem.click = {
         val w = mainWindow
         if (w != null && !w.isDestroyed()) {
-            checkForUpdates()
             w.webContents.send(UpdateChannels.SHOW_PANEL)
         }
     }
@@ -1602,10 +1603,10 @@ fun main() {
 
         ensureServerThenCreateWindow().then {
             if (!IS_DEV_LAUNCH) registerGlobalShortcut()
-            // Silent background update check on launch. Packaged builds only:
-            // checkForUpdates itself no-ops when unpackaged (dev/demo have no
-            // app-update.yml), but guarding here avoids the call entirely.
-            if (app.isPackaged) checkForUpdates()
+            // The renderer fires the initial (silent) update check itself, from
+            // AutoUpdaterPanel.initAutoUpdaterListeners — after it has subscribed to
+            // the update events — so an update-available event can't be emitted
+            // before the renderer is listening (webContents.send doesn't buffer).
         }
     }
 
