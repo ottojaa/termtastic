@@ -41,7 +41,7 @@
       "target": "dmg",
       "category": "public.app-category.developer-tools",
       "bundleVersion": "12",
-      "bundleShortVersion": "1.8.0",
+      "bundleShortVersion": "1.9.0",
       "identity": "Robert Söderbjörn (CCJP95ZXG4)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
