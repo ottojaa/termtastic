@@ -13,7 +13,7 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 import se.soderbjorn.lunamux.client.viewmodel.resolvedTheme
 
 /** Feature flag: when true, applies a "spiced" variant to dark themes. Currently disabled. */

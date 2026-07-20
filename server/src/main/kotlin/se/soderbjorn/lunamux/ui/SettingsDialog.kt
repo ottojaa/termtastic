@@ -31,7 +31,7 @@
  */
 package se.soderbjorn.lunamux.ui
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image

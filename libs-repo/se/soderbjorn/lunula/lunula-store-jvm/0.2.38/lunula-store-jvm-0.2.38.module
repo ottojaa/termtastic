@@ -1,0 +1,116 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../lunula-store/0.2.38/lunula-store-0.2.38.module",
+    "group": "se.soderbjorn.lunula",
+    "module": "lunula-store",
+    "version": "0.2.38",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.3"
+    }
+  },
+  "variants": [
+    {
+      "name": "jvmApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "se.soderbjorn.lunula",
+          "module": "lunula-core",
+          "version": {
+            "requires": "0.2.38"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.3.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "lunula-store-jvm-0.2.38.jar",
+          "url": "lunula-store-jvm-0.2.38.jar",
+          "size": 60542,
+          "sha512": "bda70d1a8728d303ce60e9f9c522718388346e13098c0a9980aaef7f5a4f31b6f1d4330c4e77aadb39244c6c501a1a23e4e83a379e41960b14176da17011b32a",
+          "sha256": "136bc0991514fde03c7b6c84d43199300b54b31e36b198cf3bab30336178f82c",
+          "sha1": "360fb571ca2e0bb75672fa758cd7caf64e113f77",
+          "md5": "3e87079c86fe501618b50e744f4432cb"
+        }
+      ]
+    },
+    {
+      "name": "jvmRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "se.soderbjorn.lunula",
+          "module": "lunula-core",
+          "version": {
+            "requires": "0.2.38"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.3.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "lunula-store-jvm-0.2.38.jar",
+          "url": "lunula-store-jvm-0.2.38.jar",
+          "size": 60542,
+          "sha512": "bda70d1a8728d303ce60e9f9c522718388346e13098c0a9980aaef7f5a4f31b6f1d4330c4e77aadb39244c6c501a1a23e4e83a379e41960b14176da17011b32a",
+          "sha256": "136bc0991514fde03c7b6c84d43199300b54b31e36b198cf3bab30336178f82c",
+          "sha1": "360fb571ca2e0bb75672fa758cd7caf64e113f77",
+          "md5": "3e87079c86fe501618b50e744f4432cb"
+        }
+      ]
+    },
+    {
+      "name": "jvmSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "files": [
+        {
+          "name": "lunula-store-jvm-0.2.38-sources.jar",
+          "url": "lunula-store-jvm-0.2.38-sources.jar",
+          "size": 22004,
+          "sha512": "4781bf68e17aaa995c8358d632985d976e57ff00a0b3f977d8a34d2e9ab672a46ddda940d20c92c3cea18ad24e38cca19bba12c2e2f28f2c79eba99c7c1a0eb4",
+          "sha256": "3974d1c4728ea45176c977a2132e57acb13afbf82499e221e9c1cccb1722b30c",
+          "sha1": "be8512c1280fd57e655074080628f0abb51aa5cd",
+          "md5": "bc4301939dde400d10671ed5b0fce600"
+        }
+      ]
+    }
+  ]
+}

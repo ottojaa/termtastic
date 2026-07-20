@@ -20,9 +20,9 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
 import kotlin.time.TimeSource
 
 /**

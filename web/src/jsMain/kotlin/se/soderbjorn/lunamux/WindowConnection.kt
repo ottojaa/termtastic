@@ -16,7 +16,7 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.web.showConfirmDialog
+import se.soderbjorn.lunula.web.showConfirmDialog
 
 import kotlinx.browser.document
 import kotlinx.browser.window

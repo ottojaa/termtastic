@@ -23,7 +23,7 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.core.Persister
+import se.soderbjorn.lunula.core.Persister
 import se.soderbjorn.lunamux.client.LunamuxClient
 import se.soderbjorn.lunamux.client.WindowSocket
 import se.soderbjorn.lunamux.client.viewmodel.AppBackingViewModel

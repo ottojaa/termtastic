@@ -3,7 +3,7 @@
  * ---------------------
  * Lunamux's body factory for the toolkit-supplied "App settings"
  * right-sidebar slot (see
- * [se.soderbjorn.darkness.web.shell.AppShellSpec.appSettingsContent]).
+ * [se.soderbjorn.lunula.web.shell.AppShellSpec.appSettingsContent]).
  *
  * The toolkit owns the sidebar chrome (header, close affordance,
  * slide-in animation, mutual exclusion with the Theme Manager and
@@ -81,7 +81,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
-import se.soderbjorn.darkness.web.hotkey.isMacPlatform
+import se.soderbjorn.lunula.web.hotkey.isMacPlatform
 
 /** Persistence key for the experimental file-browser flag. */
 private const val KEY_EXPERIMENTAL_FILE_BROWSER = "experimentalFileBrowser"
@@ -220,7 +220,7 @@ private const val ICON_THEMES =
 /**
  * Typography "Aa" glyph for the "Appearance" navigation button — a verbatim
  * copy of the toolkit topbar's Appearance ("Aa") button glyph
- * (`ICON_APPEARANCE` in darkness-toolkit `TopBarActions.kt`) so the settings
+ * (`ICON_APPEARANCE` in lunula `TopBarActions.kt`) so the settings
  * row and the toolbar button that both open Appearance show the same mark.
  */
 private const val ICON_APPEARANCE =

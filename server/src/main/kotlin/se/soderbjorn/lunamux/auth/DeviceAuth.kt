@@ -23,7 +23,7 @@
  */
 package se.soderbjorn.lunamux.auth
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.selection.selectable

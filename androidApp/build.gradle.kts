@@ -155,8 +155,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 
-    // Published darkness toolkit Compose components (the world switcher globe).
-    implementation(libs.darkness.compose)
+    // Published lunula toolkit Compose components (the world switcher globe).
+    implementation(libs.lunula.compose)
 
     // QR scanner for device pairing: the Google code scanner, which supplies
     // its own scanning UI and runs the camera inside a Play Services process,

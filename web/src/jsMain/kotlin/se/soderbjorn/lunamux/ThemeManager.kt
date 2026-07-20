@@ -1,8 +1,8 @@
 /**
- * Lunamux-side adapter for the darkness-toolkit theme manager.
+ * Lunamux-side adapter for the lunula theme manager.
  *
  * The full two-tab Theme Manager modal now lives in the toolkit at
- * `se.soderbjorn.darkness.web.themeeditor.ThemeManager`. This file owns
+ * `se.soderbjorn.lunula.web.themeeditor.ThemeManager`. This file owns
  * the lunamux-specific glue:
  *
  * 1. [LunamuxThemeManagerHost] — a [ThemeManagerHost] adapter that
@@ -11,24 +11,24 @@
  * 2. [showThemeManager] — Lunamux's old entry point. Wraps the toolkit
  *    panel in a sized `.theme-manager-sidebar` slot (so it doesn't claim
  *    all available flex-row width inside `.dt-app-frame-body`) and forwards
- *    to the toolkit's `openDarknessThemeManager`. [closeThemeManager] coordinates
+ *    to the toolkit's `openLunulaThemeManager`. [closeThemeManager] coordinates
  *    the wrapper's slide-out with the toolkit's panel-fade close path.
  * 3. [refreshThemeManager] — pass-through to the toolkit so external
  *    callers (window-state observers, server reconciliation, etc.) can
  *    poke the open editor.
  *
- * @see se.soderbjorn.darkness.web.themeeditor.showThemeManager
+ * @see se.soderbjorn.lunula.web.themeeditor.showThemeManager
  * @see AppBackingViewModel
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.web.shell.AppFrameClassNames
+import se.soderbjorn.lunula.web.shell.AppFrameClassNames
 
-import se.soderbjorn.darkness.core.*
-import se.soderbjorn.darkness.web.themeeditor.ThemeManagerHost
-import se.soderbjorn.darkness.web.themeeditor.showThemeManager as openDarknessThemeManager
-import se.soderbjorn.darkness.web.themeeditor.refreshThemeManager as refreshDarknessThemeManager
-import se.soderbjorn.darkness.web.themeeditor.closeThemeManager as closeDarknessThemeManager
+import se.soderbjorn.lunula.core.*
+import se.soderbjorn.lunula.web.themeeditor.ThemeManagerHost
+import se.soderbjorn.lunula.web.themeeditor.showThemeManager as openLunulaThemeManager
+import se.soderbjorn.lunula.web.themeeditor.refreshThemeManager as refreshLunulaThemeManager
+import se.soderbjorn.lunula.web.themeeditor.closeThemeManager as closeLunulaThemeManager
 
 import kotlinx.browser.document
 import kotlinx.browser.window
@@ -260,7 +260,7 @@ fun showThemeManager(
         }
     })
 
-    openDarknessThemeManager(
+    openLunulaThemeManager(
         hostArg = LunamuxThemeManagerHost,
         mountInto = wrapper,
         initialTab = initialTab,
@@ -274,7 +274,7 @@ fun showThemeManager(
 }
 
 /**
- * Lunamux-side wrapper around the toolkit's [closeDarknessThemeManager].
+ * Lunamux-side wrapper around the toolkit's [closeLunulaThemeManager].
  *
  * When the lunamux-owned wrapper slot is mounted, defers [onClosed] until
  * the wrapper has finished sliding out (so handoffs like opening the settings
@@ -285,19 +285,19 @@ fun showThemeManager(
 fun closeThemeManager(onClosed: (() -> Unit)? = null) {
     val wrapper = themeManagerPanel
     if (wrapper == null) {
-        closeDarknessThemeManager(onClosed)
+        closeLunulaThemeManager(onClosed)
         return
     }
     pendingThemeManagerOnClosed = onClosed
-    closeDarknessThemeManager(onClosed = null)
+    closeLunulaThemeManager(onClosed = null)
 }
 
 /**
- * Lunamux-side wrapper around the toolkit's [refreshDarknessThemeManager].
+ * Lunamux-side wrapper around the toolkit's [refreshLunulaThemeManager].
  *
  * Called by window-state observers and server reconciliation to repaint
  * the open editor when external state changes.
  */
 fun refreshThemeManager() {
-    refreshDarknessThemeManager()
+    refreshLunulaThemeManager()
 }

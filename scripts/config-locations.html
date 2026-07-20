@@ -291,7 +291,7 @@
   <section>
     <div class="sec-head"><span class="sec-num">03</span><h3>Shared Darkness UI-settings</h3></div>
     <p class="sec-loc"><code>~/Library/Application Support/Darkness/</code></p>
-    <p class="sec-desc">Written by darkness-toolkit's <code>toolkit-store</code> (JVM), via the server. This directory is <b>shared by every Darkness app</b>, so the script deletes only this app's files (each backed up first) and leaves the rest.</p>
+    <p class="sec-desc">Written by Lunula's <code>lunula-store</code> (JVM), via the server. This directory is <b>shared by every Darkness app</b>, so the script deletes only this app's files (each backed up first) and leaves the rest.</p>
     <div class="tbl-scroll"><table>
       <thead><tr><th>File</th><th>What it is</th><th>Name</th><th>Script</th></tr></thead>
       <tbody>
@@ -352,8 +352,8 @@
     <div class="tbl-scroll"><table>
       <thead><tr><th>Path</th><th>Why it's safe</th><th></th></tr></thead>
       <tbody>
-        <tr><td><span class="path">Darkness/notegrow.json</span> · <span class="path">treefacts.json</span> · <span class="path">darkness-demo.json</span> · <span class="path">Notegrow/</span> · <span class="path">TreeFacts/</span> · <span class="path">DarknessDemo/</span></td><td class="who">Other Darkness apps' settings and userData.</td><td><span class="chip keep">left alone</span></td></tr>
-        <tr><td><span class="path">Application Support/DarknessDemo</span> · <span class="path">Notegrow</span> · <span class="path">DarknessIRC</span> · <span class="path">TreeFacts</span></td><td class="who">Separate apps entirely.</td><td><span class="chip keep">left alone</span></td></tr>
+        <tr><td><span class="path">Darkness/notegrow.json</span> · <span class="path">treefacts.json</span> · <span class="path">lunula-demo.json</span> · <span class="path">darkness-demo.json</span> · <span class="path">Notegrow/</span> · <span class="path">TreeFacts/</span> · <span class="path">LunulaDemo/</span> · <span class="path">DarknessDemo/</span></td><td class="who">Other Darkness apps' settings and userData.</td><td><span class="chip keep">left alone</span></td></tr>
+        <tr><td><span class="path">Application Support/LunulaDemo</span> · <span class="path">Notegrow</span> · <span class="path">DarknessIRC</span> · <span class="path">TreeFacts</span></td><td class="who">Separate apps entirely.</td><td><span class="chip keep">left alone</span></td></tr>
         <tr><td><span class="path">Application Support/Electron</span></td><td class="who">Shared default dir for every unpackaged Electron dev app — too broad to touch.</td><td><span class="chip keep">left alone</span></td></tr>
         <tr><td><span class="path">macOS Keychain</span></td><td class="who">Desktop stores its token in <code>local_state.json</code>, not the Keychain (that's iOS-only). Nothing to clear.</td><td><span class="chip keep">n/a</span></td></tr>
       </tbody>

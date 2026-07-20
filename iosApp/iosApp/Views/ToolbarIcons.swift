@@ -3,7 +3,7 @@
 /// Both shapes here are drawn from scratch with SwiftUI `Path`s using the same
 /// 24-unit coordinate geometry as their Android (`LayoutGridIcon` / `PlusIcon`
 /// in `ToolbarIcons.kt`) and web (`ICON_LAYOUT` / `ICON_NEW_TAB` inline SVGs in
-/// darkness-toolkit) counterparts, so every platform shows an identical mark.
+/// lunula) counterparts, so every platform shows an identical mark.
 /// They replace the SF Symbols `rectangle.3.group` and `plus` in the Sessions
 /// toolbar (`TreeView`).
 

@@ -433,7 +433,7 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
  * command to the server to update the PTY size.
  *
  * Called by the "Reformat" button in the pane header *and* automatically
- * from [se.soderbjorn.darkness.web.shell.AppShellSpec.onGeometryChanged]
+ * from [se.soderbjorn.lunula.web.shell.AppShellSpec.onGeometryChanged]
  * after every committed geometry change (split-bar resize end,
  * maximize/restore, layout-preset apply) to reclaim unused terminal
  * space without requiring the user to click Reformat.

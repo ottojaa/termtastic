@@ -10,12 +10,12 @@
  * [se.soderbjorn.lunamux.android.ui.LunamuxApp] so that all screens
  * can access the resolved theme without fetching independently.
  *
- * @see se.soderbjorn.darkness.core.ResolvedTheme
+ * @see se.soderbjorn.lunula.core.ResolvedTheme
  * @see se.soderbjorn.lunamux.client.LunamuxThemeConfig
  */
 package se.soderbjorn.lunamux.android.ui
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.TextFieldColors
@@ -23,7 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
-import se.soderbjorn.darkness.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ResolvedTheme
 
 /**
  * Composition-local providing the user's resolved [ResolvedTheme].

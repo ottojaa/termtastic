@@ -16,7 +16,7 @@ const { contextBridge, webUtils, ipcRenderer } = require("electron");
 
 // Authoritative window-chrome flag passed by ElectronMain.kt via
 // `webPreferences.additionalArguments`. Mirrored onto `darknessApi.customTitleBar`
-// below so darkness-toolkit's `autoApplyCustomTitleBarBodyClass` can
+// below so lunula's `autoApplyCustomTitleBarBodyClass` can
 // synchronously toggle `dt-custom-titlebar` on the first frame, before
 // Lunamux's server-backed settings hydrate over the WebSocket.
 const customTitleBarArg = (process.argv || []).find(a => a && a.startsWith("--darkness-custom-titlebar="));
@@ -399,8 +399,8 @@ contextBridge.exposeInMainWorld("electronApi", {
 });
 
 /**
- * Cross-app `darknessApi` namespace — shared by every Darkness app
- * (Lunamux, notegrow, ...) so the darkness-toolkit's renderer code can
+ * Cross-app `darknessApi` namespace — shared by every Lunula app
+ * (Lunamux, notegrow, ...) so the lunula's renderer code can
  * speak to whichever Electron host is hosting it without app-specific
  * branching. Currently only carries the custom-titlebar toggle; the
  * toolkit's `AppShellMount` subscriber invokes it whenever the persisted
@@ -409,7 +409,7 @@ contextBridge.exposeInMainWorld("electronApi", {
 contextBridge.exposeInMainWorld("darknessApi", {
   /**
    * Boot-time custom-titlebar flag from the main process's
-   * `electron-chrome.json` cache. Consumed by darkness-toolkit's
+   * `electron-chrome.json` cache. Consumed by lunula's
    * `autoApplyCustomTitleBarBodyClass` to set `dt-custom-titlebar`
    * synchronously, before server-backed settings hydrate.
    *
@@ -440,9 +440,9 @@ contextBridge.exposeInMainWorld("darknessApi", {
   /**
    * Subscribe to macOS native fullscreen state changes from the Electron
    * main process. Mirror of `electronApi.onFullscreenChange` published on
-   * the cross-app `darknessApi` namespace so darkness-toolkit's
+   * the cross-app `darknessApi` namespace so lunula's
    * `autoWireMacFullscreenBodyClass` (called from
-   * `injectDarknessToolkitStyles`) can pick it up without Lunamux
+   * `injectLunulaStyles`) can pick it up without Lunamux
    * having to manually wire `setDtMacFullscreenBodyClass` in main.kt.
    *
    * Fires once at boot reflecting the window's current state and again

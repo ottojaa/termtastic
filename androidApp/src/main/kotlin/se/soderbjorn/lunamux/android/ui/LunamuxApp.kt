@@ -8,7 +8,7 @@
  * for pane IDs, session IDs, and file paths.
  *
  * On connection, fetches the user's theme config from the server, resolves it
- * to a flat [se.soderbjorn.darkness.core.ResolvedTheme], and provides it via
+ * to a flat [se.soderbjorn.lunula.core.ResolvedTheme], and provides it via
  * [LocalUiSettings] so that all screens can access the selected theme without
  * independent network calls.
  *
@@ -52,8 +52,8 @@ import se.soderbjorn.lunamux.android.net.ConnectionHolder
 import se.soderbjorn.lunamux.android.LunamuxDarkColorScheme
 import se.soderbjorn.lunamux.android.LunamuxLightColorScheme
 import se.soderbjorn.lunamux.client.viewmodel.ThemeBackingViewModel
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
-import se.soderbjorn.darkness.core.isColorLight
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.isColorLight
 import se.soderbjorn.lunamux.WindowConfig
 
 /**
@@ -71,7 +71,7 @@ import se.soderbjorn.lunamux.WindowConfig
  *
  * Fetches the theme config from the server when a client connection is
  * available, resolves it for the current appearance, and provides the
- * resulting [se.soderbjorn.darkness.core.ResolvedTheme] via [LocalUiSettings]
+ * resulting [se.soderbjorn.lunula.core.ResolvedTheme] via [LocalUiSettings]
  * so all descendant composables (sidebar screens, terminal, diff, file
  * browser) can access the user's selected theme.
  *

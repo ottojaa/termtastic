@@ -26,7 +26,7 @@ import org.w3c.dom.Node
 import org.w3c.dom.events.FocusEvent
 import org.w3c.dom.events.MouseEvent
 import kotlin.js.json
-import se.soderbjorn.darkness.web.themeeditor.resolveFontFamilyCss
+import se.soderbjorn.lunula.web.themeeditor.resolveFontFamilyCss
 
 /**
  * Attaches drag-and-drop file handling to a terminal container.
@@ -770,7 +770,7 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
  *   `.dt-pane-content`. Returns a placeholder with the pane id when the
  *   pane is missing from the live config (race during teardown).
  *
- * @see se.soderbjorn.darkness.web.shell.AppShellSpec.paneContent
+ * @see se.soderbjorn.lunula.web.shell.AppShellSpec.paneContent
  * @see ensureTerminal
  */
 fun mountPaneContent(paneId: String): HTMLElement {

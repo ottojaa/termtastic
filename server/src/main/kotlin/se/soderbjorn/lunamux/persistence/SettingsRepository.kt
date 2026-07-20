@@ -16,10 +16,10 @@
  * can push live updates to all connected renderers when the user toggles
  * dark/light mode.
  *
- * **UI settings persistence is owned by `toolkit-store`**, not SQLite.
+ * **UI settings persistence is owned by `lunula-store`**, not SQLite.
  * [loadUiSettings] / [mergeUiSettings] read and write **two** files:
  *  - `defaultSharedThemesPath()` — cross-app `themes.json` holding theme
- *    and scheme *definitions* shared across every Darkness app.
+ *    and scheme *definitions* shared across every Lunula app.
  *  - `defaultAppUiSettingsPath("termtastic")` — Lunamux's per-app
  *    settings file holding *selections* (selected theme slots,
  *    appearance, fonts, sizes, app toggles).
@@ -48,21 +48,21 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.slf4j.LoggerFactory
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.DEFAULT_DARK_THEME
-import se.soderbjorn.darkness.core.DEFAULT_LIGHT_THEME
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.SHARED_THEMES_KEYS
-import se.soderbjorn.darkness.core.Theme
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
-import se.soderbjorn.darkness.core.allThemes
-import se.soderbjorn.darkness.core.builtinTheme
-import se.soderbjorn.darkness.core.hexToArgb
-import se.soderbjorn.darkness.core.mergeSharedThemes
-import se.soderbjorn.darkness.store.defaultAppUiSettingsPath
-import se.soderbjorn.darkness.store.defaultSharedThemesPath
-import se.soderbjorn.darkness.store.readUiSettingsRaw
-import se.soderbjorn.darkness.store.writeUiSettingsRaw
+import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.DEFAULT_DARK_THEME
+import se.soderbjorn.lunula.core.DEFAULT_LIGHT_THEME
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.SHARED_THEMES_KEYS
+import se.soderbjorn.lunula.core.Theme
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.allThemes
+import se.soderbjorn.lunula.core.builtinTheme
+import se.soderbjorn.lunula.core.hexToArgb
+import se.soderbjorn.lunula.core.mergeSharedThemes
+import se.soderbjorn.lunula.store.defaultAppUiSettingsPath
+import se.soderbjorn.lunula.store.defaultSharedThemesPath
+import se.soderbjorn.lunula.store.readUiSettingsRaw
+import se.soderbjorn.lunula.store.writeUiSettingsRaw
 import se.soderbjorn.lunamux.FileBrowserContent
 import se.soderbjorn.lunamux.GitContent
 import se.soderbjorn.lunamux.LeafContent
@@ -452,15 +452,15 @@ class SettingsRepository(dbFile: File) {
 
     /**
      * Lunamux's [appName] for the per-app UI-settings file. Used as the
-     * filename stem (e.g. `termtastic.json`) under the shared Darkness
+     * filename stem (e.g. `termtastic.json`) under the shared Lunula
      * directory.
      */
     private val appName: String = "termtastic"
 
     /**
-     * Path to the shared Darkness theme/scheme **definitions** file
-     * (`themes.json`), owned by `toolkit-store`. This file is shared
-     * across every Darkness app on this machine: custom themes/schemes
+     * Path to the shared Lunula theme/scheme **definitions** file
+     * (`themes.json`), owned by `lunula-store`. This file is shared
+     * across every Lunula app on this machine: custom themes/schemes
      * authored in one app are visible in the others. Falls back to a
      * sub-path of the Lunamux data dir if the OS-conventional path
      * can't be resolved (rare — `user.home` would have to be missing).
@@ -472,7 +472,7 @@ class SettingsRepository(dbFile: File) {
      * Path to Lunamux's per-app UI-settings file (`termtastic.json`).
      * Holds the user's selections + UI preferences (selected theme slots,
      * appearance, fonts, sizes, app-specific toggles) — *not* shared with
-     * other Darkness apps.
+     * other Lunula apps.
      */
     private val appSettingsPath: String =
         defaultAppUiSettingsPath(appName)
@@ -700,7 +700,7 @@ class SettingsRepository(dbFile: File) {
      * Replace the in-memory UI settings snapshot with [snapshot] without
      * touching disk. Called by the file-watch subscription installed in
      * [se.soderbjorn.lunamux.installSharedThemesWatcher] when an
-     * external Darkness app rewrites either of the two backing files.
+     * external Lunula app rewrites either of the two backing files.
      *
      * @param snapshot the new in-memory snapshot to publish to subscribers
      */
@@ -716,7 +716,7 @@ class SettingsRepository(dbFile: File) {
      *
      * Both writes are atomic and last-writer-wins on each file
      * independently — the partition is deterministic so concurrent writes
-     * from another Darkness app and Lunamux only race within their
+     * from another Lunula app and Lunamux only race within their
      * respective scopes.
      *
      * No-op guard: when the merge produces a value identical to the current
@@ -746,7 +746,7 @@ class SettingsRepository(dbFile: File) {
         // in-memory snapshot was last refreshed by the file watcher)
         // aren't clobbered by our wholesale rewrite. [mergeSharedThemes]
         // returns canonical nested form, which is also the on-disk
-        // format every Darkness app reads. The per-app file is
+        // format every Lunula app reads. The per-app file is
         // single-writer so it doesn't need merging.
         val sharedOnDisk = JsonObject(readJsonObject(sharedThemesPath))
         val sharedFinal = mergeSharedThemes(JsonObject(sharedKeys), sharedOnDisk)

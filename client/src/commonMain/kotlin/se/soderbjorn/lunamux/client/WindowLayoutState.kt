@@ -9,7 +9,7 @@
  * server broadcasts back over `/window`. To move/resize/maximize/
  * minimize/lay-out panes from mobile we must author the very same blob,
  * so this file mirrors the toolkit's `encodeLayoutStateJson` /
- * `decodeLayoutStateJson` shape exactly (see darkness-toolkit
+ * `decodeLayoutStateJson` shape exactly (see lunula
  * `AppShellMount.kt`).
  *
  * The blob's top-level shape is:
@@ -22,7 +22,7 @@
  *   } } }
  * }
  * ```
- * stored under [se.soderbjorn.darkness.core.PersistKeys.LAYOUT_STATE] as a
+ * stored under [se.soderbjorn.lunula.core.PersistKeys.LAYOUT_STATE] as a
  * JSON **string** value. Unknown top-level keys are preserved verbatim on
  * write so a future toolkit field is never clobbered by a mobile edit.
  *
@@ -126,7 +126,7 @@ class LayoutBlob internal constructor(
 
     /**
      * Serialize back to the JSON **string** stored under
-     * [se.soderbjorn.darkness.core.PersistKeys.LAYOUT_STATE]. Preserves any
+     * [se.soderbjorn.lunula.core.PersistKeys.LAYOUT_STATE]. Preserves any
      * unknown top-level keys captured at parse time.
      *
      * @return the stringified blob, suitable for `SettingsPersister.putSetting`.

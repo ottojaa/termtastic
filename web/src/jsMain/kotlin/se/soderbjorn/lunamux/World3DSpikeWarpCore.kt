@@ -58,7 +58,7 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import org.w3c.dom.HTMLCanvasElement
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.darkness.core.argbToCss
+import se.soderbjorn.lunula.core.argbToCss
 import se.soderbjorn.lunamux.three.PerspectiveCamera
 
 /**

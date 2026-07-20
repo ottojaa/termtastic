@@ -23,7 +23,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import se.soderbjorn.darkness.core.PersistKeys
+import se.soderbjorn.lunula.core.PersistKeys
 import se.soderbjorn.lunamux.WindowConfig
 
 /**

@@ -195,7 +195,7 @@ class McpWriteToolsTest {
             assertEquals(worldId, WindowState.activeWorldId())
 
             // set_world_theme validates names then stores the pair.
-            val theme = se.soderbjorn.darkness.core.allThemes(emptyList()).first().name
+            val theme = se.soderbjorn.lunula.core.allThemes(emptyList()).first().name
             assertOk(
                 call("set_world_theme", """{"worldId":"$worldId","darkThemeName":"$theme","lightThemeName":"$theme"}"""),
                 "set_world_theme",

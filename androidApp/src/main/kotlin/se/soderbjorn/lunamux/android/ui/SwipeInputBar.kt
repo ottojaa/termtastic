@@ -36,7 +36,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import se.soderbjorn.darkness.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ResolvedTheme
 
 /**
  * @param theme the resolved theme for deriving input bar colours.

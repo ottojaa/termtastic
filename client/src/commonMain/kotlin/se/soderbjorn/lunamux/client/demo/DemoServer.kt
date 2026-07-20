@@ -33,8 +33,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import se.soderbjorn.darkness.web.layout.GridSpec
-import se.soderbjorn.darkness.web.layout.LayoutPreset
+import se.soderbjorn.lunula.web.layout.GridSpec
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 import se.soderbjorn.lunamux.FileBrowserContent
 import se.soderbjorn.lunamux.FileBrowserEntry
 import se.soderbjorn.lunamux.FileBrowserSort

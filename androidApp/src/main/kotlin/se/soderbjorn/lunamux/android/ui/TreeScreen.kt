@@ -119,9 +119,9 @@ import se.soderbjorn.lunamux.client.viewmodel.HttpSettingsPersister
 import se.soderbjorn.lunamux.client.viewmodel.OverviewBackingViewModel
 import se.soderbjorn.lunamux.client.viewmodel.SessionsViewModeStore
 import se.soderbjorn.lunamux.client.viewmodel.ThemeBackingViewModel
-import se.soderbjorn.darkness.web.layout.LayoutPreset
-import se.soderbjorn.darkness.compose.WorldMenuEntry
-import se.soderbjorn.darkness.compose.WorldSwitcher
+import se.soderbjorn.lunula.web.layout.LayoutPreset
+import se.soderbjorn.lunula.compose.WorldMenuEntry
+import se.soderbjorn.lunula.compose.WorldSwitcher
 
 // Palette tokens live in SidebarPalette.kt — shared with MarkdownListScreen.
 
@@ -710,7 +710,7 @@ fun TreeScreen(
                             )
                         }
                     }
-                    // World switcher globe (published toolkit-compose
+                    // World switcher globe (published lunula-compose
                     // component). Lists every world in the server config with a
                     // checkmark on the active one; gestures are forwarded as
                     // world WindowCommands through the window socket. Shown only

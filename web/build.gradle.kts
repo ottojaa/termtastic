@@ -64,7 +64,7 @@ kotlin {
         jsMain.dependencies {
             implementation(projects.clientServer)
             implementation(projects.client)
-            implementation(libs.darkness.web)
+            implementation(libs.lunula.web)
             implementation(libs.kotlinx.html)
             implementation(libs.kotlinx.coroutines.core)
             implementation(npm("xterm", "5.3.0"))

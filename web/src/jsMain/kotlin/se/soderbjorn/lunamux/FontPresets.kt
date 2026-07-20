@@ -2,9 +2,9 @@
  * Lunamux xterm-specific font sync.
  *
  * The font *list* and the *detection* logic now live in the
- * darkness-toolkit ([se.soderbjorn.darkness.web.themeeditor.fontPresets],
- * [se.soderbjorn.darkness.web.themeeditor.detectInstalledFonts],
- * [se.soderbjorn.darkness.web.themeeditor.resolveFontFamilyCss]). What's
+ * lunula ([se.soderbjorn.lunula.web.themeeditor.fontPresets],
+ * [se.soderbjorn.lunula.web.themeeditor.detectInstalledFonts],
+ * [se.soderbjorn.lunula.web.themeeditor.resolveFontFamilyCss]). What's
  * still lunamux-specific is the runtime sync: xterm.js caches
  * character metrics on its first paint, so a late `@font-face` load
  * needs to be awaited and every live terminal needs `term.options.fontFamily`
@@ -18,14 +18,14 @@
  * change.
  *
  * @see applyGlobalFontSize
- * @see se.soderbjorn.darkness.web.themeeditor.fontPresets
+ * @see se.soderbjorn.lunula.web.themeeditor.fontPresets
  */
 package se.soderbjorn.lunamux
 
 import kotlinx.browser.document
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.darkness.web.themeeditor.fontPresets
-import se.soderbjorn.darkness.web.themeeditor.resolveFontFamilyCss
+import se.soderbjorn.lunula.web.themeeditor.fontPresets
+import se.soderbjorn.lunula.web.themeeditor.resolveFontFamilyCss
 
 /**
  * Applies the selected font-family preset to every live xterm.js terminal

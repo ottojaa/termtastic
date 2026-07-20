@@ -12,7 +12,7 @@
  *   • every non-default world stores its layout under a per-world key
  *     ([serverLayoutKeyForWorld]) that old clients simply ignore.
  *
- * The darkness-toolkit web shell is deliberately dumb about which world is
+ * The lunula web shell is deliberately dumb about which world is
  * "default": it always emits a suffixed per-world key
  * ([toolkitLayoutKeyForWorld], mirroring `AppShellMount.layoutKeyForWorld`)
  * and lets the host route it. This file is that routing: it maps the
@@ -26,7 +26,7 @@ package se.soderbjorn.lunamux
 
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import se.soderbjorn.darkness.core.PersistKeys
+import se.soderbjorn.lunula.core.PersistKeys
 
 /**
  * The prefix the toolkit uses for its per-world layout keys. A key of the
@@ -114,7 +114,7 @@ internal fun serverKeyForToolkitKey(key: String): String {
  *
  * @param worldId the world whose layout blob to fetch.
  * @return the layout JSON string, or `null` if none is stored.
- * @see se.soderbjorn.darkness.web.shell.AppShellSpec.worldLayoutProvider
+ * @see se.soderbjorn.lunula.web.shell.AppShellSpec.worldLayoutProvider
  */
 internal fun worldLayoutBlob(worldId: String): String? {
     val element = toolkitSettingsSnapshot[serverLayoutKeyForWorld(worldId)] ?: return null

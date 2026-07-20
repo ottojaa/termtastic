@@ -4,7 +4,7 @@
  * Both icons in this file are drawn from scratch with a [Canvas] using the
  * same 24-unit coordinate geometry as their iOS (`LayoutGridIcon` /
  * `PlusIcon` in `ToolbarIcons.swift`) and web (`ICON_LAYOUT` / `ICON_NEW_TAB`
- * inline SVGs in darkness-toolkit) counterparts, so every platform shows an
+ * inline SVGs in lunula) counterparts, so every platform shows an
  * identical mark. They replace the previous Material icons (`Icons.Outlined.
  * Dashboard` and `Icons.Filled.Add`) in the Sessions toolbar.
  */

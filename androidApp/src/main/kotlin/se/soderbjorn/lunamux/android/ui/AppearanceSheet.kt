@@ -10,7 +10,7 @@
  * semantic-colour editing and no clone/delete.
  *
  * Every choice is routed through [ThemeBackingViewModel], which writes the same
- * canonical server selection the desktop writes ([se.soderbjorn.darkness.core.PersistKeys.THEME_V2_SELECTION]),
+ * canonical server selection the desktop writes ([se.soderbjorn.lunula.core.PersistKeys.THEME_V2_SELECTION]),
  * so the change persists and syncs to every connected client. The sheet stays
  * open after a change so the user can preview the live repaint behind it.
  *
@@ -72,11 +72,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.ResolvedTheme
-import se.soderbjorn.darkness.core.Theme
-import se.soderbjorn.darkness.core.allThemes
-import se.soderbjorn.darkness.core.orderThemesForPicker
+import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.ResolvedTheme
+import se.soderbjorn.lunula.core.Theme
+import se.soderbjorn.lunula.core.allThemes
+import se.soderbjorn.lunula.core.orderThemesForPicker
 import se.soderbjorn.lunamux.client.viewmodel.ThemeBackingViewModel
 
 /**

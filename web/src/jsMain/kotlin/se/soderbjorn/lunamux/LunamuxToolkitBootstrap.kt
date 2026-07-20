@@ -1,6 +1,6 @@
 /* LunamuxToolkitBootstrap.kt (jsMain)
  * Production entry point that mounts Lunamux's UI through the
- * darkness-toolkit's `mountAppShell`. Replaces the hand-rolled chrome
+ * lunula's `mountAppShell`. Replaces the hand-rolled chrome
  * (custom `TabBar`, `Sidebar`, header DOM in `index.html`, `LayoutMenu`,
  * bespoke pane drag/resize) with toolkit-supplied primitives. The
  * toolkit becomes the source of truth for app frame, top bar, tab strip,
@@ -32,22 +32,22 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.darkness.core.argbToCss
-import se.soderbjorn.darkness.web.confirmClosePane
-import se.soderbjorn.darkness.web.hotkey.Hotkey
-import se.soderbjorn.darkness.web.hotkey.HotkeyActionSpec
-import se.soderbjorn.darkness.web.hotkey.HotkeyBindings
-import se.soderbjorn.darkness.web.layout.PaneAction
-import se.soderbjorn.darkness.web.layout.PaneActions
-import se.soderbjorn.darkness.web.layout.PaneMenuItem
-import se.soderbjorn.darkness.web.layout.PaneMenuSpec
-import se.soderbjorn.darkness.web.layout.openPaneMenu
-import se.soderbjorn.darkness.web.shell.AppShellHandle
-import se.soderbjorn.darkness.web.shell.AppShellSpec
-import se.soderbjorn.darkness.web.shell.ThemeBootstrap
-import se.soderbjorn.darkness.web.shell.TopbarAction
-import se.soderbjorn.darkness.web.shell.buildTopbarIconButton
-import se.soderbjorn.darkness.web.shell.mountAppShell
+import se.soderbjorn.lunula.core.argbToCss
+import se.soderbjorn.lunula.web.confirmClosePane
+import se.soderbjorn.lunula.web.hotkey.Hotkey
+import se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec
+import se.soderbjorn.lunula.web.hotkey.HotkeyBindings
+import se.soderbjorn.lunula.web.layout.PaneAction
+import se.soderbjorn.lunula.web.layout.PaneActions
+import se.soderbjorn.lunula.web.layout.PaneMenuItem
+import se.soderbjorn.lunula.web.layout.PaneMenuSpec
+import se.soderbjorn.lunula.web.layout.openPaneMenu
+import se.soderbjorn.lunula.web.shell.AppShellHandle
+import se.soderbjorn.lunula.web.shell.AppShellSpec
+import se.soderbjorn.lunula.web.shell.ThemeBootstrap
+import se.soderbjorn.lunula.web.shell.TopbarAction
+import se.soderbjorn.lunula.web.shell.buildTopbarIconButton
+import se.soderbjorn.lunula.web.shell.mountAppShell
 
 /* -------------------------------------------------------------------- */
 /* SVG icon constants for top-bar trailing actions and pane-action      */
@@ -419,7 +419,7 @@ private fun reformatActiveTerminal() {
  * ⌃⌥R / Ctrl+Alt+R) with the toolkit's [HotkeyBindings].
  *
  * Going through [HotkeyBindings.registerAction] (rather than a raw
- * [se.soderbjorn.darkness.web.hotkey.HotkeyRegistry.register]) is what makes
+ * [se.soderbjorn.lunula.web.hotkey.HotkeyRegistry.register]) is what makes
  * the shortcut **user-changeable**: it surfaces as a clickable, rebindable
  * row in the Keyboard-shortcuts sidebar ([HotkeysSidebarContent]) and its
  * custom chord persists and syncs across clients through the same
@@ -554,7 +554,7 @@ internal fun switchToNextWorld() {
  * @return ordered list of [PaneAction]s; an empty list when the pane id
  *   is not in the live config.
  *
- * @see se.soderbjorn.darkness.web.shell.AppShellSpec.paneActions
+ * @see se.soderbjorn.lunula.web.shell.AppShellSpec.paneActions
  * @see AppShellHandle.beginPaneRename
  */
 fun lunamuxPaneActions(paneId: String): List<PaneAction> {
@@ -1331,7 +1331,7 @@ private fun sessionIdForPane(paneId: String): String? {
 /* -------------------------------------------------------------------- */
 
 /**
- * Mounts Lunamux's full UI through the darkness-toolkit's
+ * Mounts Lunamux's full UI through the lunula's
  * `mountAppShell`. Replaces every chrome-side concern (top bar, tab
  * strip, sidebar tree, layout root, pane drag/resize, theme manager,
  * appearance toggle) with toolkit-supplied primitives.

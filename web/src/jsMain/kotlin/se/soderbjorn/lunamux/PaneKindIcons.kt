@@ -44,7 +44,7 @@ const val PANE_ICON_AGENT: String =
  *
  * @param leaf dynamic leaf descriptor with `content.kind` and `isLink`
  *   fields, or `null` when the pane id is no longer in the live config.
- * @return inline-SVG string suitable for [se.soderbjorn.darkness.web.shell.AppShellSpec.paneIcon].
+ * @return inline-SVG string suitable for [se.soderbjorn.lunula.web.shell.AppShellSpec.paneIcon].
  */
 fun lunamuxPaneIcon(leaf: dynamic): String? {
     if (leaf == null) return null

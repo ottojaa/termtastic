@@ -1,14 +1,14 @@
 /* SettingsPersisterAdapter.kt (jsMain)
  * Adapter that exposes Lunamux's existing [SettingsPersister] (the
  * server-backed REST poster wired up in `main.kt`'s `start()`) as a
- * darkness-toolkit [Persister]. Lets Lunamux consume the toolkit's
+ * lunula [Persister]. Lets Lunamux consume the toolkit's
  * canonical persistence abstraction without otherwise restructuring
  * its REST bridge.
  *
  * Reads route through a server-side snapshot populated each time
  * `applyServerUiSettings` lands a payload from the server. The
  * snapshot is a [JsonObject] in canonical nested form (the same shape
- * every Darkness app stores in `themes.json`); per-key reads extract
+ * every Lunula app stores in `themes.json`); per-key reads extract
  * the corresponding element and serialise it to the string the toolkit
  * contract expects. Writes round-trip back through
  * `SettingsPersister.putSetting`. */
@@ -16,9 +16,9 @@ package se.soderbjorn.lunamux
 
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import se.soderbjorn.darkness.core.Persister
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.Persister
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
 import se.soderbjorn.lunamux.client.viewmodel.AppBackingViewModel
 import se.soderbjorn.lunamux.client.viewmodel.SettingsPersister
 

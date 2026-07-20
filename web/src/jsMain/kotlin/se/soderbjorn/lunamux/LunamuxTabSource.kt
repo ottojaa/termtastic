@@ -1,6 +1,6 @@
 /* LunamuxTabSource.kt (jsMain)
  * Adapter that exposes Lunamux's server-driven [WindowConfig] flow
- * as a darkness-toolkit [TabSource]. The toolkit's `mountAppShell`
+ * as a lunula [TabSource]. The toolkit's `mountAppShell`
  * subscribes to the push channel and renders whatever tabs / panes
  * the server reports; user gestures (select, close, rename, reorder)
  * are forwarded as [WindowCommand]s through the existing [WindowSocket].
@@ -17,11 +17,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import se.soderbjorn.darkness.web.shell.PaneAddMenuItem
-import se.soderbjorn.darkness.web.shell.PaneSnapshotEntry
-import se.soderbjorn.darkness.web.shell.TabListSnapshot
-import se.soderbjorn.darkness.web.shell.TabSnapshotEntry
-import se.soderbjorn.darkness.web.shell.TabSource
+import se.soderbjorn.lunula.web.shell.PaneAddMenuItem
+import se.soderbjorn.lunula.web.shell.PaneSnapshotEntry
+import se.soderbjorn.lunula.web.shell.TabListSnapshot
+import se.soderbjorn.lunula.web.shell.TabSnapshotEntry
+import se.soderbjorn.lunula.web.shell.TabSource
 import se.soderbjorn.lunamux.client.WindowSocket
 import se.soderbjorn.lunamux.client.WindowStateRepository
 import se.soderbjorn.lunamux.WindowCommand
@@ -63,7 +63,7 @@ private const val NEW_PANE_WEBBROWSER_SVG =
  *   one Lunamux runs the rest of its WebSocket loop on).
  * @param windowState the live server-state repository.
  * @param socket the open [WindowSocket] for sending commands back.
- * @return a [TabSource] suitable for [se.soderbjorn.darkness.web.shell.AppShellSpec.tabSource].
+ * @return a [TabSource] suitable for [se.soderbjorn.lunula.web.shell.AppShellSpec.tabSource].
  */
 fun lunamuxTabSource(
     scope: CoroutineScope,

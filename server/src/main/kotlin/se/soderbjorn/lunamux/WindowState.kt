@@ -24,8 +24,8 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.core.*
-import se.soderbjorn.darkness.web.layout.LayoutPreset
+import se.soderbjorn.lunula.core.*
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

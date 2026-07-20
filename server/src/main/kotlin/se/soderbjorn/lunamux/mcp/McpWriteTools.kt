@@ -37,10 +37,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
-import se.soderbjorn.darkness.core.allThemes
+import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.allThemes
 import se.soderbjorn.lunamux.FileBrowserContent
 import se.soderbjorn.lunamux.GitContent
 import se.soderbjorn.lunamux.LeafNode

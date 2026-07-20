@@ -4,7 +4,7 @@
  * The git-diff and file-browser content screens render server HTML inside an
  * [android.webkit.WebView] whose stylesheet references the flat `--t-*` theme
  * variables. [themeCssVars] mirrors the web toolkit's
- * `ResolvedTheme.toCssVarMap` (`se.soderbjorn.darkness.web.ThemeCssVars`),
+ * `ResolvedTheme.toCssVarMap` (`se.soderbjorn.lunula.web.ThemeCssVars`),
  * emitting the same 32 semantic tokens so the mobile WebViews and the web
  * client paint identically.
  *
@@ -15,12 +15,12 @@
  *
  * @see GitDiffScreen
  * @see FileBrowserContentScreen
- * @see se.soderbjorn.darkness.core.ResolvedTheme
+ * @see se.soderbjorn.lunula.core.ResolvedTheme
  */
 package se.soderbjorn.lunamux.android.ui
 
-import se.soderbjorn.darkness.core.ResolvedTheme
-import se.soderbjorn.darkness.core.argbToCss
+import se.soderbjorn.lunula.core.ResolvedTheme
+import se.soderbjorn.lunula.core.argbToCss
 
 /**
  * Build the `:root` body declaring the 32 flat `--t-*` CSS variables for a
@@ -36,7 +36,7 @@ import se.soderbjorn.darkness.core.argbToCss
  *
  * @param theme the resolved 32-token palette.
  * @return the CSS variable declarations as a single newline-joined string.
- * @see se.soderbjorn.darkness.core.argbToCss
+ * @see se.soderbjorn.lunula.core.argbToCss
  */
 internal fun themeCssVars(theme: ResolvedTheme): String {
     val c = { v: Long -> argbToCss(v) }

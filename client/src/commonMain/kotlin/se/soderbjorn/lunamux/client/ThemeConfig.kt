@@ -29,10 +29,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.ResolvedTheme
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
 
 /**
  * The server-persisted dual-slot theme choice (plus appearance), as consumed by

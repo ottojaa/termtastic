@@ -1,7 +1,7 @@
 /* HotkeysSidebarContent.kt (jsMain)
  *
  * Body factory for Lunamux's "Keyboard shortcuts" right-sidebar (the
- * toolkit-supplied [se.soderbjorn.darkness.web.settings.buildHotkeysSidebar]
+ * toolkit-supplied [se.soderbjorn.lunula.web.settings.buildHotkeysSidebar]
  * slot, wired via `AppShellSpec.hotkeysContent` in
  * [bootViaToolkitShell] and opened through
  * `AppShellHandle.openHotkeysSidebar`).
@@ -33,14 +33,14 @@ package se.soderbjorn.lunamux
 
 import kotlinx.browser.document
 import org.w3c.dom.HTMLElement
-import se.soderbjorn.darkness.web.hotkey.Hotkey
-import se.soderbjorn.darkness.web.hotkey.HotkeyBindings
-import se.soderbjorn.darkness.web.hotkey.ToolkitHotkeyIds
-import se.soderbjorn.darkness.web.hotkey.isBrowserReservedChord
-import se.soderbjorn.darkness.web.hotkey.openHotkeyConfigDialog
-import se.soderbjorn.darkness.web.hotkey.tabSwitchHotkeyEntry
-import se.soderbjorn.darkness.web.hotkey.toChordLabel
-import se.soderbjorn.darkness.web.hotkey.webTabSwitchHotkeyEntry
+import se.soderbjorn.lunula.web.hotkey.Hotkey
+import se.soderbjorn.lunula.web.hotkey.HotkeyBindings
+import se.soderbjorn.lunula.web.hotkey.ToolkitHotkeyIds
+import se.soderbjorn.lunula.web.hotkey.isBrowserReservedChord
+import se.soderbjorn.lunula.web.hotkey.openHotkeyConfigDialog
+import se.soderbjorn.lunula.web.hotkey.tabSwitchHotkeyEntry
+import se.soderbjorn.lunula.web.hotkey.toChordLabel
+import se.soderbjorn.lunula.web.hotkey.webTabSwitchHotkeyEntry
 
 /**
  * Where a shortcut is available. Derived per row from which of the two
@@ -54,7 +54,7 @@ private enum class HotkeyScope { DESKTOP, WEB }
  * One shortcut row in the Hotkeys sidebar. Two flavours:
  *
  * - **Configurable** ([actionId] non-null): backed by a toolkit
- *   [se.soderbjorn.darkness.web.hotkey.HotkeyActionSpec]. Chords are
+ *   [se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec]. Chords are
  *   resolved live from [HotkeyBindings.effectiveChords] at render time
  *   (so custom bindings show through) and the row opens the config
  *   dialog on click. [desktopChord] / [webChord] are unused.
@@ -179,7 +179,7 @@ private fun summonChord(): List<String> =
 /**
  * Open the dedicated Hotkeys sidebar.
  *
- * Routes through the toolkit's [se.soderbjorn.darkness.web.shell.AppShellHandle],
+ * Routes through the toolkit's [se.soderbjorn.lunula.web.shell.AppShellHandle],
  * which animates any other right-side panel closed first and mounts the
  * [buildHotkeysSidebarContent] body. Shared entry point for the App Settings
  * "Hotkeys" button and the Electron "Keyboard Shortcuts" menu item (the

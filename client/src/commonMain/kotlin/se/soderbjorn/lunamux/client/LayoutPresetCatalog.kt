@@ -9,14 +9,14 @@
  * `computeBoxes`/`label`/`emphasizedSlotCount` the write path uses, so the
  * preview the user sees matches the layout they get.
  *
- * @see se.soderbjorn.darkness.web.layout.LayoutPreset
+ * @see se.soderbjorn.lunula.web.layout.LayoutPreset
  * @see se.soderbjorn.lunamux.client.viewmodel.OverviewBackingViewModel.applyLayoutByKey
  */
 package se.soderbjorn.lunamux.client
 
-import se.soderbjorn.darkness.web.layout.DEFAULT_LAYOUT_GRID
-import se.soderbjorn.darkness.web.layout.LayoutBox
-import se.soderbjorn.darkness.web.layout.LayoutPreset
+import se.soderbjorn.lunula.web.layout.DEFAULT_LAYOUT_GRID
+import se.soderbjorn.lunula.web.layout.LayoutBox
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 
 /**
  * One renderable tile in the layout-preset picker.

@@ -1,7 +1,7 @@
 /* LunamuxWorldSource.kt (jsMain)
  * Adapter that exposes Lunamux's server-driven world model
  * ([WindowConfig.worlds] + [WindowConfig.activeWorldId]) as a
- * darkness-toolkit [WorldSource]. The toolkit's globe world switcher
+ * lunula [WorldSource]. The toolkit's globe world switcher
  * subscribes to the push channel and renders the world list; user gestures
  * (select / add / rename / close, plus moving a tab to another world via a
  * tab's dot-menu submenu) are forwarded as the world [WindowCommand]s through
@@ -16,9 +16,9 @@ package se.soderbjorn.lunamux
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import se.soderbjorn.darkness.web.shell.WorldListSnapshot
-import se.soderbjorn.darkness.web.shell.WorldSnapshotEntry
-import se.soderbjorn.darkness.web.shell.WorldSource
+import se.soderbjorn.lunula.web.shell.WorldListSnapshot
+import se.soderbjorn.lunula.web.shell.WorldSnapshotEntry
+import se.soderbjorn.lunula.web.shell.WorldSource
 import se.soderbjorn.lunamux.client.WindowSocket
 import se.soderbjorn.lunamux.client.WindowStateRepository
 
@@ -35,7 +35,7 @@ import se.soderbjorn.lunamux.client.WindowStateRepository
  * @param scope coroutine scope for the collector.
  * @param windowState the live server-state repository.
  * @param socket the open [WindowSocket] for sending commands back.
- * @return a [WorldSource] for [se.soderbjorn.darkness.web.shell.AppShellSpec.worldSource].
+ * @return a [WorldSource] for [se.soderbjorn.lunula.web.shell.AppShellSpec.worldSource].
  */
 fun lunamuxWorldSource(
     scope: CoroutineScope,

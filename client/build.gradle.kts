@@ -21,7 +21,7 @@ kotlin {
             baseName = "Client"
             isStatic = true
             export(projects.clientServer)
-            export(libs.darkness.core)
+            export(libs.lunula.core)
         }
         // Tiny ObjC shim that exposes NSURLProtectionSpace.serverTrust and
         // the NSURLSessionAuthChallengeDisposition constants with concrete
@@ -51,7 +51,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(projects.clientServer)
-            api(libs.darkness.core)
+            api(libs.lunula.core)
             api(libs.ktor.client.core)
             api(libs.ktor.client.websockets)
             api(libs.ktor.client.contentNegotiation)

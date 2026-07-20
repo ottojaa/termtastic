@@ -13,7 +13,7 @@
  * etc.) and adds a single checkbox row above the buttons.
  *
  * @see showQuitConfirmationDialog
- * @see se.soderbjorn.darkness.web.showConfirmDialog
+ * @see se.soderbjorn.lunula.web.showConfirmDialog
  */
 package se.soderbjorn.lunamux
 

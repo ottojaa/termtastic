@@ -30,9 +30,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.add
 import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.Appearance
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
 import se.soderbjorn.lunamux.client.demo.DemoSession
 import se.soderbjorn.lunamux.client.demo.DemoTerminalSession
 
@@ -125,7 +125,7 @@ internal fun installDemoSwitchHotkey() {
  *
  * Pane geometry on web is toolkit-owned: the shell reads
  * [PersistKeys.LAYOUT_STATE] (shape: `presetByTab` / `paneOrderByTab` /
- * `geometryByTab`, see toolkit-web's `PersistedLayoutState`) once at mount
+ * `geometryByTab`, see lunula-web's `PersistedLayoutState`) once at mount
  * through the settings snapshot. Without this seed every demo pane would
  * paint at the toolkit's default cascade instead of the fixture's
  * hero-left / grid / split-h arrangements. Deriving the blob from the

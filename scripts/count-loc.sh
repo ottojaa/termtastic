@@ -24,7 +24,7 @@
 #                                                           the Electron window)
 #   Android                       - androidApp/            (Android app)
 #   iOS                           - iosApp/iosApp/          (SwiftUI app)
-#   Darkness Toolkit              - ../../darkness-toolkit  (sibling toolkit-*
+#   Lunula Toolkit              - ../../lunula  (sibling toolkit-*
 #                                                           modules consumed via
 #                                                           the Gradle composite
 #                                                           build; only counted
@@ -46,8 +46,8 @@
 # Usage:
 #   scripts/count-loc.sh
 #
-# Override the Darkness Toolkit location with:
-#   DARKNESS_TOOLKIT_PATH=/path/to/darkness-toolkit/checkout scripts/count-loc.sh
+# Override the Lunula Toolkit location with:
+#   LUNULA_PATH=/path/to/lunula/checkout scripts/count-loc.sh
 
 set -euo pipefail
 
@@ -154,21 +154,21 @@ read -r web_t web_c                  < <(count_loc web/src -- kt)
 read -r android_t android_c          < <(count_loc androidApp/src -- kt java)
 read -r ios_t ios_c                  < <(count_loc iosApp/iosApp -- swift)
 
-# Darkness Toolkit lives in a sibling checkout and is pulled in via a Gradle
+# Lunula Toolkit lives in a sibling checkout and is pulled in via a Gradle
 # composite build (see settings.gradle.kts). Auto-detect it the same way Gradle
-# does — honouring a DARKNESS_TOOLKIT_PATH override — and count its toolkit-*
+# does — honouring a LUNULA_PATH override — and count its toolkit-*
 # module sources. When no checkout is found, its counts stay 0.
 toolkit_t=0; toolkit_c=0; toolkit_path=""
-for cand in "${DARKNESS_TOOLKIT_PATH:-}" ../../darkness-toolkit/develop ../../darkness-toolkit/main; do
+for cand in "${LUNULA_PATH:-}" ../../lunula/develop ../../lunula/main; do
   [ -n "$cand" ] || continue
   if [ -f "$cand/settings.gradle.kts" ]; then toolkit_path="$cand"; break; fi
 done
 if [ -n "$toolkit_path" ]; then
   read -r toolkit_t toolkit_c < <(count_loc \
-    "$toolkit_path/toolkit-core/src" \
-    "$toolkit_path/toolkit-store/src" \
-    "$toolkit_path/toolkit-web/src" \
-    "$toolkit_path/toolkit-compose/src" \
+    "$toolkit_path/lunula-core/src" \
+    "$toolkit_path/lunula-store/src" \
+    "$toolkit_path/lunula-web/src" \
+    "$toolkit_path/lunula-compose/src" \
     -- kt java sq)
 fi
 
@@ -192,9 +192,9 @@ row "Web"                       "$(format_int "$web_t")"      "$(format_int "$we
 row "Android"                   "$(format_int "$android_t")"  "$(format_int "$android_c")"
 row "iOS"                       "$(format_int "$ios_t")"      "$(format_int "$ios_c")"
 if [ "$toolkit_t" -gt 0 ]; then
-  row "Darkness Toolkit"        "$(format_int "$toolkit_t")"  "$(format_int "$toolkit_c")"
+  row "Lunula Toolkit"        "$(format_int "$toolkit_t")"  "$(format_int "$toolkit_c")"
 else
-  row "Darkness Toolkit (no checkout)" "0" "0"
+  row "Lunula Toolkit (no checkout)" "0" "0"
 fi
 rule
 row "TOTAL LOC"                 "$(format_int "$total_t")"    "$(format_int "$total_c")"

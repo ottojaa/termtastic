@@ -14,7 +14,7 @@
  */
 package se.soderbjorn.lunamux.android.ui
 
-import se.soderbjorn.darkness.core.ThemeSnapshotV2
+import se.soderbjorn.lunula.core.ThemeSnapshotV2
 import se.soderbjorn.lunamux.WindowConfig
 import se.soderbjorn.lunamux.WorldConfig
 

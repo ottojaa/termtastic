@@ -20,7 +20,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import se.soderbjorn.darkness.core.PersistKeys
+import se.soderbjorn.lunula.core.PersistKeys
 import se.soderbjorn.lunamux.FileBrowserContent
 import se.soderbjorn.lunamux.GitContent
 import se.soderbjorn.lunamux.WindowCommand

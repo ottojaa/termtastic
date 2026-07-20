@@ -942,7 +942,7 @@ private fun createWindow() {
     // served UI drive a different server's API; loopback-only, off by default.
     if (INSECURE_BACKEND) webPrefs.webSecurity = false
     // Pass the authoritative chrome flag to the renderer at boot so
-    // darkness-toolkit's `autoApplyCustomTitleBarBodyClass` can toggle
+    // lunula's `autoApplyCustomTitleBarBodyClass` can toggle
     // `dt-custom-titlebar` synchronously on the first frame. Lunamux's
     // server-backed settings would supply this eventually, but only after
     // the WebSocket round-trip — and even one frame of missing 80 px
@@ -1011,7 +1011,7 @@ private fun createWindow() {
     // Forward macOS native fullscreen state to the renderer so the
     // toolkit can drop its 80 px traffic-light reservation while the
     // OS hides the traffic-light cluster (see
-    // `setDtMacFullscreenBodyClass` in darkness-toolkit). Listeners are
+    // `setDtMacFullscreenBodyClass` in lunula). Listeners are
     // attached on every window construction because `darkness:setCustomTitleBar`
     // recreates the BrowserWindow.
     w.on("enter-full-screen") { _ ->
@@ -1320,7 +1320,7 @@ fun main() {
     // build a fresh one with the new style. The server keeps every bit
     // of user state (PTY sessions, layout, focus, settings). Channel name
     // matches notegrow's so both apps share the same `darknessApi`
-    // preload bridge — see `darkness-toolkit`'s `AppShellMount`
+    // preload bridge — see `lunula`'s `AppShellMount`
     // subscriber and Lunamux's own server-driven subscriber in
     // `main.kt`, both of which invoke this channel.
     ipcMain.handle("darkness:setCustomTitleBar") { _, enabled ->

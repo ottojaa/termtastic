@@ -96,7 +96,7 @@ private var paneTitleRenameInstalled = false
  * [appShellHandle] is set). The toolkit marks each renamable pane title
  * with `data-dt-pane-rename-target="<paneId>"` and stashes a start-rename
  * closure on it; we just trigger that closure via the toolkit's public
- * [se.soderbjorn.darkness.web.shell.AppShellHandle.beginPaneRename].
+ * [se.soderbjorn.lunula.web.shell.AppShellHandle.beginPaneRename].
  *
  * A delegated **capture-phase** listener is used so it runs before the
  * pane's own bubble-phase dblclick (the toolkit's "raise/focus pane" on

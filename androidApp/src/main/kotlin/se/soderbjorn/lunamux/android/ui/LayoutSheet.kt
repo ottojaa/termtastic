@@ -14,7 +14,7 @@
  * Selecting a tile routes to [OverviewBackingViewModel.applyLayout], which
  * authors the toolkit `LAYOUT_STATE` blob.
  *
- * @see se.soderbjorn.darkness.web.layout.LayoutPreset
+ * @see se.soderbjorn.lunula.web.layout.LayoutPreset
  * @see se.soderbjorn.lunamux.client.viewmodel.OverviewBackingViewModel.applyLayout
  */
 package se.soderbjorn.lunamux.android.ui
@@ -52,8 +52,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import se.soderbjorn.darkness.web.layout.DEFAULT_LAYOUT_GRID
-import se.soderbjorn.darkness.web.layout.LayoutPreset
+import se.soderbjorn.lunula.web.layout.DEFAULT_LAYOUT_GRID
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 
 /**
  * The layout-preset bottom sheet.

@@ -1,20 +1,20 @@
 /**
  * Pane-layout algorithm shim used by [PaneManager.applyLayout]. The
- * geometry itself lives in darkness-toolkit's `toolkit-core`
+ * geometry itself lives in lunula's `lunula-core`
  * commonMain (`LayoutPreset.computeBoxes`), so Lunamux and notegrow
  * share a single source of truth for which preset produces which
  * arrangement. This file is a thin adapter that translates the
  * toolkit's `LayoutBox` rectangles into Lunamux's [PaneBox] type
  * and routes the `"auto"` key into the toolkit's auto preset.
  *
- * @see se.soderbjorn.darkness.web.layout.LayoutPreset
+ * @see se.soderbjorn.lunula.web.layout.LayoutPreset
  * @see PaneManager.applyLayout
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.web.layout.GridSpec
-import se.soderbjorn.darkness.web.layout.LayoutBox
-import se.soderbjorn.darkness.web.layout.LayoutPreset
+import se.soderbjorn.lunula.web.layout.GridSpec
+import se.soderbjorn.lunula.web.layout.LayoutBox
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 
 /**
  * Snap grid passed to the toolkit so auto-tiled panes land on the
@@ -40,7 +40,7 @@ private val PANE_LAYOUT_GRID: GridSpec = GridSpec(cols = 20, rows = 20)
  * @param n the number of panes to place; must be ≥ 0.
  * @return a list of [PaneBox] of size [n] in rank order.
  *
- * @see se.soderbjorn.darkness.web.layout.LayoutPreset
+ * @see se.soderbjorn.lunula.web.layout.LayoutPreset
  */
 internal fun computePaneLayout(layout: String, n: Int): List<PaneBox> {
     if (n <= 0) return emptyList()

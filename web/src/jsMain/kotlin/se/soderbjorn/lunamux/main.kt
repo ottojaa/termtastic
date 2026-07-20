@@ -4,7 +4,7 @@
  * Bootstraps the application by initializing authentication, creating the
  * [LunamuxClient] and [WindowSocket], setting up the [AppBackingViewModel],
  * hydrating UI settings from the server, and mounting the UI through the
- * darkness-toolkit's `mountAppShell` (see [bootViaToolkitShell]). All
+ * lunula's `mountAppShell` (see [bootViaToolkitShell]). All
  * chrome-side concerns (top bar, tab strip, sidebar tree, pane drag/resize,
  * layout-preset dropdown, theme manager) are toolkit-owned now; this file
  * keeps only the bits that genuinely belong to the app: auth, the
@@ -19,9 +19,9 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.core.*
-import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
-import se.soderbjorn.darkness.web.setDtCustomTitleBarBodyClass
+import se.soderbjorn.lunula.core.*
+import se.soderbjorn.lunula.web.injectLunulaStyles
+import se.soderbjorn.lunula.web.setDtCustomTitleBarBodyClass
 
 import kotlinx.browser.document
 import kotlinx.browser.window
@@ -77,7 +77,7 @@ internal fun isSystemDark(): Boolean {
 }
 
 /**
- * Resolve the active [se.soderbjorn.darkness.core.ResolvedTheme] from the
+ * Resolve the active [se.soderbjorn.lunula.core.ResolvedTheme] from the
  * ViewModel's current light/dark slot selection and appearance, then apply it
  * to the DOM (`--t-*` CSS vars via the toolkit's `applyTheme`) and the
  * xterm.js instances.
@@ -133,7 +133,7 @@ internal fun refreshAndApplyActiveTheme() {
  * @see connectWindow
  */
 private fun start() {
-    injectDarknessToolkitStyles()
+    injectLunulaStyles()
     ensureAuthToken()
 
     clientTypeAtStart =
@@ -141,8 +141,8 @@ private fun start() {
     authQueryParam = "auth=" + encodeUriComponent(authTokenForSending()) +
         "&clientType=" + encodeUriComponent(clientTypeAtStart)
     isElectronClient = window.navigator.userAgent.contains("Electron", ignoreCase = true)
-    // The `dt-electron-mac` body class is added by darkness-toolkit's
-    // `autoApplyElectronMacBodyClass` (called from `injectDarknessToolkitStyles`
+    // The `dt-electron-mac` body class is added by lunula's
+    // `autoApplyElectronMacBodyClass` (called from `injectLunulaStyles`
     // above), and `dt-mac-fullscreen` is wired automatically by
     // `autoWireMacFullscreenBodyClass` against `darknessApi.onFullscreenChange`.
     // No manual UA sniff or fullscreen subscriber needed here.
@@ -260,7 +260,7 @@ private fun start() {
             // per-world `LAYOUT_STATE.world.<id>` keys alike) through one chain
             // so a burst of layout writes lands in order — see
             // [layoutStatePostChain].
-            if (key.startsWith(se.soderbjorn.darkness.core.PersistKeys.LAYOUT_STATE)) {
+            if (key.startsWith(se.soderbjorn.lunula.core.PersistKeys.LAYOUT_STATE)) {
                 // Serialize layout-state posts — see [layoutStatePostChain].
                 val chain = layoutStatePostChain
                 layoutStatePostChain = if (chain == null) {
@@ -299,7 +299,7 @@ private fun start() {
         settingsPersister = webSettingsPersister,
     )
 
-    // Keep the darkness-toolkit's custom hotkey bindings in sync with the
+    // Keep the lunula's custom hotkey bindings in sync with the
     // server-managed UI settings. The blob lives under
     // `PersistKeys.HOTKEY_BINDINGS` in the same per-app settings file as
     // theme/appearance (server-side `SettingsRepository`); this hook covers
@@ -313,7 +313,7 @@ private fun start() {
         val raw = (payload[PersistKeys.HOTKEY_BINDINGS]
             as? kotlinx.serialization.json.JsonPrimitive)
             ?.takeIf { it.isString }?.content
-        se.soderbjorn.darkness.web.hotkey.HotkeyBindings.applyCustomBindingsJson(raw)
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.applyCustomBindingsJson(raw)
     }
 
     // Toolkit-shape persister adapter. Reads serve from the in-memory
@@ -499,12 +499,12 @@ private fun start() {
         // user hasn't picked a monospaced font, matching the host getter.
         var prevFontFamily: String? = appVm.stateFlow.value.paneFontFamily
         applyGlobalFontFamily(effectiveFontKey(prevFontFamily))
-        se.soderbjorn.darkness.web.applyMonoFontFamily(effectiveFontKey(prevFontFamily))
+        se.soderbjorn.lunula.web.applyMonoFontFamily(effectiveFontKey(prevFontFamily))
         appVm.stateFlow.collect { state ->
             if (state.paneFontFamily != prevFontFamily) {
                 prevFontFamily = state.paneFontFamily
                 applyGlobalFontFamily(effectiveFontKey(prevFontFamily))
-                se.soderbjorn.darkness.web.applyMonoFontFamily(effectiveFontKey(prevFontFamily))
+                se.soderbjorn.lunula.web.applyMonoFontFamily(effectiveFontKey(prevFontFamily))
             }
         }
     }
@@ -527,24 +527,24 @@ private fun start() {
         // Chrome font family/size fold in the default fonts (JetBrains Mono /
         // 12px) via `effectiveFontKey` / `effectiveChromeSize`, matching the
         // host getters so the applied chrome and the Settings highlight agree.
-        se.soderbjorn.darkness.web.applyMonoFontSizePx(prevPaneSize)
+        se.soderbjorn.lunula.web.applyMonoFontSizePx(prevPaneSize)
         prevPaneSize?.let { applyGlobalFontSize(it) }
-        se.soderbjorn.darkness.web.applySidebarFontFamily(effectiveFontKey(prevSidebarFamily))
-        se.soderbjorn.darkness.web.applySidebarFontSizePx(effectiveChromeSize(prevSidebarSize))
-        se.soderbjorn.darkness.web.applyTabbarFontFamily(effectiveFontKey(prevTabbarFamily))
-        se.soderbjorn.darkness.web.applyTabbarFontSizePx(effectiveChromeSize(prevTabbarSize))
+        se.soderbjorn.lunula.web.applySidebarFontFamily(effectiveFontKey(prevSidebarFamily))
+        se.soderbjorn.lunula.web.applySidebarFontSizePx(effectiveChromeSize(prevSidebarSize))
+        se.soderbjorn.lunula.web.applyTabbarFontFamily(effectiveFontKey(prevTabbarFamily))
+        se.soderbjorn.lunula.web.applyTabbarFontSizePx(effectiveChromeSize(prevTabbarSize))
         // Window (pane) title font: mirror the sidebar/tabbar treatment so a
         // persisted choice is re-applied at startup, and so a server push from
         // another client repaints the title bars without waiting for the next
         // `mountAppShell.applyHostFontVars` rebuild. (Issue #51: this font was
         // applied live but never persisted/restored — the host adapter now
         // round-trips it through `appVm`.)
-        se.soderbjorn.darkness.web.applyPaneHeaderFontFamily(effectiveFontKey(prevPaneHeaderFamily))
-        se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx(effectiveChromeSize(prevPaneHeaderSize))
+        se.soderbjorn.lunula.web.applyPaneHeaderFontFamily(effectiveFontKey(prevPaneHeaderFamily))
+        se.soderbjorn.lunula.web.applyPaneHeaderFontSizePx(effectiveChromeSize(prevPaneHeaderSize))
         appVm.stateFlow.collect { state ->
             if (state.paneFontSize != prevPaneSize) {
                 prevPaneSize = state.paneFontSize
-                se.soderbjorn.darkness.web.applyMonoFontSizePx(prevPaneSize)
+                se.soderbjorn.lunula.web.applyMonoFontSizePx(prevPaneSize)
                 // xterm.js, the file-browser markdown preview, and the
                 // git diff pane all set their font-size via JS API or
                 // inline style — the `--dt-font-mono-size` CSS var
@@ -555,27 +555,27 @@ private fun start() {
             }
             if (state.sidebarFontFamily != prevSidebarFamily) {
                 prevSidebarFamily = state.sidebarFontFamily
-                se.soderbjorn.darkness.web.applySidebarFontFamily(effectiveFontKey(prevSidebarFamily))
+                se.soderbjorn.lunula.web.applySidebarFontFamily(effectiveFontKey(prevSidebarFamily))
             }
             if (state.sidebarFontSizePx != prevSidebarSize) {
                 prevSidebarSize = state.sidebarFontSizePx
-                se.soderbjorn.darkness.web.applySidebarFontSizePx(effectiveChromeSize(prevSidebarSize))
+                se.soderbjorn.lunula.web.applySidebarFontSizePx(effectiveChromeSize(prevSidebarSize))
             }
             if (state.tabbarFontFamily != prevTabbarFamily) {
                 prevTabbarFamily = state.tabbarFontFamily
-                se.soderbjorn.darkness.web.applyTabbarFontFamily(effectiveFontKey(prevTabbarFamily))
+                se.soderbjorn.lunula.web.applyTabbarFontFamily(effectiveFontKey(prevTabbarFamily))
             }
             if (state.tabbarFontSizePx != prevTabbarSize) {
                 prevTabbarSize = state.tabbarFontSizePx
-                se.soderbjorn.darkness.web.applyTabbarFontSizePx(effectiveChromeSize(prevTabbarSize))
+                se.soderbjorn.lunula.web.applyTabbarFontSizePx(effectiveChromeSize(prevTabbarSize))
             }
             if (state.paneHeaderFontFamily != prevPaneHeaderFamily) {
                 prevPaneHeaderFamily = state.paneHeaderFontFamily
-                se.soderbjorn.darkness.web.applyPaneHeaderFontFamily(effectiveFontKey(prevPaneHeaderFamily))
+                se.soderbjorn.lunula.web.applyPaneHeaderFontFamily(effectiveFontKey(prevPaneHeaderFamily))
             }
             if (state.paneHeaderFontSizePx != prevPaneHeaderSize) {
                 prevPaneHeaderSize = state.paneHeaderFontSizePx
-                se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx(effectiveChromeSize(prevPaneHeaderSize))
+                se.soderbjorn.lunula.web.applyPaneHeaderFontSizePx(effectiveChromeSize(prevPaneHeaderSize))
             }
         }
     }
@@ -612,7 +612,7 @@ private fun start() {
                         // Push the new value to the Electron main process via
                         // the cross-app `darknessApi` namespace so the BrowserWindow
                         // can rebuild with the right `titleBarStyle`. Shared with
-                        // notegrow and the darkness-toolkit's own `AppShellMount`
+                        // notegrow and the lunula's own `AppShellMount`
                         // subscriber.
                         val darknessApi = window.asDynamic().darknessApi
                         if (darknessApi?.setCustomTitleBar != null) {
@@ -623,7 +623,7 @@ private fun start() {
         }
 
         // macOS native fullscreen → `dt-mac-fullscreen` body class is
-        // wired by darkness-toolkit's `autoWireMacFullscreenBodyClass`
+        // wired by lunula's `autoWireMacFullscreenBodyClass`
         // against `darknessApi.onFullscreenChange` (which the preload
         // mirrors from `electronApi.onFullscreenChange`). No subscriber
         // needed here.

@@ -2143,7 +2143,7 @@ body.appearance-light .git-graphical-connector {
     background: var(--surface, #f5f5f5);
 }
 /* Syntax highlighting now follows the active theme's 8 --t-syn-* tokens
-   (see darkness-toolkit.css .hl-* rules), which carry the correct light-theme
+   (see lunula.css .hl-* rules), which carry the correct light-theme
    colours themselves — so the old hardcoded light-mode .hl-* overrides have
    been removed to let the theme tokens win. */
 

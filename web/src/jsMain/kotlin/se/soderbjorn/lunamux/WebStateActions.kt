@@ -17,9 +17,9 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.web.applyTheme
+import se.soderbjorn.lunula.web.applyTheme
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch

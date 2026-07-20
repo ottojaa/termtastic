@@ -61,7 +61,7 @@ enum Palette {
     /// - Parameter systemIsDark: the current system "prefers dark" flag.
     /// - Returns: `true` when the surface's luminance reads as dark.
     ///
-    /// Delegates to toolkit-core's shared `isColorLight` (the same WCAG
+    /// Delegates to lunula-core's shared `isColorLight` (the same WCAG
     /// relative-luminance rule the web shell and Android use to derive chrome
     /// polarity) rather than a private YIQ approximation, so all three
     /// platforms classify a given surface identically — the two formulas

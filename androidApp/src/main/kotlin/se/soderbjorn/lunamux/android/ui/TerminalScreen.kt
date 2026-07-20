@@ -19,7 +19,7 @@
  */
 package se.soderbjorn.lunamux.android.ui
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background

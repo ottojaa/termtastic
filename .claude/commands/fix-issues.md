@@ -11,8 +11,8 @@ This skill is deliberately different from `/pick-issue`: it does **not** branch,
 ## 0. Ground rules (apply to every issue)
 
 - **Work in the current directory.** Do not create worktrees or new branches. All edits land in the current checkout's working tree, left uncommitted.
-- **Do not commit or push anything.** Not in this repo, and not in the darkness toolkit. Leave all changes staged in the working tree exactly as-is. The owner reviews and tests tomorrow.
-- **You may edit the darkness toolkit** if an issue genuinely requires it — but the same no-commit / no-push rule applies there too.
+- **Do not commit or push anything.** Not in this repo, and not in the lunula toolkit. Leave all changes staged in the working tree exactly as-is. The owner reviews and tests tomorrow.
+- **You may edit the lunula toolkit** if an issue genuinely requires it — but the same no-commit / no-push rule applies there too.
 - **Do not test at runtime.** Do not launch the Android emulator, do not run the Electron build, do not start the app to exercise the change. The owner will test everything manually tomorrow. A compile check / `./gradlew build` is acceptable if it's fast and helps you catch obvious breakage, but it is optional and never required — skip it rather than block on a slow or unavailable toolchain.
 - **One issue at a time, strictly sequential.** Because every issue writes to the same shared working tree, parallel work would race and intermingle. Never run two issues concurrently.
 - **Follow `CLAUDE.md`.** Its documentation standards (file-level block comment on new files; KDoc/JSDoc on new public classes, functions, and significant properties with purpose, caller context, `@param`, `@return`, `@see`; update existing doc blocks when behaviour changes; preserve inline comments) are hard requirements.
@@ -44,8 +44,8 @@ Issue #<N>: <title>
 <body>
 
 Rules:
-- Edit the current working directory in place. Do NOT create a branch/worktree, and do NOT commit or push anything (not here, not in the darkness toolkit). Leave all changes uncommitted.
-- You MAY edit the darkness toolkit if the fix needs it — still no commit/push.
+- Edit the current working directory in place. Do NOT create a branch/worktree, and do NOT commit or push anything (not here, not in the lunula toolkit). Leave all changes uncommitted.
+- You MAY edit the lunula toolkit if the fix needs it — still no commit/push.
 - Do NOT test at runtime (no emulator, no Electron build, no launching the app). A quick optional compile/build check is fine but never required.
 - Follow CLAUDE.md documentation standards for any code you add or change.
 - Implement the whole issue. If you hit a TRUE blocker where no reasonable assumption lets you continue (genuinely contradictory requirements, or a decision only the owner can make and every option is unsafe), stop working THIS issue and report it as blocked — do not stall.
@@ -55,7 +55,7 @@ When done, post ONE comment on the issue describing what you did (or why you're 
 gh issue comment <N> --repo soderbjorn/termtastic --body "$(cat <<'EOF'
 **Claude Code** (an AI coding agent) worked on this issue autonomously via the `/fix-issues` skill.
 
-<2–5 sentences: what you changed and why. Name the user-facing behaviour and the key files touched. List any assumptions you made. If you edited the darkness toolkit, say so. If you were blocked, state exactly what blocked you and what you'd need to proceed.>
+<2–5 sentences: what you changed and why. Name the user-facing behaviour and the key files touched. List any assumptions you made. If you edited the lunula toolkit, say so. If you were blocked, state exactly what blocked you and what you'd need to proceed.>
 
 ⚠️ Changes are **uncommitted** in the owner's working tree and have **not** been tested at runtime — the owner will review and test manually.
 

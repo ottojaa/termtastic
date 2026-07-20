@@ -11,7 +11,7 @@
  */
 package se.soderbjorn.lunamux.android.ui
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -46,7 +46,7 @@ import se.soderbjorn.lunamux.DiffHunk
 import se.soderbjorn.lunamux.DiffLine
 import se.soderbjorn.lunamux.DiffLineType
 import se.soderbjorn.lunamux.WindowEnvelope
-import se.soderbjorn.darkness.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ResolvedTheme
 import se.soderbjorn.lunamux.client.LunamuxThemeConfig
 import se.soderbjorn.lunamux.client.fetchThemeConfig
 import se.soderbjorn.lunamux.android.net.ConnectionHolder

@@ -25,7 +25,7 @@ import androidx.compose.runtime.setValue
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TextStyle
 import com.termux.view.TerminalView
-import se.soderbjorn.darkness.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ResolvedTheme
 import se.soderbjorn.lunamux.client.LunamuxClient
 import se.soderbjorn.lunamux.client.LunamuxThemeConfig
 import se.soderbjorn.lunamux.client.fetchThemeConfig

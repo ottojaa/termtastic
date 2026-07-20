@@ -7,7 +7,7 @@
  */
 package se.soderbjorn.lunamux.client
 
-import se.soderbjorn.darkness.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ResolvedTheme
 
 /**
  * Sidebar-relevant colour values extracted from a [ResolvedTheme].

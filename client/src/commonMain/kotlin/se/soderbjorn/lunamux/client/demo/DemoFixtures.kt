@@ -313,7 +313,7 @@ internal object DemoFixtures {
             tabs = darknessTabs(),
             activeTabId = "dirc-t1",
             // "Amber CRT" (dark) and "Sepia" (light) are both real builtin
-            // toolkit themes (se.soderbjorn.darkness.core BuiltinThemes), so this
+            // toolkit themes (se.soderbjorn.lunula.core BuiltinThemes), so this
             // pair resolves directly; if either were renamed the resolver simply
             // falls back to the global selection.
             themeSelection = WorldThemeSelection(darkThemeName = "Amber CRT", lightThemeName = "Sepia"),

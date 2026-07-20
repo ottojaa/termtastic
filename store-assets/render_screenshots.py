@@ -32,7 +32,7 @@ import os
 import sys
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 
-# --- brand palette (from the Lunamux Dark theme in darkness-toolkit) ---
+# --- brand palette (from the Lunamux Dark theme in lunula) ---
 # The signature "deep navy + cyan glow" look, replacing the old green phosphor.
 BG = (10, 20, 32)           # --bg #0a1420 : deep navy base
 GREEN = (77, 200, 245)      # accent #4dc8f5   : primary cyan (body / phosphor)

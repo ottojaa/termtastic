@@ -38,7 +38,7 @@ import org.w3c.dom.Node
 import org.w3c.dom.WebSocket
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
-import se.soderbjorn.darkness.core.argbToCss
+import se.soderbjorn.lunula.core.argbToCss
 import se.soderbjorn.lunamux.three.CSS3DObject
 import se.soderbjorn.lunamux.three.CSS3DRenderer
 import se.soderbjorn.lunamux.three.PerspectiveCamera

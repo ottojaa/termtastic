@@ -13,7 +13,7 @@
  */
 package se.soderbjorn.lunamux.android.ui
 
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -43,7 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import se.soderbjorn.darkness.core.ResolvedTheme
+import se.soderbjorn.lunula.core.ResolvedTheme
 import se.soderbjorn.lunamux.FileContentKind
 import se.soderbjorn.lunamux.WindowEnvelope
 import se.soderbjorn.lunamux.client.LunamuxThemeConfig

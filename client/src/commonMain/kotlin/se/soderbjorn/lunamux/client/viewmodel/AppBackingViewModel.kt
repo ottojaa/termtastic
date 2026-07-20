@@ -20,7 +20,7 @@
 package se.soderbjorn.lunamux.client.viewmodel
 
 import kotlinx.coroutines.CancellationException
-import se.soderbjorn.darkness.core.*
+import se.soderbjorn.lunula.core.*
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -344,7 +344,7 @@ class AppBackingViewModel(
      *
      * Used by the web frontend to forward settings keys the [State] model
      * doesn't track — currently the custom hotkey bindings blob
-     * (`darkness.hotkeyBindings`), which is handed to the darkness-toolkit
+     * (`darkness.hotkeyBindings`), which is handed to the lunula
      * so key rebindings sync live across clients. Mobile apps leave this
      * `null` (they have no shortcut support).
      */
@@ -463,7 +463,7 @@ class AppBackingViewModel(
 
     /**
      * Persist the v2 theme snapshot: the custom themes under
-     * [PersistKeys.THEME_V2_CUSTOM] (shared across Darkness apps), the dual-slot
+     * [PersistKeys.THEME_V2_CUSTOM] (shared across Lunula apps), the dual-slot
      * selection + appearance under [PersistKeys.THEME_V2_SELECTION] (per-app),
      * and the starred-theme names under [PersistKeys.THEME_V2_FAVORITES]
      * (per-app), in a single batch.

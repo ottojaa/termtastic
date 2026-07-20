@@ -10,7 +10,7 @@
  */
 package se.soderbjorn.lunamux
 
-import se.soderbjorn.darkness.web.layout.LayoutPreset
+import se.soderbjorn.lunula.web.layout.LayoutPreset
 
 /**
  * Tab-only mutations on a [WindowConfig]. Pane mutations live in

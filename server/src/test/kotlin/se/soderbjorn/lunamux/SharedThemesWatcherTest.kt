@@ -21,7 +21,7 @@
  * Finally, [mergeSharedThemes] is exercised directly to confirm the
  * shared custom-theme array ([PersistKeys.THEME_V2_CUSTOM]) round-trips
  * and is unioned by `name` (outgoing wins on collision, disk-only
- * entries preserved) so a custom theme authored in a peer Darkness app
+ * entries preserved) so a custom theme authored in a peer Lunula app
  * isn't dropped.
  */
 package se.soderbjorn.lunamux
@@ -32,8 +32,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.mergeSharedThemes
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.mergeSharedThemes
 import java.nio.file.Files
 import kotlin.io.path.writeText
 import kotlin.test.Test

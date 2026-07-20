@@ -149,7 +149,7 @@ val jreModules = listOf(
 // Resolve an Eclipse Temurin (Adoptium) JDK to jlink from. Temurin ships
 // under GPLv2 + Classpath Exception, which permits bundling the runtime with
 // this app regardless of the app's own license. JDK 17 is sufficient: every
-// JVM module (including the vendored darkness-toolkit libs) pins its bytecode
+// JVM module (including the vendored lunula libs) pins its bytecode
 // to Java 11. Resolves the locally-detected Temurin when present; otherwise
 // Gradle provisions one.
 val temurinLauncher = extensions.getByType(JavaToolchainService::class.java).launcherFor {
