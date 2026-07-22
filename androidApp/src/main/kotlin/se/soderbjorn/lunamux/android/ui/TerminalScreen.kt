@@ -79,6 +79,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import se.soderbjorn.lunamux.android.net.ConnectionHolder
+import se.soderbjorn.lunamux.client.PtyEvent
 
 /** Theme accent colour for the terminal screen top bar. */
 private val HeaderAccent: Color
@@ -247,8 +248,68 @@ fun TerminalScreen(
 
     val emulator = remember(sessionId) { createSyncedEmulator(session) }
 
+    // Apply an authoritative server size to the emulator, matching the cell
+    // metrics to the live view so the grid lines up, guarded by
+    // [applyingServerSize] so the layout pass it triggers doesn't echo a vote
+    // back to the server. A no-op until the TerminalView exists; the view
+    // factory seeds the first size from [PtySocket.ptySize] once it's created,
+    // covering a Size that arrived before first layout.
+    val applyServerSize: suspend (Int, Int) -> Unit = { cols, rows ->
+        val view = terminalViewRef.value
+        val renderer = view?.mRenderer
+        if (view != null && renderer != null) {
+            val cellW = renderer.fontWidth.toInt().coerceAtLeast(1)
+            val cellH = renderer.fontLineSpacing.coerceAtLeast(1)
+            applyingServerSize.set(true)
+            withContext(emulatorDispatcher) {
+                synchronized(emulator) {
+                    runCatching { emulator.resize(cols, rows, cellW, cellH) }
+                }
+            }
+            view.post {
+                view.onScreenUpdated()
+                view.post { applyingServerSize.set(false) }
+            }
+        }
+    }
+
+    // Single ordered event stream: output bytes, size changes and reconnect
+    // resets are applied to the emulator in the order the server produced them,
+    // so a resize never races the redraw bytes it triggers (the old split
+    // output + ptySize flows could interleave and mangle the grid).
     LaunchedEffect(sessionId) {
-        ptySocket.output.collect { chunk ->
+        ptySocket.events.collect { ev ->
+            when (ev) {
+                is PtyEvent.Size -> {
+                    applyServerSize(ev.cols, ev.rows)
+                    return@collect
+                }
+                PtyEvent.Reset -> {
+                    // Reconnect boundary: the server is about to replay the ring
+                    // buffer. The RIS no longer rides the byte stream (it's a
+                    // PtyEvent.Reset now), so feed one to the emulator to clear
+                    // it, then re-apply the theme (RIS resets the colour table)
+                    // and stash the scroll offset so the user lands near where
+                    // they were once the replay settles.
+                    withContext(emulatorDispatcher) {
+                        synchronized(emulator) {
+                            val ris = byteArrayOf(0x1b, 'c'.code.toByte()) // RIS (ESC c)
+                            emulator.append(ris, ris.size)
+                        }
+                    }
+                    terminalViewRef.value?.post {
+                        terminalViewRef.value?.let {
+                            applyTerminalColors(it, emulator, terminalPalette)
+                        }
+                    }
+                    if (scrollPause.lastOffset < 0) {
+                        scrollPause.pendingRestore = scrollPause.lastOffset
+                    }
+                    return@collect
+                }
+                is PtyEvent.Bytes -> Unit
+            }
+            val chunk = ev.data
             withContext(emulatorDispatcher) {
                 synchronized(emulator) {
                     emulator.append(chunk, chunk.size)
@@ -335,27 +396,6 @@ fun TerminalScreen(
                 scrollPause.lastOffset = 0
                 if (scrolledUp) scrolledUp = false
                 if (hasNewOutput) hasNewOutput = false
-            }
-        }
-    }
-
-    LaunchedEffect(sessionId) {
-        ptySocket.ptySize.collect { size ->
-            if (size == null) return@collect
-            val (cols, rows) = size
-            val view = terminalViewRef.value ?: return@collect
-            val renderer = view.mRenderer ?: return@collect
-            val cellW = renderer.fontWidth.toInt().coerceAtLeast(1)
-            val cellH = renderer.fontLineSpacing.coerceAtLeast(1)
-            applyingServerSize.set(true)
-            withContext(emulatorDispatcher) {
-                synchronized(emulator) {
-                    runCatching { emulator.resize(cols, rows, cellW, cellH) }
-                }
-            }
-            view.post {
-                view.onScreenUpdated()
-                view.post { applyingServerSize.set(false) }
             }
         }
     }
@@ -556,6 +596,13 @@ fun TerminalScreen(
                         }
                         applyTerminalColors(view, emulator, terminalPalette)
                         terminalViewRef.value = view
+                        // A server Size can arrive before this view exists (the
+                        // socket connects before first layout); the ordered
+                        // events collector no-ops that Size, so seed the emulator
+                        // from the latest known size now that the view is here.
+                        ptySocket.ptySize.value?.let { (cols, rows) ->
+                            scope.launch { applyServerSize(cols, rows) }
+                        }
                         view
                     },
                     update = { view ->

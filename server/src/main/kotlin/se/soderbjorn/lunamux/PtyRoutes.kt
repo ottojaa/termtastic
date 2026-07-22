@@ -19,6 +19,8 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -84,19 +86,26 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
             send(Frame.Binary(true, snapshot))
         }
 
-        val outJob = launch {
-            session.output.collect { chunk ->
-                send(Frame.Binary(true, chunk))
-            }
+        // Single writer coroutine. PTY output and size changes come from two
+        // independent upstreams — the PTY read loop (Dispatchers.IO) and the
+        // size arbiter — so sending each from its own coroutine let their frames
+        // interleave in a nondeterministic order: a Size could reach the wire
+        // *after* the redraw bytes it must precede, mangling the client's grid,
+        // and two coroutines calling send() concurrently on one socket is itself
+        // unsafe. Merging both into one flow collected by one coroutine
+        // serialises the sends and preserves arrival order (a client-initiated
+        // resize sets the winsize before the program produces its repaint bytes,
+        // so the Size still enqueues ahead of them).
+        val outputFrames = session.output.map<ByteArray, Frame> { chunk ->
+            Frame.Binary(true, chunk)
         }
-
-        val sizeJob = launch {
-            session.sizeEvents.drop(1).collect { (cols, rows) ->
-                val payload = windowJson.encodeToString<PtyServerMessage>(
-                    PtyServerMessage.Size(cols, rows)
-                )
-                send(Frame.Text(payload))
-            }
+        val sizeFrames = session.sizeEvents.drop(1).map<Pair<Int, Int>, Frame> { (cols, rows) ->
+            Frame.Text(
+                windowJson.encodeToString<PtyServerMessage>(PtyServerMessage.Size(cols, rows))
+            )
+        }
+        val writerJob = launch {
+            merge(outputFrames, sizeFrames).collect { frame -> send(frame) }
         }
 
         try {
@@ -115,8 +124,7 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
                 }
             }
         } finally {
-            outJob.cancel()
-            sizeJob.cancel()
+            writerJob.cancel()
             session.removeClient(clientId)
         }
     }

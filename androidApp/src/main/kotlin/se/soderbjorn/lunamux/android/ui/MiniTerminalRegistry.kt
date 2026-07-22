@@ -35,7 +35,6 @@ import com.termux.terminal.TerminalEmulator
 import com.termux.view.TerminalView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.asCoroutineDispatcher
 import java.util.concurrent.Executors
+import se.soderbjorn.lunamux.client.PtyEvent
 import se.soderbjorn.lunamux.client.PtySocket
 import se.soderbjorn.lunamux.client.LunamuxClient
 
@@ -118,30 +118,27 @@ class MiniTerminalRegistry(
         val emulator = createSyncedEmulator(session)
         val lines = MutableStateFlow<List<String>>(emptyList())
 
+        // One ordered collector: size, output and reconnect resets applied to
+        // the headless preview emulator in the order the server produced them
+        // (the old split size/output collectors could interleave and mangle the
+        // thumbnail's wrap). A thumbnail never votes a size, so this only reads.
         val job = scope.launch {
-            coroutineScope {
-                launch {
-                    socket.ptySize.collect { sz ->
-                        if (sz == null) return@collect
-                        withContext(dispatcher) {
-                            synchronized(emulator) {
-                                runCatching { emulator.resize(sz.first, sz.second, 1, 1) }
+            socket.events.collect { ev ->
+                withContext(dispatcher) {
+                    synchronized(emulator) {
+                        when (ev) {
+                            is PtyEvent.Size ->
+                                runCatching { emulator.resize(ev.cols, ev.rows, 1, 1) }
+                            is PtyEvent.Bytes -> emulator.append(ev.data, ev.data.size)
+                            PtyEvent.Reset -> {
+                                val ris = byteArrayOf(0x1b, 'c'.code.toByte())
+                                emulator.append(ris, ris.size)
                             }
-                        }
-                        lines.value = synchronized(emulator) {
-                            extractRecentLines(emulator, MINI_REGISTRY_MAX_LINES)
                         }
                     }
                 }
-                launch {
-                    socket.output.collect { chunk ->
-                        withContext(dispatcher) {
-                            synchronized(emulator) { emulator.append(chunk, chunk.size) }
-                        }
-                        lines.value = synchronized(emulator) {
-                            extractRecentLines(emulator, MINI_REGISTRY_MAX_LINES)
-                        }
-                    }
+                lines.value = synchronized(emulator) {
+                    extractRecentLines(emulator, MINI_REGISTRY_MAX_LINES)
                 }
             }
         }

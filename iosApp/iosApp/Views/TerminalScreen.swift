@@ -231,6 +231,9 @@ final class TerminalCoordinator: NSObject, TerminalViewDelegate, UIScrollViewDel
 
     private let flowObserver = Client.FlowObserver()
     private var pendingOutput: [[UInt8]] = []
+    /// A server size that arrived before the view existed, applied once
+    /// `configureView` runs (the iOS analogue of the Android factory seed).
+    private var pendingServerSize: (cols: Int, rows: Int)?
     private var applyingServerSize = false
     /// Whether the user has scrolled up off the bottom. SwiftTerm's iOS view
     /// renders straight from the scroll view's `contentOffset` and force-scrolls
@@ -313,6 +316,13 @@ final class TerminalCoordinator: NSObject, TerminalViewDelegate, UIScrollViewDel
         }
         pendingOutput.removeAll()
 
+        // Apply a server size that arrived before this view existed (the
+        // ordered events stream no-ops a Size while terminalView is nil).
+        if let ps = pendingServerSize {
+            pendingServerSize = nil
+            applyServerSize(cols: ps.cols, rows: ps.rows)
+        }
+
         // A pane restored directly into a full-screen app (mouse reporting
         // already on from the replayed buffer) must start with native scrolling
         // disabled; otherwise the first swipe tears the top rows before the next
@@ -345,51 +355,60 @@ final class TerminalCoordinator: NSObject, TerminalViewDelegate, UIScrollViewDel
     }
 
     private func subscribeFlows() {
-        // PTY output → terminal
-        flowObserver.observe(flow: ptySocket.output) { [weak self] chunk in
-            guard let self, let data = chunk as? KotlinByteArray else { return }
-            let bytes = data.toSwiftData()
-            DispatchQueue.main.async {
-                guard let tv = self.terminalView else {
-                    self.pendingOutput.append(bytes)
-                    return
-                }
-                let wasPaused = self.isScrolledUp
-                let isReset = Self.containsTerminalReset(bytes)
-
-                tv.feed(byteArray: ArraySlice(bytes))
-
-                // A full terminal reset (the PtySocket reconnect replay's
-                // prefix, or a real `reset` on the server) can revert the
-                // emulator's palette to stock — re-apply the theme so
-                // default-coloured text stays readable.
-                if isReset, let settings = Palette.settings {
-                    self.applyTheme(settings)
-                }
-                // Keep native scrolling disabled while the program owns the
-                // screen (mouse reporting on): this fed chunk may have just
-                // entered/left the alternate screen, so re-sync now.
-                self.syncScrollEnabled(tv)
-                // SwiftTerm's `updateScroller` just yanked the viewport to the
-                // bottom. If the user was reading history, re-pin them at the
-                // same distance from the bottom — this both holds the pause
-                // during streaming and (because distance-from-bottom is
-                // preserved) restores their place across the resume reset's
-                // wipe + replay as the content regrows. Skipped in mouse-
-                // reporting mode, where the viewport is pinned to the bottom
-                // and swipes are forwarded as wheel events instead.
-                if wasPaused && !self.mouseReportingActive(tv) {
-                    self.repinScroll(tv)
-                    self.onNewOutputWhilePaused?()
-                }
-            }
-        }
-
-        // Server-pushed PTY size
-        flowObserver.observe(flow: ptySocket.ptySize) { [weak self] value in
+        // PTY transport events → terminal, in the order the server produced
+        // them (output bytes, authoritative size changes and reconnect resets
+        // on one stream, so a resize never races the redraw bytes it triggers).
+        flowObserver.observe(flow: ptySocket.events) { [weak self] value in
             guard let self else { return }
-            DispatchQueue.main.async {
-                self.applyServerSize(value)
+            if let bytesEv = value as? Client.PtyEventBytes {
+                let bytes = bytesEv.data.toSwiftData()
+                DispatchQueue.main.async {
+                    guard let tv = self.terminalView else {
+                        self.pendingOutput.append(bytes)
+                        return
+                    }
+                    let wasPaused = self.isScrolledUp
+                    // A real server-side `reset` still arrives as ESC c inside
+                    // the byte stream and reverts the palette to stock; a
+                    // reconnect is a PtyEvent.Reset (handled below) instead.
+                    let isReset = Self.containsTerminalReset(bytes)
+
+                    tv.feed(byteArray: ArraySlice(bytes))
+
+                    if isReset, let settings = Palette.settings {
+                        self.applyTheme(settings)
+                    }
+                    // Keep native scrolling disabled while the program owns the
+                    // screen (mouse reporting on): this fed chunk may have just
+                    // entered/left the alternate screen, so re-sync now.
+                    self.syncScrollEnabled(tv)
+                    // SwiftTerm's `updateScroller` just yanked the viewport to
+                    // the bottom. If the user was reading history, re-pin them
+                    // at the same distance from the bottom. Skipped in mouse-
+                    // reporting mode, where the viewport is pinned to the bottom
+                    // and swipes are forwarded as wheel events instead.
+                    if wasPaused && !self.mouseReportingActive(tv) {
+                        self.repinScroll(tv)
+                        self.onNewOutputWhilePaused?()
+                    }
+                }
+            } else if let sizeEv = value as? Client.PtyEventSize {
+                let cols = Int(sizeEv.cols)
+                let rows = Int(sizeEv.rows)
+                DispatchQueue.main.async {
+                    self.applyServerSize(cols: cols, rows: rows)
+                }
+            } else if value is Client.PtyEventReset {
+                DispatchQueue.main.async {
+                    guard let tv = self.terminalView else { return }
+                    // Reconnect boundary: clear the emulator and re-apply the
+                    // theme before the ring-buffer replay that follows (the RIS
+                    // no longer rides the byte stream).
+                    tv.feed(byteArray: ArraySlice([0x1b, UInt8(ascii: "c")]))
+                    if let settings = Palette.settings {
+                        self.applyTheme(settings)
+                    }
+                }
             }
         }
 
@@ -416,12 +435,14 @@ final class TerminalCoordinator: NSObject, TerminalViewDelegate, UIScrollViewDel
         }
     }
 
-    private func applyServerSize(_ value: Any?) {
-        guard let pair = value as? KotlinPair<KotlinInt, KotlinInt> else { return }
-        let cols = Int(truncating: pair.first!)
-        let rows = Int(truncating: pair.second!)
+    private func applyServerSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
-
+        // A Size can arrive before the view is laid out; stash it and let
+        // configureView apply it once terminalView exists.
+        guard terminalView != nil else {
+            pendingServerSize = (cols, rows)
+            return
+        }
         applyingServerSize = true
         terminalView?.getTerminal().resize(cols: cols, rows: rows)
         terminalView?.setNeedsDisplay()
