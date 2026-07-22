@@ -544,8 +544,10 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
                     // be gone.
                     // Skipped for panes with automatic reflow off — the
                     // local refit above keeps metrics correct, but the
-                    // frozen PTY is left untouched.
-                    terminals[paneId]?.let { if (it.autoReflow) forceReassert(it) }
+                    // frozen PTY is left untouched. A *soft* reassert: a
+                    // webfont load is not a user "reformat" gesture, so it
+                    // votes rather than seizes the grid from a phone driver.
+                    terminals[paneId]?.let { if (it.autoReflow) reassertSoft(it) }
                 } else {
                     safeFit(term, fit)
                 }
@@ -716,9 +718,12 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
                         // — same fix as the startup-active-tab case in
                         // `connectPane.onopen`, just deferred to first
                         // activation. Tracking visibility across fires means
-                        // a quick hide/show cycle re-fires correctly.
+                        // a quick hide/show cycle re-fires correctly. A *soft*
+                        // reassert: first tab activation is not a user
+                        // "reformat" gesture, so it votes rather than seizes the
+                        // grid from a phone driver.
                         if (!entry.wasContainerVisible) {
-                            forceReassert(entry)
+                            reassertSoft(entry)
                         }
                     }
                 }

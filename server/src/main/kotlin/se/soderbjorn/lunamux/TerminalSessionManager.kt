@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunamux.pty.AltScreenTracker
+import se.soderbjorn.lunamux.pty.ClientPosture
 import se.soderbjorn.lunamux.pty.ClientSizeArbiter
 import se.soderbjorn.lunamux.pty.OscScanner
 import se.soderbjorn.lunamux.pty.ProcessCwdReader
@@ -136,6 +137,20 @@ interface TermSession {
      */
     fun noteClientInput(clientId: String) {}
 
+    /**
+     * Declare [clientId]'s size-governance [posture] when it attaches. A
+     * [ClientPosture.DRIVER] may seize the grid by typing or forcing; a
+     * [ClientPosture.VIEWER] (a phone mirroring the desktop) governs only after
+     * it explicitly takes over. Called once per connection by the `/pty` route,
+     * before any votes. Default no-op so PTY-less sessions (`AgentSession`)
+     * ignore it — every client is treated as a driver there.
+     *
+     * @param clientId the attaching client.
+     * @param posture how that client participates in size arbitration.
+     * @see se.soderbjorn.lunamux.pty.ClientSizeArbiter.setPosture
+     */
+    fun setClientPosture(clientId: String, posture: ClientPosture) {}
+
     /** Broadcast mode-reset sequences to attached clients (see issue #91). */
     fun resetTerminalModes()
 
@@ -146,11 +161,11 @@ interface TermSession {
      * Register [clientId]'s viewport size vote at the given [priority] tier.
      * The vote feeds the latest-active-client arbitration (see
      * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]): it applies immediately
-     * when [clientId] is the governing client (or when it is a
-     * [SizePriority.MOBILE] vote, which claims governance — a phone must be
-     * readable the moment it attaches); otherwise it is stored and takes
-     * effect if the client later becomes the governor. With no recorded
-     * activity the classic tiered min() aggregation decides.
+     * when [clientId] is the governing client; otherwise it is stored and takes
+     * effect if the client later becomes the governor. A plain vote is ambient
+     * — it never seizes governance, so a phone/viewer attaching cannot shrink
+     * the grid the desktop owns. With no recorded activity the classic tiered
+     * min() over the drivers' votes decides.
      */
     fun setClientSize(
         clientId: String,
@@ -160,11 +175,12 @@ interface TermSession {
     )
 
     /**
-     * Force the grid to [clientId]'s size, evicting other clients' votes and
-     * making it the governing client — an explicit user action (Reformat)
-     * always wins. Other clients re-vote on their next automatic refit, but
-     * ambient re-votes no longer steal the size back (see
-     * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]).
+     * Force the grid to [clientId]'s size and make it the governing client —
+     * an explicit user action (Reformat / phone take-over) always wins, even
+     * over a 3D override. Other clients' votes are **kept**, not evicted:
+     * governance is decided by which client the user most recently acted on, so
+     * a laptop reclaims the grid by simply typing. A viewer that forces is
+     * promoted to a driver (see [se.soderbjorn.lunamux.pty.ClientSizeArbiter]).
      */
     fun forceClientSize(
         clientId: String,
@@ -648,23 +664,28 @@ class TerminalSession private constructor(
 
     /** Register the declared terminal size for [clientId] at [priority]. */
     override fun setClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {
-        applySize(sizeArbiter.setSize(clientId, SizeVote(max(1, cols), max(1, rows), priority)))
+        val vote = SizeVote(max(MIN_GRID_COLS, cols), max(MIN_GRID_ROWS, rows), priority)
+        applySize(sizeArbiter.setSize(clientId, vote))
+    }
+
+    /** Register [clientId]'s declared governance [posture] for this connection. */
+    override fun setClientPosture(clientId: String, posture: ClientPosture) {
+        sizeArbiter.setPosture(clientId, posture)
     }
 
     /**
-     * "Reformat" handler: evict every other client's entry, pin this
-     * client's cols/rows (at [priority]), make it the governing client, and
-     * apply immediately.
+     * "Reformat" / take-over handler: pin this client's cols/rows (at
+     * [priority]), make it the governing client, and apply immediately. Other
+     * clients' votes are kept — the arbiter decides governance by recency of
+     * activity, not by which votes survive (see [ClientSizeArbiter.forceSize]).
      *
-     * The dims are clamped to a usable floor ([MIN_FORCE_COLS]×[MIN_FORCE_ROWS]),
-     * not just ≥1: a forced size is broadcast to and obeyed by **every** attached
-     * client, so a degenerate value from an unmeasured/hidden view (e.g. a 3D
-     * preview mid-layout proposing ~1×1) would collapse all of them at once.
-     * Regular [setClientSize] votes keep the ≥1 clamp — arbitration across
-     * clients already bounds their effect.
+     * The dims share the same [MIN_GRID_COLS]×[MIN_GRID_ROWS] floor as a plain
+     * vote: a forced size is broadcast to and obeyed by **every** attached
+     * client, so a degenerate value from an unmeasured/hidden view must not be
+     * able to collapse all of them at once.
      */
     override fun forceClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {
-        val only = SizeVote(max(MIN_FORCE_COLS, cols), max(MIN_FORCE_ROWS, rows), priority)
+        val only = SizeVote(max(MIN_GRID_COLS, cols), max(MIN_GRID_ROWS, rows), priority)
         applySize(sizeArbiter.forceSize(clientId, only))
     }
 
@@ -865,15 +886,18 @@ class TerminalSession private constructor(
         private const val ALT_RING_CAPACITY = 256 * 1024
 
         /**
-         * Floor for a **forced** resize ([forceClientSize]) — the smallest grid a
-         * single client may pin the shared PTY (and thereby every other attached
+         * Floor for any client-supplied grid — the smallest size a single
+         * client may drive the shared PTY (and thereby every other attached
          * client) to. Generous enough for any real view, small enough to never
-         * fight a legitimately tiny pane. Regular per-client votes
-         * ([setClientSize]) are not floored beyond ≥1: they only ever *lower*
-         * the effective size via min() and never evict anyone.
+         * fight a legitimately tiny pane. Applied to both a forced resize
+         * ([forceClientSize]) and a plain vote ([setClientSize]): under the
+         * latest-active arbiter a plain vote can also become the governing size
+         * and be broadcast to everyone, so a degenerate value from an
+         * unmeasured/hidden view (e.g. a 3D preview mid-layout proposing ~1×1)
+         * must not be able to collapse every client through either path.
          */
-        private const val MIN_FORCE_COLS = 20
-        private const val MIN_FORCE_ROWS = 5
+        private const val MIN_GRID_COLS = 20
+        private const val MIN_GRID_ROWS = 5
 
         /**
          * Default grid until a client registers a real size — also the

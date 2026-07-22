@@ -121,7 +121,11 @@ class RealPtySocket internal constructor(
             while (!closed) {
                 try {
                     val session = client.httpClient.webSocketSession(
-                        client.wsUrlWithAuth("/pty/$sessionId")
+                        // Declare a viewer posture: this (mobile) client mirrors
+                        // the desktop's PTY size and does not govern it until the
+                        // user deliberately takes over (a forceResize from a
+                        // tap/keystroke gesture). See PtyRoutes.readClientPosture.
+                        client.wsUrlWithAuth("/pty/$sessionId") + "&posture=viewer"
                     )
                     _activeSession.value = session
                     lastTrafficAtMillis = Clock.System.now().toEpochMilliseconds()

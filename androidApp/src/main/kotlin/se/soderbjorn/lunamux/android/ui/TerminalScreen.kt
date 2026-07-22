@@ -204,6 +204,27 @@ fun TerminalScreen(
 
     val applyingServerSize = remember(sessionId) { AtomicBoolean(false) }
 
+    // Take-over gate. This screen attaches as a *viewer* (it mirrors the
+    // desktop's PTY size, see RealPtySocket's `posture=viewer`); the user takes
+    // over deliberately — a tap-to-focus, the first keystroke, or the Reformat
+    // button — which fits the shared PTY to this phone's grid via a forceResize
+    // and promotes this client to a driver on the server. One-shot: once taken
+    // over, [ensureTakenOver] is a no-op and ordinary votes/typing apply. The
+    // laptop reclaims later just by typing (latest-active governance).
+    val hasTakenOver = remember(sessionId) { AtomicBoolean(false) }
+    val ensureTakenOver: suspend () -> Unit = remember(sessionId) {
+        {
+            if (!hasTakenOver.get()) {
+                val natural = localGrid
+                if (natural != null && natural.cols > 0 && natural.rows > 0 &&
+                    !hasTakenOver.getAndSet(true)
+                ) {
+                    runCatching { ptySocket.forceResize(natural.cols, natural.rows) }
+                }
+            }
+        }
+    }
+
     // Scroll-pause: whether the user has scrolled up off the bottom (drives the
     // floating "jump to bottom" pill) and whether fresh output arrived while
     // they were scrolled up (switches the pill to a "New output" hint).
@@ -219,8 +240,8 @@ fun TerminalScreen(
             scope = scope,
             emulatorDispatcher = emulatorDispatcher,
             terminalViewRef = terminalViewRef,
-            applyingServerSize = applyingServerSize,
             ptySocket = ptySocket,
+            takeOver = ensureTakenOver,
         )
     }
 
@@ -339,14 +360,10 @@ fun TerminalScreen(
         }
     }
 
-    var hasAutoReformatted by remember(sessionId) { mutableStateOf(false) }
-    LaunchedEffect(sessionId, localGrid) {
-        if (hasAutoReformatted) return@LaunchedEffect
-        val natural = localGrid ?: return@LaunchedEffect
-        if (natural.cols <= 0 || natural.rows <= 0) return@LaunchedEffect
-        hasAutoReformatted = true
-        runCatching { ptySocket.forceResize(natural.cols, natural.rows) }
-    }
+    // NB: no auto-forceResize on first layout. This screen mirrors the desktop
+    // as a viewer and only claims the size on a deliberate take-over (see
+    // [ensureTakenOver]); auto-forcing here is exactly what used to hijack the
+    // shared PTY down to the phone's grid the instant a session was opened.
 
     DisposableEffect(sessionId) {
         onDispose {
@@ -434,6 +451,10 @@ fun TerminalScreen(
                     IconButton(onClick = {
                         val natural = localGrid
                         if (natural != null && natural.cols > 0 && natural.rows > 0) {
+                            // An explicit reformat is itself a take-over: mark it
+                            // so the next keystroke's take-over gate is a no-op
+                            // rather than re-forcing the same grid.
+                            hasTakenOver.set(true)
                             scope.launch {
                                 runCatching { ptySocket.forceResize(natural.cols, natural.rows) }
                             }
@@ -498,6 +519,11 @@ fun TerminalScreen(
                                 view.requestFocus()
                                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                                 imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                                // Tap-to-focus is a deliberate "use this pane"
+                                // gesture (a tap, not a scroll — scrolls do not
+                                // route here), so it claims the driver role and
+                                // fits the PTY to this phone. One-shot.
+                                scope.launch { ensureTakenOver() }
                             }
                             override fun shouldBackButtonBeMappedToEscape(): Boolean = false
                             override fun shouldEnforceCharBasedInput(): Boolean = false
@@ -607,6 +633,10 @@ fun TerminalScreen(
                         // the user can press Enter without leaving word mode.
                         val text = swipeText
                         scope.launch {
+                            // Claim the driver role before the input reaches the
+                            // PTY (see [ensureTakenOver]) so it is processed at
+                            // this phone's grid, not the desktop's.
+                            ensureTakenOver()
                             if (text.isNotEmpty()) {
                                 ptySocket.send(text.toByteArray(Charsets.UTF_8))
                             }
@@ -624,7 +654,7 @@ fun TerminalScreen(
                 shiftSticky = shiftSticky.value,
                 onShiftToggle = { shiftSticky.value = !shiftSticky.value },
                 onSend = { bytes ->
-                    scope.launch { ptySocket.send(bytes) }
+                    scope.launch { ensureTakenOver(); ptySocket.send(bytes) }
                 },
                 theme = terminalPalette,
             )

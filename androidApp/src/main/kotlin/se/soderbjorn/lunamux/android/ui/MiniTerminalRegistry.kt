@@ -43,7 +43,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.asCoroutineDispatcher
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import se.soderbjorn.lunamux.client.PtySocket
 import se.soderbjorn.lunamux.client.LunamuxClient
 
@@ -104,16 +103,17 @@ class MiniTerminalRegistry(
     private fun createEntry(sessionId: String): Entry {
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val socket = client.openPtySocket(sessionId)
-        // No view backs a registry emulator; the ref stays null and
-        // applyingServerSize stays true so the shared session never echoes a
-        // resize to the server.
+        // No view backs a registry emulator; the ref stays null. The session
+        // never votes a size on its own (only the view's grid listener does,
+        // and there is no view here), and a thumbnail never takes input, so its
+        // take-over gate is a no-op.
         val viewRef = mutableStateOf<TerminalView?>(null)
         val session = createExternalTerminalSession(
             scope = scope,
             emulatorDispatcher = dispatcher,
             terminalViewRef = viewRef,
-            applyingServerSize = AtomicBoolean(true),
             ptySocket = socket,
+            takeOver = {},
         )
         val emulator = createSyncedEmulator(session)
         val lines = MutableStateFlow<List<String>>(emptyList())
