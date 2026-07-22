@@ -353,30 +353,32 @@ fun updateOobOverlay(entry: TerminalEntry) {
 
     val gapRight = containerWidth - (screenLeft + screenWidth)
     val gapBottom = containerHeight - (screenTop + screenHeight)
-    // Gate on what a reformat could actually *reclaim*: compute the grid a
-    // reformat would apply ([proposeSafeDimensions] — the SAME math [safeFit]
-    // uses, including its viewport row clamp) and show a strip only when it
-    // would add at least one column/row. Judging by the raw pixel gap against
-    // the container rect over-counts the structural insets around the xterm
-    // element (its padding and the scrollbar gutter) as "unused space", and
-    // judging by the fit addon's raw proposal over-counts the one clamped row —
-    // both kept a strip permanently lit that no reformat could ever clear. When
-    // no proposal is available (terminal not measurable yet), show nothing
-    // rather than guess.
-    val safeTarget = runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()
-    val reclaimCols = (safeTarget?.first ?: 0) - entry.term.cols
-    val reclaimRows = (safeTarget?.second ?: 0) - entry.term.rows
-
-    if (reclaimCols >= 1 && gapRight > 0 && screenHeight > 0) {
+    // Right dead zone: with the width ratchet ([applyServerSize]) the render grid
+    // (term.cols) can be wider than the live PTY (entry.ptyCols) — a phone took
+    // over at a narrower width, or wide replay history holds the grid open.
+    // Hatch the columns [ptyCols, term.cols), sized arithmetically from cells so
+    // the scrollbar gutter / padding is never miscounted as dead space. Width is
+    // no longer *reclaimable* here: the ratchet keeps the render grid at least
+    // the container fit, so a reformat can never add columns — only the bottom
+    // rows (below) still reclaim, since rows track the PTY rather than ratchet.
+    val liveCols = entry.ptyCols ?: entry.term.cols
+    val deadCols = entry.term.cols - liveCols
+    if (deadCols >= 1 && cellW != null && screenHeight > 0) {
         val right = ensure("right")
         right.style.display = "block"
-        right.style.left = "${screenLeft + screenWidth}px"
+        right.style.left = "${screenLeft + liveCols * cellW}px"
         right.style.top = "${screenTop}px"
-        right.style.width = "${gapRight}px"
+        right.style.width = "${deadCols * cellW}px"
         right.style.height = "${screenHeight}px"
     } else {
         entry.oobOverlayRight?.style?.display = "none"
     }
+
+    // Bottom reclaim gap: gate on the fit proposal (the same math safeFit uses,
+    // including its viewport row clamp) so structural insets aren't miscounted;
+    // show nothing when no proposal is available (terminal not measurable yet).
+    val reclaimRows =
+        (runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()?.second ?: 0) - entry.term.rows
 
     if (reclaimRows >= 1 && gapBottom > 0 && containerWidth > 0) {
         val bottom = ensure("bottom")
@@ -399,12 +401,23 @@ fun updateOobOverlay(entry: TerminalEntry) {
  * re-presented at the new grid too ([spikeOnServerSize]) so the pane stays a
  * truthful window onto the PTY.
  *
+ * The **width ratchet**: xterm's render grid never narrows below the desktop's
+ * own fit or the widest replayed content ([maxReplayCols]) — shrinking xterm's
+ * columns rewraps its scrollback lossily (the desktop counterpart of the phone
+ * mangling), so when another client (a phone) governs the PTY narrower, the
+ * desktop keeps its width and marks the now-unused columns as a dead zone
+ * instead of reflowing. Rows always follow the PTY. The live PTY grid is kept
+ * in [TerminalEntry.ptyCols]/[TerminalEntry.ptyRows] for the dead-zone overlay
+ * and mouse math; only the *render* grid ratchets.
+ *
  * @param entry the [TerminalEntry] to resize
- * @param cols the server-mandated column count
+ * @param cols the server-mandated column count (the live PTY width)
  * @param rows the server-mandated row count
+ * @param maxReplayCols widest column width in the server's replay history; the
+ *   render grid never drops below it so wide replayed content isn't reflowed.
  * @see spikeOnServerSize
  */
-fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
+fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: Int = 0) {
     // While the world is open, every server-mandated size is logged: a grid key
     // sends ForceResize(new) and, if some other client (or this client's own 2D
     // machinery) counter-votes, the very next broadcast arrives with the old
@@ -417,10 +430,15 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
     }
     entry.ptyCols = cols
     entry.ptyRows = rows
-    if (cols != entry.term.cols || rows != entry.term.rows) {
+    // Ratchet the render width up to the widest of: the live PTY, the desktop's
+    // own container fit, and the replay-history width. Rows track the PTY.
+    val fitCols = runCatching { proposeSafeDimensions(entry.term, entry.fit)?.first }.getOrNull() ?: cols
+    val renderCols = maxOf(cols, fitCols, maxReplayCols)
+    val renderRows = rows
+    if (renderCols != entry.term.cols || renderRows != entry.term.rows) {
         entry.applyingServerSize = true
         try {
-            runCatching { entry.term.asDynamic().resize(cols, rows) }
+            runCatching { entry.term.asDynamic().resize(renderCols, renderRows) }
         } finally {
             entry.applyingServerSize = false
         }

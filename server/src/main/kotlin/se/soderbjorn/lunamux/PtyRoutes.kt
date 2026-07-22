@@ -76,7 +76,7 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
         send(
             Frame.Text(
                 windowJson.encodeToString<PtyServerMessage>(
-                    PtyServerMessage.Size(initialCols, initialRows)
+                    PtyServerMessage.Size(initialCols, initialRows, session.maxReplayCols())
                 )
             )
         )
@@ -101,7 +101,9 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
         }
         val sizeFrames = session.sizeEvents.drop(1).map<Pair<Int, Int>, Frame> { (cols, rows) ->
             Frame.Text(
-                windowJson.encodeToString<PtyServerMessage>(PtyServerMessage.Size(cols, rows))
+                windowJson.encodeToString<PtyServerMessage>(
+                    PtyServerMessage.Size(cols, rows, session.maxReplayCols())
+                )
             )
         }
         val writerJob = launch {

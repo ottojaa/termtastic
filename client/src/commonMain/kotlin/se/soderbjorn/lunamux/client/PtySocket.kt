@@ -42,8 +42,14 @@ sealed interface PtyEvent {
      */
     class Bytes(val data: ByteArray) : PtyEvent
 
-    /** The server's authoritative PTY grid. */
-    data class Size(val cols: Int, val rows: Int) : PtyEvent
+    /**
+     * The server's authoritative PTY grid, plus [maxReplayCols] — the widest
+     * width represented in the server's replay history. A renderer that feeds
+     * an emulator ratchets its grid width up to at least [maxReplayCols] so wide
+     * replayed content is never reinterpreted narrower (and rewrapped lossily);
+     * 0 means "no hint" (older server / empty history).
+     */
+    data class Size(val cols: Int, val rows: Int, val maxReplayCols: Int = 0) : PtyEvent
 
     /**
      * A reconnect boundary: the server is about to replay the whole ring buffer,

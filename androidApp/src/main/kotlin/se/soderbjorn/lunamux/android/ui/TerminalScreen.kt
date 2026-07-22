@@ -78,6 +78,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import se.soderbjorn.lunamux.android.net.ConnectionHolder
 import se.soderbjorn.lunamux.client.PtyEvent
 
@@ -248,26 +249,24 @@ fun TerminalScreen(
 
     val emulator = remember(sessionId) { createSyncedEmulator(session) }
 
-    // Apply an authoritative server size to the emulator, matching the cell
-    // metrics to the live view so the grid lines up, guarded by
-    // [applyingServerSize] so the layout pass it triggers doesn't echo a vote
-    // back to the server. A no-op until the TerminalView exists; the view
-    // factory seeds the first size from [PtySocket.ptySize] once it's created,
-    // covering a Size that arrived before first layout.
-    val applyServerSize: suspend (Int, Int) -> Unit = { cols, rows ->
+    // Latest server maxReplayCols, so the view factory can seed the followed
+    // grid (below) with the real replay-width hint rather than 0.
+    val lastMaxReplayCols = remember(sessionId) { AtomicInteger(0) }
+
+    // Apply an authoritative server grid via the view's followed-grid mode (the
+    // width ratchet): hold the render grid at least max(cols, maxReplayCols)
+    // wide so wide replayed/mirrored content is never reinterpreted narrower;
+    // rows track the PTY; cols is the live PTY width (the dead-zone boundary).
+    // The view font-to-fits, resizes the emulator itself, and still votes its
+    // readable natural grid — [applyingServerSize] guards that vote from being
+    // echoed as a server-driven change (a genuine rotation, unguarded, still
+    // re-votes). A no-op until the TerminalView exists; the factory seeds it.
+    val applyServerSize: (Int, Int, Int) -> Unit = { cols, rows, maxReplayCols ->
         val view = terminalViewRef.value
-        val renderer = view?.mRenderer
-        if (view != null && renderer != null) {
-            val cellW = renderer.fontWidth.toInt().coerceAtLeast(1)
-            val cellH = renderer.fontLineSpacing.coerceAtLeast(1)
+        if (view != null && cols > 0 && rows > 0) {
             applyingServerSize.set(true)
-            withContext(emulatorDispatcher) {
-                synchronized(emulator) {
-                    runCatching { emulator.resize(cols, rows, cellW, cellH) }
-                }
-            }
             view.post {
-                view.onScreenUpdated()
+                view.setFollowedGrid(maxOf(cols, maxReplayCols), rows, cols)
                 view.post { applyingServerSize.set(false) }
             }
         }
@@ -281,7 +280,8 @@ fun TerminalScreen(
         ptySocket.events.collect { ev ->
             when (ev) {
                 is PtyEvent.Size -> {
-                    applyServerSize(ev.cols, ev.rows)
+                    lastMaxReplayCols.set(ev.maxReplayCols)
+                    applyServerSize(ev.cols, ev.rows, ev.maxReplayCols)
                     return@collect
                 }
                 PtyEvent.Reset -> {
@@ -601,7 +601,7 @@ fun TerminalScreen(
                         // events collector no-ops that Size, so seed the emulator
                         // from the latest known size now that the view is here.
                         ptySocket.ptySize.value?.let { (cols, rows) ->
-                            scope.launch { applyServerSize(cols, rows) }
+                            applyServerSize(cols, rows, lastMaxReplayCols.get())
                         }
                         view
                     },

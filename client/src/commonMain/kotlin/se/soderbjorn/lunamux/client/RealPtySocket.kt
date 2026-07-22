@@ -144,9 +144,13 @@ class RealPtySocket internal constructor(
                                 )
                                 when (msg) {
                                     is PtyServerMessage.Size -> {
-                                        // Ordered on [events] for emulator feeders;
-                                        // also mirrored into the conflated ptySize.
-                                        _events.emit(PtyEvent.Size(msg.cols, msg.rows))
+                                        // Ordered on [events] for emulator feeders
+                                        // (with the replay-width hint); also
+                                        // mirrored into the conflated ptySize for
+                                        // pure size observers, which don't need it.
+                                        _events.emit(
+                                            PtyEvent.Size(msg.cols, msg.rows, msg.maxReplayCols)
+                                        )
                                         _ptySize.value = Pair(msg.cols, msg.rows)
                                     }
                                 }

@@ -372,7 +372,10 @@ fun connectPane(entry: TerminalEntry) {
         if (data is String) {
             runCatching {
                 val msg = windowJson.decodeFromString<PtyServerMessage>(data)
-                when (msg) { is PtyServerMessage.Size -> applyServerSize(entry, msg.cols, msg.rows) }
+                when (msg) {
+                    is PtyServerMessage.Size ->
+                        applyServerSize(entry, msg.cols, msg.rows, msg.maxReplayCols)
+                }
             }
         } else {
             val buf = data as org.khronos.webgl.ArrayBuffer

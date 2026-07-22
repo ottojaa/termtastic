@@ -128,7 +128,11 @@ class MiniTerminalRegistry(
                     synchronized(emulator) {
                         when (ev) {
                             is PtyEvent.Size ->
-                                runCatching { emulator.resize(ev.cols, ev.rows, 1, 1) }
+                                // Preview at least as wide as replayed history so
+                                // wide lines aren't rewrap-mangled in the thumbnail.
+                                runCatching {
+                                    emulator.resize(maxOf(ev.cols, ev.maxReplayCols), ev.rows, 1, 1)
+                                }
                             is PtyEvent.Bytes -> emulator.append(ev.data, ev.data.size)
                             PtyEvent.Reset -> {
                                 val ris = byteArrayOf(0x1b, 'c'.code.toByte())

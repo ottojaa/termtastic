@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Handler;
@@ -65,6 +66,30 @@ public final class TerminalView extends View {
     private OnTerminalGridSizeChangedListener mGridSizeListener;
     private int mLastGridCols = -1;
     private int mLastGridRows = -1;
+
+    /**
+     * Followed-grid ("width ratchet") state. When {@link #mFollowMinCols} &gt; 0
+     * the render grid's column count is externally authoritative (never derived
+     * from the pixel width), the font shrinks to fit those columns down to
+     * {@link #FOLLOW_MIN_TEXT_SIZE} and the grid then overflows and pans; 0
+     * disables it and restores the original pixel-derived sizing. Driven by
+     * {@link #setFollowedGrid(int, int, int)}.
+     */
+    private int mFollowMinCols = 0;
+    private int mFollowRows = 0;
+    /** The live PTY column count; render columns beyond it are the dead zone. */
+    private int mLivePtyCols = 0;
+    /**
+     * The readable/pinch baseline font size. The render font is derived from it
+     * by font-to-fit and never exceeds it; kept separate so a font shrink never
+     * feeds back into a smaller natural grid (the re-vote loop the pixel path
+     * would spin in). 0 until followed mode is first enabled.
+     */
+    private int mReferenceTextSize = 0;
+    /** Legibility floor: font-to-fit never shrinks the render font below this. */
+    private static final int FOLLOW_MIN_TEXT_SIZE = 14;
+    /** Lazily-built paint for the dead-zone tint (columns beyond the live PTY). */
+    private Paint mDeadZonePaint;
 
     public void setOnTerminalGridSizeChangedListener(OnTerminalGridSizeChangedListener listener) {
         mGridSizeListener = listener;
@@ -512,6 +537,13 @@ public final class TerminalView extends View {
      * @param textSize the new font size, in density-independent pixels.
      */
     public void setTextSize(int textSize) {
+        if (mFollowMinCols > 0) {
+            // In followed mode the user controls the readable *reference* size;
+            // the render font is derived from it by font-to-fit in updateSize().
+            mReferenceTextSize = textSize;
+            updateSize();
+            return;
+        }
         mRenderer = new TerminalRenderer(
             textSize,
             mRenderer == null ? Typeface.MONOSPACE : mRenderer.mTypeface,
@@ -566,6 +598,10 @@ public final class TerminalView extends View {
         int[] columnAndRow = getColumnAndRow(e, false);
         int x = columnAndRow[0] + 1;
         int y = columnAndRow[1] + 1;
+        // In followed mode the render grid can be wider than the live PTY; clamp
+        // the reported column into the live region so a tap in the dead zone
+        // never reports a column the shell (only mLivePtyCols wide) can't have.
+        if (mLivePtyCols > 0 && x > mLivePtyCols) x = mLivePtyCols;
         if (pressed && (button == TerminalEmulator.MOUSE_WHEELDOWN_BUTTON || button == TerminalEmulator.MOUSE_WHEELUP_BUTTON)) {
             if (mMouseStartDownTime == e.getDownTime()) {
                 x = mMouseScrollStartX;
@@ -984,11 +1020,40 @@ public final class TerminalView extends View {
         updateSize();
     }
 
+    /**
+     * Enable (or update) followed-grid mode — the width ratchet. The render grid
+     * is held at least {@code minCols} wide and {@code rows} tall regardless of
+     * the pixel-derived natural fit, so wide replayed/mirrored content is never
+     * reinterpreted at a narrower width. {@code livePtyCols} is the real PTY
+     * width; columns beyond it are drawn as a dead zone and clamped out of mouse
+     * reporting. Pass {@code minCols <= 0} to disable and restore pixel sizing.
+     *
+     * @param minCols     minimum render columns (max of this and the natural fit)
+     * @param rows        render rows (tracks the PTY)
+     * @param livePtyCols the live PTY column count (the dead-zone boundary)
+     */
+    public void setFollowedGrid(int minCols, int rows, int livePtyCols) {
+        if (minCols > 0 && mReferenceTextSize <= 0 && mRenderer != null) {
+            // Seed the readable baseline from the current font the first time
+            // followed mode turns on, so later font-to-fit shrinks never drift it.
+            mReferenceTextSize = mRenderer.mTextSize;
+        }
+        mFollowMinCols = minCols;
+        mFollowRows = rows;
+        mLivePtyCols = livePtyCols;
+        updateSize();
+    }
+
     /** Check if the terminal size in rows and columns should be updated. */
     public void updateSize() {
         int viewWidth = getWidth();
         int viewHeight = getHeight();
         if (viewWidth == 0 || viewHeight == 0 || mTermSession == null) return;
+
+        if (mFollowMinCols > 0) {
+            updateSizeFollowed(viewWidth, viewHeight);
+            return;
+        }
 
         // Set to 80 and 24 if you want to enable vttest.
         int newColumns = Math.max(4, (int) (viewWidth / mRenderer.mFontWidth));
@@ -1002,8 +1067,63 @@ public final class TerminalView extends View {
             }
         }
 
-        if (mEmulator == null || (newColumns != mEmulator.mColumns || newRows != mEmulator.mRows)) {
-            mTermSession.updateSize(newColumns, newRows, (int) mRenderer.getFontWidth(), mRenderer.getFontLineSpacing());
+        applyEmulatorGrid(newColumns, newRows);
+    }
+
+    /**
+     * Followed-grid resize. The natural grid (at the readable reference font) is
+     * still computed and reported to {@link #mGridSizeListener} — so the client
+     * keeps voting/forcing its readable size — but the *render* grid is held at
+     * {@code max(mFollowMinCols, naturalCols)} columns and {@code mFollowRows}
+     * rows. The font is shrunk to fit those columns down to
+     * {@link #FOLLOW_MIN_TEXT_SIZE}; past that the grid overflows and the user
+     * pans. Columns are never derived from the (shrunk) render font, which is
+     * what stops the shrink-font &rarr; more-columns &rarr; re-vote loop.
+     */
+    private void updateSizeFollowed(int viewWidth, int viewHeight) {
+        int refSize = mReferenceTextSize > 0 ? mReferenceTextSize : mRenderer.mTextSize;
+        Typeface tf = mRenderer.mTypeface;
+        Typeface fb = mRenderer.mFallbackTypeface;
+
+        // Natural grid at the readable reference font — the vote/take-over size,
+        // independent of any render-font shrink below.
+        TerminalRenderer ref = new TerminalRenderer(refSize, tf, fb);
+        int naturalCols = Math.max(4, (int) (viewWidth / ref.mFontWidth));
+        int naturalRows = Math.max(4, (viewHeight - ref.mFontLineSpacingAndAscent) / ref.mFontLineSpacing);
+        if (naturalCols != mLastGridCols || naturalRows != mLastGridRows) {
+            mLastGridCols = naturalCols;
+            mLastGridRows = naturalRows;
+            if (mGridSizeListener != null) {
+                mGridSizeListener.onTerminalGridSizeChanged(naturalCols, naturalRows);
+            }
+        }
+
+        int targetCols = Math.max(mFollowMinCols, naturalCols);
+        int targetRows = mFollowRows > 0 ? mFollowRows : naturalRows;
+
+        // Font-to-fit targetCols into the viewport, down to the legibility floor.
+        TerminalRenderer fit = ref;
+        if (fit.mFontWidth * targetCols > viewWidth) {
+            for (int size = refSize - 1; size >= FOLLOW_MIN_TEXT_SIZE; size--) {
+                fit = new TerminalRenderer(size, tf, fb);
+                if (fit.mFontWidth * targetCols <= viewWidth) break;
+            }
+        }
+        mRenderer = fit;
+
+        applyEmulatorGrid(targetCols, targetRows);
+        // Font may have changed even when the grid didn't; repaint regardless.
+        invalidate();
+    }
+
+    /**
+     * Resize the (externally-owned) emulator to {@code cols}x{@code rows} using
+     * the current render font's cell metrics, if that differs from its current
+     * grid. Shared by the pixel-derived and followed-grid paths.
+     */
+    private void applyEmulatorGrid(int cols, int rows) {
+        if (mEmulator == null || (cols != mEmulator.mColumns || rows != mEmulator.mRows)) {
+            mTermSession.updateSize(cols, rows, (int) mRenderer.getFontWidth(), mRenderer.getFontLineSpacing());
             mEmulator = mTermSession.getEmulator();
             mClient.onEmulatorSet();
 
@@ -1035,6 +1155,19 @@ public final class TerminalView extends View {
             // the UI thread must acquire the same monitor on mEmulator.
             synchronized (mEmulator) {
                 mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3]);
+            }
+
+            // Dead zone: in followed mode the render grid can be wider than the
+            // live PTY, so tint the columns beyond it — a visual cue that they
+            // aren't part of the live terminal (the port of the web OOB overlay).
+            int drawnCols = mEmulator.mColumns;
+            if (mLivePtyCols > 0 && drawnCols > mLivePtyCols) {
+                if (mDeadZonePaint == null) {
+                    mDeadZonePaint = new Paint();
+                    mDeadZonePaint.setColor(0x22F4B869); // ~13% Termtastic orange
+                }
+                float cw = mRenderer.mFontWidth;
+                canvas.drawRect(mLivePtyCols * cw, 0, drawnCols * cw, getHeight(), mDeadZonePaint);
             }
 
             // render the text selection handles

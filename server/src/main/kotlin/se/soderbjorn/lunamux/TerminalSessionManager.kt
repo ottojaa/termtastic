@@ -199,6 +199,19 @@ interface TermSession {
     fun snapshot(): ByteArray
 
     /**
+     * The widest PTY column width represented in the replay [snapshot] — i.e.
+     * the narrowest render grid at which a reconnecting/attaching client can
+     * repaint the replayed history without reinterpreting wide content at a
+     * narrower width (which rewraps it lossily). Sent to clients in
+     * [PtyServerMessage.Size] so their render grid can ratchet up to it; it
+     * decays as wide history ages out of the ring. Defaults to 0 (no hint) for
+     * sessions that keep no width-tracked ring.
+     *
+     * @return the widest represented width, or 0 when unknown.
+     */
+    fun maxReplayCols(): Int = 0
+
+    /**
      * Recent output to persist for a restore after the server exits.
      *
      * Split from [snapshot] because a restore replays into a fresh shell with
@@ -486,7 +499,7 @@ class TerminalSession private constructor(
     // persisted — so its size is a memory *and* SQLite write-volume cost per
     // active pane. Excluding redraw traffic is what lets it stay small: a TUI
     // can no longer evict real history.
-    private val mainRing = ByteRing(MAIN_RING_CAPACITY)
+    private val mainRing = ByteRing(MAIN_RING_CAPACITY, trackWidth = true)
 
     // Traffic from the full-screen program currently holding the alternate
     // buffer, replayed to clients reconnecting mid-session so a running vim or
@@ -499,12 +512,25 @@ class TerminalSession private constructor(
     private val ringLock = Any()
 
     /**
+     * The PTY column width bytes are currently being authored at, used to tag
+     * [mainRing] epochs for [maxReplayCols]. Tracks [sizeEvents] but is declared
+     * here — before the restore-ingest init block — and seeded from the
+     * constructor's [initialCols] so restored scrollback (which was persisted at
+     * that width) is tagged correctly before [_sizeEvents] itself exists.
+     */
+    private var authorWidth: Int = initialCols
+
+    /**
      * Routes tracked output into [mainRing] / [altRing]. Guarded by
      * [ringLock] via its callers; never invoked concurrently.
      */
     private val ringSink = object : AltScreenTracker.Sink {
         override fun onSegment(chunk: ByteArray, from: Int, until: Int, alt: Boolean) {
-            (if (alt) altRing else mainRing).append(chunk, from, until)
+            // Tag normal-buffer bytes with the width they were authored at so
+            // maxReplayCols can decay; alt-buffer redraws aren't persisted or
+            // width-tracked (altRing has trackWidth = false).
+            if (alt) altRing.append(chunk, from, until)
+            else mainRing.append(chunk, from, until, authorWidth)
         }
 
         override fun onSpanClosed() {
@@ -546,11 +572,11 @@ class TerminalSession private constructor(
             // (correctly, for real PTY output) read as evidence that
             // everything before it was orphaned TUI paint.
             synchronized(ringLock) {
-                mainRing.append(RESTORE_MODE_RESET, 0, RESTORE_MODE_RESET.size)
+                mainRing.append(RESTORE_MODE_RESET, 0, RESTORE_MODE_RESET.size, authorWidth)
                 // Blank line so the restored scrollback doesn't run straight
                 // into the new shell's first prompt.
                 val gap = "\r\n\r\n".toByteArray(Charsets.UTF_8)
-                mainRing.append(gap, 0, gap.size)
+                mainRing.append(gap, 0, gap.size, authorWidth)
             }
         }
     }
@@ -720,6 +746,8 @@ class TerminalSession private constructor(
         }
         screen.resize(c, r)
         _sizeEvents.value = Pair(c, r)
+        // Bytes authored from now on belong to a c-wide epoch in the main ring.
+        authorWidth = c
     }
 
     /** Check the currently-rendered screen for AI assistant state markers. */
@@ -781,6 +809,19 @@ class TerminalSession private constructor(
         // next frame.
         return ReplaySanitizer.stripQueries(ringBytes) + SHOW_CURSOR_SUFFIX
     }
+
+    /**
+     * The widest width represented in the (normal-buffer) replay ring. The
+     * alternate buffer is deliberately excluded: an alt-screen repaint is
+     * always authored at the *current* PTY width, which the client already
+     * receives as [PtyServerMessage.Size.cols] and folds into its render grid,
+     * so tracking it here would add nothing. Reading only [mainRing] means the
+     * hint decays as wide scrollback ages out.
+     *
+     * @return the widest column width still in the main ring, or 0 when empty.
+     * @see TermSession.maxReplayCols
+     */
+    override fun maxReplayCols(): Int = synchronized(ringLock) { mainRing.maxRepresentedCols() }
 
     /**
      * Build the blob to persist for a restore after the server exits.
@@ -967,7 +1008,7 @@ class TerminalSession private constructor(
  * @property capacity maximum bytes retained.
  * @see TerminalSession
  */
-private class ByteRing(private val capacity: Int) {
+private class ByteRing(private val capacity: Int, private val trackWidth: Boolean = false) {
     private val buf = ByteArray(capacity)
     private var size = 0
     private var start = 0
@@ -983,8 +1024,28 @@ private class ByteRing(private val capacity: Int) {
     var overflowed = false
         private set
 
-    /** Append `chunk[from, until)`, evicting oldest bytes when full. */
-    fun append(chunk: ByteArray, from: Int, until: Int) {
+    /**
+     * A run of contiguous bytes in the ring that were authored at the same PTY
+     * column width. Only maintained when [trackWidth] is set (the main ring).
+     */
+    private class Epoch(var bytes: Int, val cols: Int)
+
+    /**
+     * Width epochs, oldest first; their byte counts always sum to [size].
+     * Eviction shrinks the head, appends extend or push the tail. This lets
+     * [maxRepresentedCols] report the widest width still present in the ring —
+     * a value that naturally *decays* as wide epochs age out, so the client
+     * width-ratchet is released once no wide content remains to reconstruct.
+     */
+    private val epochs = ArrayDeque<Epoch>()
+
+    /**
+     * Append `chunk[from, until)`, evicting oldest bytes when full.
+     *
+     * @param cols the PTY column width these bytes were authored at, recorded
+     *   as an epoch when [trackWidth] is set (ignored otherwise).
+     */
+    fun append(chunk: ByteArray, from: Int, until: Int, cols: Int = 0) {
         for (i in from until until) {
             buf[(start + size) % capacity] = chunk[i]
             if (size < capacity) {
@@ -992,9 +1053,32 @@ private class ByteRing(private val capacity: Int) {
             } else {
                 start = (start + 1) % capacity
                 overflowed = true
+                if (trackWidth) evictOneEpochByte()
             }
         }
+        if (trackWidth && until > from) recordEpoch(cols, until - from)
     }
+
+    /** Drop one byte off the oldest epoch, removing it when emptied. */
+    private fun evictOneEpochByte() {
+        val head = epochs.firstOrNull() ?: return
+        head.bytes--
+        if (head.bytes <= 0) epochs.removeFirst()
+    }
+
+    /** Extend the tail epoch when the width matches, else start a new one. */
+    private fun recordEpoch(cols: Int, count: Int) {
+        val tail = epochs.lastOrNull()
+        if (tail != null && tail.cols == cols) tail.bytes += count
+        else epochs.addLast(Epoch(count, cols))
+    }
+
+    /**
+     * The widest column width still represented in the ring, or 0 when empty /
+     * untracked. Callers use it as a lower bound on a client's render width so
+     * wide replayed history is never reinterpreted at a narrower width.
+     */
+    fun maxRepresentedCols(): Int = epochs.maxOfOrNull { it.cols } ?: 0
 
     /** @return the contents, oldest byte first. */
     fun copy(): ByteArray {
@@ -1010,10 +1094,11 @@ private class ByteRing(private val capacity: Int) {
         return out
     }
 
-    /** Drop everything, including the [overflowed] mark. */
+    /** Drop everything, including the [overflowed] mark and width epochs. */
     fun clear() {
         size = 0
         start = 0
         overflowed = false
+        epochs.clear()
     }
 }
