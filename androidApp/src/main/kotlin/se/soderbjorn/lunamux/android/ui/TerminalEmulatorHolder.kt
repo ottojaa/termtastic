@@ -77,15 +77,18 @@ internal fun createExternalTerminalSession(
 
         override fun updateSize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
             val e = externalEmulator ?: return
-            // While passively mirroring, pin the emulator to the server's grid so
-            // the synthesized redraw reconstructs exactly; otherwise follow the
-            // view's own pixel-derived grid (the phone is the governor).
-            val pin = passiveGridPin.get()
-            val cols = pin?.first ?: columns
-            val emuRows = pin?.second ?: rows
+            // While passively mirroring, pin only the COLUMNS to the server's grid:
+            // cols decide wrapping, so the synthesized redraw must be reconstructed at
+            // exactly that width. ROWS always follow the view's own capacity. Pinning
+            // rows too made a server screen taller than the phone can draw (the font is
+            // clamped at a legibility floor, so cells are bigger than a pure fit) clip
+            // at the bottom — losing the prompt and newest output. With rows free, a
+            // taller server screen simply scrolls its earlier rows into scrollback, so
+            // the mirror is bottom-anchored and the rest stays reachable by scrolling.
+            val cols = passiveGridPin.get()?.first ?: columns
             scope.launch(emulatorDispatcher) {
                 synchronized(e) {
-                    runCatching { e.resize(cols, emuRows, cellWidthPixels, cellHeightPixels) }
+                    runCatching { e.resize(cols, rows, cellWidthPixels, cellHeightPixels) }
                 }
                 terminalViewRef.value?.post { terminalViewRef.value?.invalidate() }
             }

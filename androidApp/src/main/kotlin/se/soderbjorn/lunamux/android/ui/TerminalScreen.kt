@@ -365,7 +365,11 @@ fun TerminalScreen(
                     passiveGridPin.set(if (passiveNow) sz else null)
                     withContext(emulatorDispatcher) {
                         synchronized(emulator) {
-                            runCatching { emulator.resize(sz.first, sz.second, 1, 1) }
+                            // Width only — rows stay at the view's capacity so a taller
+                            // server screen bottom-anchors (scrolling its earlier rows
+                            // into scrollback) instead of clipping the prompt. See the
+                            // pin note in TerminalEmulatorHolder.updateSize.
+                            runCatching { emulator.resize(sz.first, emulator.mRows, 1, 1) }
                         }
                     }
                     return@collect
