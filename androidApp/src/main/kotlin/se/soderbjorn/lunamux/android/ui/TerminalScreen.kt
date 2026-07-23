@@ -106,6 +106,14 @@ private const val PASSIVE_FONT_FLOOR_PX = 12f
 /** The phone's normal (driving) terminal font size in px. */
 private const val DRIVING_FONT_PX = 30
 
+/** Bounds for the mirror-only pinch zoom (a multiplier on the fitted mirror font). */
+private const val MIRROR_ZOOM_MIN = 0.5f
+private const val MIRROR_ZOOM_MAX = 6f
+
+/** Absolute bounds for the resulting mirror font size, in px. */
+private const val MIRROR_FONT_MIN_PX = 6f
+private const val MIRROR_FONT_MAX_PX = 48f
+
 /**
  * Whether [bytes] contains a full terminal reset (RIS, `ESC c`). Termux's
  * emulator resets its colour table to the built-in default scheme on RIS
@@ -239,9 +247,15 @@ fun TerminalScreen(
     val drivingTo = remember(sessionId) { AtomicReference<Pair<Int, Int>?>(null) }
     val passiveGridPin = remember(sessionId) { AtomicReference<Pair<Int, Int>?>(null) }
 
-    // The user's chosen (driving) font size; pinch-zoom adjusts it. The actually
-    // applied size shrinks below this while mirroring (see appliedFontSize).
+    // The driving font size. Deliberately NOT pinch-adjustable: see onScale — while
+    // driving, a font change re-fits this phone's grid and re-votes the SHARED PTY
+    // size, so a viewing gesture would reflow the session for every attached client.
     var userFontSize by remember(sessionId) { mutableStateOf(DRIVING_FONT_PX) }
+
+    // Extra zoom applied to the mirror only, driven by pinch. Purely local
+    // presentation: the server grid is untouched, so no other client sees it. Kept
+    // across passive/driving transitions so re-entering the mirror preserves it.
+    var mirrorZoom by remember(sessionId) { mutableStateOf(1f) }
 
     // Passive = the server grid is a different (wider) width than this phone's own.
     // Cols only: a rows-only difference doesn't change wrapping.
@@ -255,8 +269,13 @@ fun TerminalScreen(
         val lg = localGrid
         val sg = serverGrid
         if (lg != null && sg != null) {
-            PtyPresentation.passiveFontSize(userFontSize.toFloat(), lg.cols, sg.first, PASSIVE_FONT_FLOOR_PX)
-                .roundToInt()
+            val fit = PtyPresentation.passiveFontSize(
+                userFontSize.toFloat(), lg.cols, sg.first, PASSIVE_FONT_FLOOR_PX,
+            )
+            // Pinch scales the mirror around that fit. Zooming out below the legibility
+            // floor is allowed here because it is explicit intent (see more at once),
+            // unlike the automatic fit which stops at the floor and clips instead.
+            (fit * mirrorZoom).coerceIn(MIRROR_FONT_MIN_PX, MIRROR_FONT_MAX_PX).roundToInt()
         } else {
             userFontSize
         }
@@ -645,13 +664,21 @@ fun TerminalScreen(
                         }
                         view.setTerminalViewClient(object : TerminalViewClient {
                             override fun onScale(scale: Float): Float {
+                                // Pinch-zoom is a MIRROR-ONLY gesture. While driving, a
+                                // font change re-fits this phone's grid and re-votes the
+                                // SHARED PTY size — so a pinch here would reflow the
+                                // session for the laptop too, which is far too much blast
+                                // radius for a viewing gesture (and the per-step reflow is
+                                // what made it feel rough). The driving font stays a
+                                // setting. While mirroring, zoom is purely local: the
+                                // server grid is untouched and only this phone rescales.
+                                val lg = localGrid
+                                val sg = serverGrid
+                                val passiveNow = lg != null && sg != null && sg.first != lg.cols
+                                if (!passiveNow) return scale
                                 if (scale < 0.95f || scale > 1.05f) {
-                                    val step = if (scale > 1f) 1 else -1
-                                    // Adjust the user's driving font; the applied size
-                                    // (shrunk while mirroring) is derived + set in the
-                                    // AndroidView update block.
-                                    val next = (userFontSize + step).coerceIn(14, 96)
-                                    if (next != userFontSize) userFontSize = next
+                                    mirrorZoom = (mirrorZoom * scale)
+                                        .coerceIn(MIRROR_ZOOM_MIN, MIRROR_ZOOM_MAX)
                                     return 1f
                                 }
                                 return scale
