@@ -106,7 +106,7 @@ class AgentSession(
 
     override fun attachPayload(): AttachPayload = synchronized(outboundLock) {
         val (c, r) = _sizeEvents.value
-        AttachPayload(eventSeq, c, r, snapshot())
+        AttachPayload(eventSeq, c, r, ringSnapshot())
     }
 
     /** Enqueue a Size event so attached `/pty` clients re-fit to the new grid. */
@@ -430,7 +430,8 @@ class AgentSession(
         emitOutput("\u001B[0m\u001B[?25h".toByteArray(Charsets.US_ASCII))
     }
 
-    override fun snapshot(): ByteArray = synchronized(ringLock) {
+    /** A copy of the agent's replay ring (its recent output bytes). */
+    private fun ringSnapshot(): ByteArray = synchronized(ringLock) {
         if (ringSize == 0) return@synchronized ByteArray(0)
         val out = ByteArray(ringSize)
         if (ringStart + ringSize <= ringCapacity) {
@@ -442,6 +443,13 @@ class AgentSession(
         }
         out
     }
+
+    // Agent output is authored at one width and never reflows, so persistence and
+    // read_scrollback just hand back the ring (persist bytes verbatim; read_scrollback
+    // strips ANSI). No grid/synthesized redraw as for a PTY session.
+    override fun persistSnapshot(): ByteArray = ringSnapshot()
+
+    override fun transcriptText(): String = ringSnapshot().toString(Charsets.UTF_8)
 
     override fun shutdown() {
         if (closed) return

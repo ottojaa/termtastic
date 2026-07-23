@@ -53,7 +53,8 @@ class PtyAttachFlowTest {
         override fun forceClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {}
         override fun removeClient(clientId: String) {}
         override fun detectState(): SessionState? = null
-        override fun snapshot(): ByteArray = ByteArray(0)
+        override fun transcriptText(): String = ""
+        override fun persistSnapshot(): ByteArray = ByteArray(0)
         override fun screenText(): String = ""
         override fun isProcessAlive(): Boolean = true
     }

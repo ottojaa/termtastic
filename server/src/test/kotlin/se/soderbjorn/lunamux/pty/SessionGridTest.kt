@@ -104,4 +104,33 @@ class SessionGridTest {
         // The synthesized redraw is constructed paint — it must carry no device queries.
         assertEquals(0L, fresh.discardedOutputBytes)
     }
+
+    @Test
+    fun `synthesizeForPersist round-trips into a fresh grid`() {
+        // This is the Phase 4 persistence contract: persistSnapshot() bytes fed into a
+        // fresh grid on restart reconstruct the scrollback.
+        val grid = SessionGrid(40, 8)
+        grid.feed("line one\r\nline two\r\nprompt$ ")
+        val blob = grid.synthesizeForPersist()
+
+        val restored = SessionGrid(40, 8)
+        restored.feed(blob, blob.size)
+        assertEquals(grid.transcriptText(), restored.transcriptText())
+    }
+
+    @Test
+    fun `persist form does not resurrect terminal modes`() {
+        // A dead full-screen app must not re-enable sticky modes on restore (#91):
+        // serializeForPersist carries no mode epilogue.
+        val grid = SessionGrid(40, 8)
+        grid.feed("$esc[?2004h$esc[?1000h$esc[?1006hcontent")   // bracketed paste + mouse on
+        assertTrue(grid.read { it.isBracketedPasteMode })
+
+        val blob = grid.synthesizeForPersist()
+        val restored = SessionGrid(40, 8)
+        restored.feed(blob, blob.size)
+        assertFalse(restored.read { it.isBracketedPasteMode }, "bracketed paste must not resurrect")
+        assertFalse(restored.read { it.isMouseTrackingPressRelease }, "mouse tracking must not resurrect")
+        assertTrue(restored.transcriptText().contains("content"))
+    }
 }
