@@ -31,8 +31,10 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -48,6 +50,7 @@ import kotlinx.coroutines.launch
 import se.soderbjorn.lunamux.pty.AltScreenTracker
 import se.soderbjorn.lunamux.pty.ClientPosture
 import se.soderbjorn.lunamux.pty.ClientSizeArbiter
+import se.soderbjorn.lunamux.pty.GridSerializer
 import se.soderbjorn.lunamux.pty.OscScanner
 import se.soderbjorn.lunamux.pty.ProcessCwdReader
 import se.soderbjorn.lunamux.pty.ReplaySanitizer
@@ -117,6 +120,27 @@ interface TermSession {
 
     /** Effective (cols, rows) grid, updated as clients (dis)connect/resize. */
     val sizeEvents: StateFlow<Pair<Int, Int>>
+
+    /**
+     * The single ordered outbound stream — output chunks and size changes
+     * interleaved with monotonic [SessionEvent.seq]. `/pty` clients collect this
+     * (seq-gated against their [attachPayload]) instead of merging [output] and
+     * [sizeEvents], which makes delivery order exact rather than wall-clock
+     * dependent. [output] and [sizeEvents] remain for MCP tools and internal use.
+     */
+    val events: kotlinx.coroutines.flow.SharedFlow<SessionEvent>
+
+    /**
+     * Snapshot the session for a newly-attaching client: the grid dimensions to
+     * adopt and a self-contained redraw reconstructing the current screen at
+     * those dims, tagged with the last [SessionEvent.seq] it reflects. The client
+     * adopts the size, applies the redraw, then processes [events] with a greater
+     * seq. Captured atomically with seq assignment, so it is exact against the
+     * live stream.
+     *
+     * @return the attach seed.
+     */
+    fun attachPayload(): AttachPayload
 
     /** Total output bytes produced (drives incremental scrollback saves). */
     fun bytesWritten(): Long
@@ -446,6 +470,7 @@ object TerminalSessions {
  *  - A headless [ScreenEmulator] mirrors what xterm.js renders so
  *    [detectState] runs against the actual on-screen text.
  */
+@OptIn(FlowPreview::class)
 class TerminalSession private constructor(
     private val pty: PtyProcess,
     initialScrollback: ByteArray? = null,
@@ -496,6 +521,21 @@ class TerminalSession private constructor(
      * synthesize width-correct attach/resync redraws).
      */
     private val grid = SessionGrid(initialCols, initialRows)
+
+    // ── Ordered outbound stream (see SessionEvent) ──────────────────────────
+    // seq assignment and the grid feed/resize/synthesize the seq refers to happen
+    // together under [outboundLock], so [attachPayload] captures a grid state and a
+    // seq that are mutually consistent — making the client's seq gate exact rather
+    // than a wall-clock race (strictly stronger than the old merge{} in PtyRoutes).
+    private val outboundLock = Any()
+    private var eventSeq = 0L
+    private val eventChannel = Channel<SessionEvent>(Channel.UNLIMITED)
+    private val _events = MutableSharedFlow<SessionEvent>(replay = 0, extraBufferCapacity = 1024)
+    override val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
+
+    // Fired on every cols change; the heavyweight synthesized resync redraw is
+    // coalesced to fire once, RESYNC_DEBOUNCE_MS after the last change in a storm.
+    private val resyncTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
 
     // Recent output for replay, split by which screen buffer produced it.
     // Interleaving the two in one ring is what made restored scrollback show a
@@ -648,10 +688,35 @@ class TerminalSession private constructor(
             if (n <= 0) break
             osc.feed(buf, n)
             screen.feed(buf, n)
-            grid.feed(buf, n)
             val chunk = buf.copyOf(n)
+            // Feed the canonical grid and assign this chunk's seq atomically, so a
+            // concurrent attach/resize can't observe the grid updated but the seq
+            // not yet advanced (which would re-deliver the chunk) or vice versa.
+            synchronized(outboundLock) {
+                grid.feed(buf, n)
+                eventChannel.trySend(SessionEvent.Output(++eventSeq, chunk))
+            }
             appendToRing(chunk)
             _output.emit(chunk)
+        }
+    }
+
+    // Drains the ordered event channel into the broadcast flow. A single forwarder
+    // preserves channel (== seq) order; the producers can't emit to the SharedFlow
+    // directly because that suspends, which is illegal under [outboundLock].
+    private val forwarderJob: Job = scope.launch {
+        for (ev in eventChannel) _events.emit(ev)
+    }
+
+    // Emits one synthesized resync redraw after a cols-change storm settles. The
+    // redraw is RIS-prefixed and self-contained, so only the last one matters; the
+    // per-change Size events still go out immediately from applySize.
+    private val resyncJob: Job = scope.launch {
+        resyncTrigger.debounce(RESYNC_DEBOUNCE_MS).collect {
+            synchronized(outboundLock) {
+                val bytes = grid.synthesizeRedraw()
+                eventChannel.trySend(SessionEvent.Output(++eventSeq, bytes))
+            }
         }
     }
 
@@ -690,7 +755,10 @@ class TerminalSession private constructor(
     override fun resetTerminalModes() {
         val bytes = RESTORE_MODE_RESET + SHOW_CURSOR_SUFFIX
         appendToRing(bytes)
-        grid.feed(bytes, bytes.size)
+        synchronized(outboundLock) {
+            grid.feed(bytes, bytes.size)
+            eventChannel.trySend(SessionEvent.Output(++eventSeq, bytes))
+        }
         scope.launch { _output.emit(bytes) }
     }
 
@@ -759,16 +827,31 @@ class TerminalSession private constructor(
      */
     private fun applySize(next: Pair<Int, Int>?) {
         val (c, r) = next ?: return
+        val colsChanged = c != _sizeEvents.value.first
         try {
             pty.winSize = WinSize(c, r)
         } catch (_: Throwable) {
             // Ignore; resize races are benign.
         }
         screen.resize(c, r)
-        grid.resize(c, r)
+        // Resize the grid and emit the Size event atomically with seq assignment,
+        // ordered ahead of any output authored at the new width.
+        synchronized(outboundLock) {
+            grid.resize(c, r)
+            eventChannel.trySend(SessionEvent.Size(++eventSeq, c, r))
+        }
         _sizeEvents.value = Pair(c, r)
         // Bytes authored from now on belong to a c-wide epoch in the main ring.
         authorWidth = c
+        // Only a cols change rewraps the grid, so only then does the client need a
+        // resync redraw; a rows-only change is carried by the Size event alone.
+        if (colsChanged) resyncTrigger.tryEmit(Unit)
+    }
+
+    override fun attachPayload(): AttachPayload = synchronized(outboundLock) {
+        // Capture the synthesized redraw and the seq it reflects together, so the
+        // client's "process events with seq > attach.seq" gate is exact.
+        grid.read { e -> AttachPayload(eventSeq, e.mColumns, e.mRows, GridSerializer.serialize(e)) }
     }
 
     /** Check the currently-rendered screen for AI assistant state markers. */
@@ -969,6 +1052,14 @@ class TerminalSession private constructor(
          */
         private const val DEFAULT_COLS = 120
         private const val DEFAULT_ROWS = 32
+
+        /**
+         * How long a cols-change storm must settle before the (heavyweight)
+         * synthesized resync redraw is emitted. Every Size event still goes out
+         * immediately; only the redraw is coalesced, and since each redraw is
+         * RIS-prefixed and self-contained, emitting just the last one is correct.
+         */
+        private const val RESYNC_DEBOUNCE_MS = 100L
 
         /**
          * Spawn the user's shell on a fresh PTY and wrap it in a session.

@@ -18,9 +18,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -72,42 +70,19 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
         val posture = call.readClientPosture(info.type)
         session.setClientPosture(clientId, posture)
 
-        val (initialCols, initialRows) = session.sizeEvents.value
-        send(
-            Frame.Text(
-                windowJson.encodeToString<PtyServerMessage>(
-                    PtyServerMessage.Size(initialCols, initialRows, session.maxReplayCols())
-                )
-            )
-        )
+        // The client declares the grid its own emulator currently renders via
+        // ?cols=&rows= so the server can synthesize the attach redraw at that
+        // width. A governing driver's vote resizes+reflows the grid before
+        // synthesis; a viewer's is stored (it mirrors the desktop's width). Absent
+        // params (an older client) → synthesize at the current PTY dims.
+        val qCols = call.request.queryParameters["cols"]?.toIntOrNull()
+        val qRows = call.request.queryParameters["rows"]?.toIntOrNull()
 
-        val snapshot = session.snapshot()
-        if (snapshot.isNotEmpty()) {
-            send(Frame.Binary(true, snapshot))
-        }
-
-        // Single writer coroutine. PTY output and size changes come from two
-        // independent upstreams — the PTY read loop (Dispatchers.IO) and the
-        // size arbiter — so sending each from its own coroutine let their frames
-        // interleave in a nondeterministic order: a Size could reach the wire
-        // *after* the redraw bytes it must precede, mangling the client's grid,
-        // and two coroutines calling send() concurrently on one socket is itself
-        // unsafe. Merging both into one flow collected by one coroutine
-        // serialises the sends and preserves arrival order (a client-initiated
-        // resize sets the winsize before the program produces its repaint bytes,
-        // so the Size still enqueues ahead of them).
-        val outputFrames = session.output.map<ByteArray, Frame> { chunk ->
-            Frame.Binary(true, chunk)
-        }
-        val sizeFrames = session.sizeEvents.drop(1).map<Pair<Int, Int>, Frame> { (cols, rows) ->
-            Frame.Text(
-                windowJson.encodeToString<PtyServerMessage>(
-                    PtyServerMessage.Size(cols, rows, session.maxReplayCols())
-                )
-            )
-        }
+        // One writer coroutine over the single ordered event stream. It sends the
+        // attach Size + synthesized redraw first, then streams live events gated by
+        // seq — exact ordering by construction, replacing the old wall-clock merge{}.
         val writerJob = launch {
-            merge(outputFrames, sizeFrames).collect { frame -> send(frame) }
+            session.streamAttach(clientId, qCols, qRows) { frame -> send(frame) }
         }
 
         try {
@@ -131,6 +106,61 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
         }
     }
 }
+
+/**
+ * Stream a `/pty` attach to [send]: adopt the client's declared grid (if any),
+ * then send the attach `Size` + synthesized redraw, followed by the live
+ * [TermSession.events] — each gated so events already folded into the attach
+ * payload are not re-sent. Suspends until the collecting coroutine is cancelled.
+ *
+ * The Size + redraw are sent inside [onSubscription], which runs after the
+ * subscription is registered but before any event is delivered to this collector.
+ * That closes the gap the old snapshot-then-subscribe flow had: an event emitted
+ * between capturing the redraw and starting to collect can't be lost, because the
+ * subscription already exists when [attachPayload] samples the seq, and any event
+ * with a greater seq is delivered by the collector.
+ *
+ * Factored out of the socket handler so the ordering (Size-before-redraw, seq
+ * gating) is unit-testable without a real WebSocket.
+ *
+ * @param clientId this connection's size-arbitration id.
+ * @param qCols the client's declared grid width from the connect URL, or null.
+ * @param qRows the client's declared grid height, or null.
+ * @param send sink for outbound frames (the WebSocket's `send`, or a test double).
+ * @see TermSession.attachPayload
+ */
+internal suspend fun TermSession.streamAttach(
+    clientId: String,
+    qCols: Int?,
+    qRows: Int?,
+    send: suspend (Frame) -> Unit,
+) {
+    if (qCols != null && qRows != null && qCols > 0 && qRows > 0) {
+        setClientSize(clientId, qCols, qRows)
+    }
+    var attachSeq = Long.MIN_VALUE
+    events
+        .onSubscription {
+            val attach = attachPayload()
+            attachSeq = attach.seq
+            send(Frame.Text(sizeFrame(attach.cols, attach.rows)))
+            if (attach.bytes.isNotEmpty()) send(Frame.Binary(true, attach.bytes))
+        }
+        .collect { ev ->
+            when (ev) {
+                is SessionEvent.Output -> if (ev.seq > attachSeq) send(Frame.Binary(true, ev.bytes))
+                is SessionEvent.Size -> if (ev.seq > attachSeq) send(Frame.Text(sizeFrame(ev.cols, ev.rows)))
+            }
+        }
+}
+
+/**
+ * Encode a `Size` control frame. `maxReplayCols` is always 0 now — the redraw is
+ * synthesized at the client's own width, so the width-ratchet hint it fed is
+ * retired (the field stays in the wire schema for old clients).
+ */
+private fun sizeFrame(cols: Int, rows: Int): String =
+    windowJson.encodeToString<PtyServerMessage>(PtyServerMessage.Size(cols, rows, 0))
 
 /**
  * Handle a JSON control message received on a `/pty/{id}` WebSocket.
