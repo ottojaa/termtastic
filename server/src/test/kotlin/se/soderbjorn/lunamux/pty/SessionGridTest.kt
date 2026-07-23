@@ -90,4 +90,18 @@ class SessionGridTest {
         grid.resize(1, 1) // below the emulator's 2x2 floor — no-op, no throw
         assertTrue(grid.transcriptText().contains("keep"))
     }
+
+    @Test
+    fun `synthesizeRedraw reconstructs the grid into a fresh grid`() {
+        val grid = SessionGrid(40, 8)
+        grid.feed("hello${esc}[31m red${esc}[0m\r\nsecond")
+        val redraw = grid.synthesizeRedraw()
+        assertTrue(redraw.isNotEmpty())
+
+        val fresh = SessionGrid(40, 8)
+        fresh.feed(redraw, redraw.size)
+        assertEquals(grid.transcriptText(), fresh.transcriptText())
+        // The synthesized redraw is constructed paint — it must carry no device queries.
+        assertEquals(0L, fresh.discardedOutputBytes)
+    }
 }

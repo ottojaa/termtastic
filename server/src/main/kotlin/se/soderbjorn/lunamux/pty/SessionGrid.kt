@@ -149,6 +149,28 @@ class SessionGrid(cols: Int, rows: Int) {
      */
     fun transcriptText(): String = synchronized(emulator) { emulator.mainBuffer.transcriptText }
 
+    /**
+     * Synthesize an attach/resync redraw of the current grid at its current width:
+     * a self-contained byte stream (RIS + styled row flow + state epilogue) that
+     * reconstructs this exact screen — cells, cursor, modes, palette, title — when
+     * fed to a fresh emulator or a client terminal. The width-correct replacement for
+     * raw byte-ring replay.
+     *
+     * @return UTF-8 redraw bytes for the current grid.
+     * @see GridSerializer.serialize
+     */
+    fun synthesizeRedraw(): ByteArray = synchronized(emulator) { GridSerializer.serialize(emulator) }
+
+    /**
+     * Synthesize the persistence form: scrollback (and, for a live TUI, an inert
+     * frozen frame) with no mode/cursor epilogue, safe to store and replay into a
+     * fresh grid on restore without resurrecting a dead session's modes.
+     *
+     * @return UTF-8 bytes for persistence.
+     * @see GridSerializer.serializeForPersist
+     */
+    fun synthesizeForPersist(): ByteArray = synchronized(emulator) { GridSerializer.serializeForPersist(emulator) }
+
     private companion object {
         /** Emulator's hard minimum per side; [TerminalEmulator.resize] throws below 2. */
         const val MIN_DIM = 2

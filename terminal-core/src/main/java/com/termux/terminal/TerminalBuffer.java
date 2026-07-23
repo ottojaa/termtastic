@@ -472,6 +472,21 @@ public final class TerminalBuffer {
         return allocateFullLineIfNecessary(externalToInternalRow(externalRow)).getStyle(column);
     }
 
+    /**
+     * The row at [externalRow], or null when that row has never been written (a
+     * blank, default-styled line). Non-allocating — unlike {@link #getStyleAt}
+     * it does not materialize the row, so it is safe to walk the whole buffer
+     * while serializing without mutating it. Added for the server-side
+     * GridSerializer, which reads cells (chars, styles, wrap flag) directly.
+     *
+     * @param externalRow a row in the external coordinate system
+     *   (-{@link #getActiveTranscriptRows()} .. {@link #mScreenRows}-1).
+     * @return the backing {@link TerminalRow}, or null if unallocated (blank).
+     */
+    public TerminalRow getLineOrNull(int externalRow) {
+        return mLines[externalToInternalRow(externalRow)];
+    }
+
     /** Support for http://vt100.net/docs/vt510-rm/DECCARA and http://vt100.net/docs/vt510-rm/DECCARA */
     public void setOrClearEffect(int bits, boolean setOrClear, boolean reverse, boolean rectangular, int leftMargin, int rightMargin, int top, int left,
                                  int bottom, int right) {
