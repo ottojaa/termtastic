@@ -732,6 +732,13 @@ fun TerminalScreen(
                     },
                     update = { view ->
                         applyTerminalColors(view, emulator, terminalPalette)
+                        // While mirroring, a swipe scrolls our own transcript instead of
+                        // being turned into wheel reports / arrow keys for the remote
+                        // program. The synthesized redraw replays the driving program's
+                        // mouse-tracking modes, so without this the view produced wheel
+                        // reports — which the mirror drops (it must not inject input) —
+                        // and the mirror could not be scrolled at all.
+                        view.setLocalScrollOnly(passive)
                         // Apply the derived font: the user's size while driving, shrunk
                         // to fit while mirroring a wider grid. Guarded (setTextSize
                         // rebuilds the renderer + relayouts unconditionally) so it fires

@@ -26,6 +26,7 @@ import org.w3c.dom.Node
 import org.w3c.dom.events.FocusEvent
 import org.w3c.dom.events.MouseEvent
 import kotlin.js.json
+import se.soderbjorn.lunamux.client.PtyPresentation
 import se.soderbjorn.lunula.web.themeeditor.resolveFontFamilyCss
 
 /**
@@ -84,6 +85,11 @@ fun attachDragDrop(container: HTMLElement, term: Terminal) {
  */
 fun sendResize(entry: TerminalEntry) {
     if (entry.applyingServerSize) return
+    // A passive mirror never votes a size: its grid is the server's, not one this
+    // pane chose, so echoing it back would either be a no-op or (once the pane box
+    // changes) seize the PTY from the client actually driving. Take-over is an
+    // explicit act — typing, or the badge — routed through `forceReassert`.
+    if (entry.passive) return
     // Cold-restore settling window: swallow the vote. The stale fit sampled at
     // socket open (before the split geometry / webfont settled) debounces
     // through here ~200 ms later — after the server has already restored the
@@ -484,6 +490,22 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
         "<span class=\"stb-arrow\">↓</span>"
     container.appendChild(scrollBtn)
 
+    // Take-over pill: shown while this pane renders another client's grid (see
+    // [applyMirrorPresentation]). Clicking it is an input-free take-over — fit the
+    // shared PTY to this window. Neutral copy: the size broadcast doesn't say which
+    // device is driving.
+    val takeOverBadge = document.createElement("button") as HTMLElement
+    takeOverBadge.className = "take-over-badge"
+    takeOverBadge.setAttribute("type", "button")
+    takeOverBadge.setAttribute(
+        "title",
+        "Another device is driving this session at a different size — " +
+            "click to fit it to this window"
+    )
+    takeOverBadge.innerHTML = "<span class=\"tob-label\">Mirroring another device</span>" +
+        "<span class=\"tob-action\">Take over</span>"
+    container.appendChild(takeOverBadge)
+
     val term = Terminal(kotlin.js.json(
         "cursorBlink" to true,
         "fontFamily" to resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily),
@@ -620,6 +642,12 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     // (future windows)" — only panes created afterwards pick up the change.
     entry.autoReflow = perPaneAutoReflowOverride(paneId) ?: globalAutoReformatDefault()
     entry.scrollButton = scrollBtn
+    entry.takeOverBadge = takeOverBadge
+    takeOverBadge.addEventListener("click", { ev ->
+        ev.stopPropagation()
+        forceReassert(entry)
+        try { term.focus() } catch (_: Throwable) {}
+    })
     terminals[paneId] = entry
     connectionState[sessionId] = "connecting"
     updateAggregateStatus()
@@ -638,8 +666,40 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     // [TerminalEntry.replaying]). The resize handler also forwards demo-mode
     // grid changes ([pushDemoSessionResize], a no-op outside demo mode —
     // this is the single registration demo panes rely on too).
-    term.onData { data -> if (!entry.replaying) entry.sendInput?.invoke(data) }
+    // Outbound bytes are classified three ways, exactly as the Android client does
+    // (shared rules in [PtyPresentation]) — the difference only matters while this
+    // pane is a passive mirror:
+    //  - device replies (cursor position, device attributes, colour/mode reports)
+    //    are xterm answering a query the *remote program* sent. They must be
+    //    delivered — the program is blocked on them — but they are not user intent,
+    //    and treating them as such made a mirroring client seize the PTY whenever
+    //    the running program happened to probe the terminal.
+    //  - ambient mouse/focus reports the mirror's own view generates are dropped:
+    //    neither input nor a take-over, or scrolling a mirror would steal the grid.
+    //  - anything else is real input, so take over first (fit the shared PTY to this
+    //    window) and then send, so the keystroke lands at this pane's width.
+    term.onData { data ->
+        if (!entry.replaying) {
+            val bytes = data.encodeToByteArray()
+            when {
+                PtyPresentation.isDeviceReply(bytes) -> entry.sendInput?.invoke(data)
+                entry.passive && PtyPresentation.isAmbientReport(bytes) -> Unit
+                else -> {
+                    if (entry.passive) forceReassert(entry)
+                    entry.sendInput?.invoke(data)
+                }
+            }
+        }
+    }
     term.onResize { _ ->
+        // A fit we chose ourselves defines this pane's NATURAL grid — the width it
+        // renders at with the user's own font, which is both the baseline the mirror
+        // scale is measured against and the grid take-over forces the PTY to. A
+        // server-mandated resize is somebody else's grid, so it must not overwrite it.
+        if (!entry.applyingServerSize && term.cols > 0 && term.rows > 0) {
+            entry.naturalCols = term.cols
+            entry.naturalRows = term.rows
+        }
         sendResize(entry)
         pushDemoSessionResize(entry)
         updateOobOverlay(entry)
@@ -860,7 +920,7 @@ fun mountPaneContent(paneId: String): HTMLElement {
                 // /pty/{sessionId} socket a shell pane uses, and keystrokes
                 // typed here flow back into the agent's input channel.
                 val entry = ensureTerminal(paneId, sessionId)
-                entry.term.options.fontSize = (appVm.stateFlow.value.paneFontSize ?: 14)
+                setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14)
                 entry.term.options.fontFamily = resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily)
                 // See the terminal branch below: don't steal the container off a
                 // 3D plane while the world is open. @see closeWorld3dSpike
@@ -890,7 +950,7 @@ fun mountPaneContent(paneId: String): HTMLElement {
             // `entry.autoReflow` at the value frozen in `ensureTerminal`, so
             // a later global-default change never drifts this open pane.
             (leaf.content?.autoReflow as? Boolean)?.let { entry.autoReflow = it }
-            entry.term.options.fontSize = (appVm.stateFlow.value.paneFontSize ?: 14)
+            setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14)
             entry.term.options.fontFamily = resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily)
             // While the 3D world owns this terminal, its `entry.container` is
             // reparented onto a CSS3D plane. Do NOT append it into this (hidden)

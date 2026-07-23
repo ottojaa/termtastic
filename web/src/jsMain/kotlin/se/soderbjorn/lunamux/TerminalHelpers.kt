@@ -16,6 +16,7 @@ import kotlinx.browser.document
 import org.khronos.webgl.Uint8Array
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.WebSocket
+import se.soderbjorn.lunamux.client.PtyPresentation
 
 /**
  * Kotlin/JS external declaration for the browser's ResizeObserver API.
@@ -46,6 +47,18 @@ external class ResizeObserver(callback: (dynamic, dynamic) -> Unit) {
  * @property ptyCols the last known PTY column count from the server
  * @property ptyRows the last known PTY row count from the server
  * @property applyingServerSize true while applying a server-mandated resize (suppresses sending resize back)
+ * @property naturalCols the grid width this pane fits at the user's own font — the
+ *   width it renders at while driving, sampled on every self-initiated fit. The
+ *   baseline the passive mirror is scaled against and the take-over target.
+ * @property naturalRows the row counterpart of [naturalCols]
+ * @property baseFontSize the user's configured pane font size in px; while mirroring
+ *   the applied font is shrunk below this and restored from it on take-over
+ * @property passive true while the server grid is a different width than
+ *   [naturalCols] — another client is driving, so this pane renders a read-only,
+ *   font-scaled mirror of the server grid and neither votes sizes nor injects the
+ *   ambient reports its own view generates (see [applyMirrorPresentation])
+ * @property takeOverBadge floating "Mirroring another device · Take over" pill shown
+ *   while [passive], or null before it is created
  * @property oobOverlayRight DOM element for the right out-of-bounds overlay, or null
  * @property oobOverlayBottom DOM element for the bottom out-of-bounds overlay, or null
  * @property scrollButton floating "jump to bottom" pill shown while the user has
@@ -116,6 +129,11 @@ class TerminalEntry(
     var ptyCols: Int? = null,
     var ptyRows: Int? = null,
     var applyingServerSize: Boolean = false,
+    var naturalCols: Int = 0,
+    var naturalRows: Int = 0,
+    var baseFontSize: Int = 13,
+    var passive: Boolean = false,
+    var takeOverBadge: HTMLElement? = null,
     var oobOverlayRight: HTMLElement? = null,
     var oobOverlayBottom: HTMLElement? = null,
     var scrollButton: HTMLElement? = null,
@@ -266,6 +284,13 @@ private fun remeasureCellMetrics(term: Terminal): Boolean = runCatching {
  * @see proposeSafeDimensions
  */
 fun safeFit(term: Terminal, fit: FitAddon) {
+    // Never refit a mirror. Its grid is the server's — bending it to this container
+    // would rewrap a redraw authored for another width — and the proposal here is
+    // measured at the shrunken mirror font, so it would resize to a wildly larger
+    // grid. The many ambient fit callers (tab mount, font change, world close…) pass
+    // a bare Terminal, so the guard lives here rather than at each call site.
+    // @see applyMirrorPresentation
+    if (isMirroringTerm(term)) return
     val (targetCols, targetRows) = proposeSafeDimensions(term, fit) ?: return
     if (targetCols == term.cols && targetRows == term.rows) return
     term.asDynamic().resize(targetCols, targetRows)
@@ -293,7 +318,12 @@ fun safeFit(term: Terminal, fit: FitAddon) {
  * @see forceReassert
  */
 fun updateOobOverlay(entry: TerminalEntry) {
-    if (isRidingSpikePlane(entry)) {
+    // Nothing is "unused" while mirroring: the grid is deliberately the server's and
+    // the empty margin around it is the letterbox, not space this pane could reclaim.
+    // The gates below would also read it wrong — they compare against a fit proposal
+    // measured at the shrunken mirror font, which reports a far larger grid than the
+    // user's own font would, so the hatch would paint straight over the mirror.
+    if (isRidingSpikePlane(entry) || entry.passive) {
         entry.oobOverlayRight?.style?.display = "none"
         entry.oobOverlayBottom?.style?.display = "none"
         return
@@ -401,22 +431,30 @@ fun updateOobOverlay(entry: TerminalEntry) {
  * re-presented at the new grid too ([spikeOnServerSize]) so the pane stays a
  * truthful window onto the PTY.
  *
- * The **width ratchet**: xterm's render grid never narrows below the desktop's
- * own fit or the widest replayed content ([maxReplayCols]) — shrinking xterm's
- * columns rewraps its scrollback lossily (the desktop counterpart of the phone
- * mangling), so when another client (a phone) governs the PTY narrower, the
- * desktop keeps its width and marks the now-unused columns as a dead zone
- * instead of reflowing. Rows always follow the PTY. The live PTY grid is kept
- * in [TerminalEntry.ptyCols]/[TerminalEntry.ptyRows] for the dead-zone overlay
- * and mouse math; only the *render* grid ratchets.
+ * The local grid always follows the server **exactly**. This replaced the old
+ * *width ratchet*, which held xterm's render grid open at the desktop's own fit
+ * whenever another client (a phone) governed the PTY narrower, so wide scrollback
+ * was never rewrapped. That trade no longer applies — and had become actively
+ * wrong: with the server-authoritative model the bytes on the wire are a
+ * *synthesized redraw* authored for the server's grid, and a soft-wrapped row is
+ * encoded as a full row of cells with no CRLF so the receiver's own deferred
+ * autowrap recreates the wrap. Reconstructing that in a grid held wider than the
+ * one it was authored at simply never wraps: rows run together and the flow's row
+ * count stops matching the cursor epilogue, which is what put blank bands and
+ * misplaced repaints in the desktop's scrollback after a few take-overs.
+ *
+ * Rendering the server grid 1:1 means a pane whose own fit is a different width is
+ * now showing someone else's grid; [applyMirrorPresentation] turns that into a
+ * deliberate, legible mirror rather than a mismatched viewport.
  *
  * @param entry the [TerminalEntry] to resize
  * @param cols the server-mandated column count (the live PTY width)
  * @param rows the server-mandated row count
- * @param maxReplayCols widest column width in the server's replay history; the
- *   render grid never drops below it so wide replayed content isn't reflowed.
- * @see spikeOnServerSize
+ * @param maxReplayCols legacy field, now always 0 — the server no longer replays a
+ *   raw byte ring, so there is no historical width to hold the grid open for.
+ * @see applyMirrorPresentation @see spikeOnServerSize
  */
+@Suppress("UNUSED_PARAMETER")
 fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: Int = 0) {
     // While the world is open, every server-mandated size is logged: a grid key
     // sends ForceResize(new) and, if some other client (or this client's own 2D
@@ -430,21 +468,83 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: I
     }
     entry.ptyCols = cols
     entry.ptyRows = rows
-    // Ratchet the render width up to the widest of: the live PTY, the desktop's
-    // own container fit, and the replay-history width. Rows track the PTY.
-    val fitCols = runCatching { proposeSafeDimensions(entry.term, entry.fit)?.first }.getOrNull() ?: cols
-    val renderCols = maxOf(cols, fitCols, maxReplayCols)
-    val renderRows = rows
-    if (renderCols != entry.term.cols || renderRows != entry.term.rows) {
+    if (cols != entry.term.cols || rows != entry.term.rows) {
         entry.applyingServerSize = true
         try {
-            runCatching { entry.term.asDynamic().resize(renderCols, renderRows) }
+            runCatching { entry.term.asDynamic().resize(cols, rows) }
         } finally {
             entry.applyingServerSize = false
         }
     }
+    applyMirrorPresentation(entry)
     updateOobOverlay(entry)
     runCatching { spikeOnServerSize(entry) }
+}
+
+/** Smallest / largest font (px) the passive mirror will scale the pane text to. */
+private const val MIRROR_FONT_MIN_PX = 4.0
+private const val MIRROR_FONT_MAX_PX = 40.0
+
+/**
+ * Reconcile this pane's presentation with the server grid it is rendering: decide
+ * whether it is driving or mirroring, and size the font accordingly.
+ *
+ * A pane is **mirroring** when the server's grid is a different width than the one
+ * this pane fits at the user's own font ([TerminalEntry.naturalCols]) — i.e. another
+ * client is driving the shared PTY. The grid itself is never bent to fit (that is
+ * what mangles a synthesized redraw, see [applyServerSize]); instead the *font* is
+ * scaled so the foreign grid fits the pane box, and the take-over pill is shown. On
+ * the way back to driving the user's own font is restored.
+ *
+ * Called from [applyServerSize] (the grid changed under us), [setPaneFontSize] (the
+ * user's font changed) and [reassertGrid] (the pane box changed).
+ *
+ * @param entry the pane to reconcile.
+ * @see PtyPresentation.isPassive @see forceReassert
+ */
+fun applyMirrorPresentation(entry: TerminalEntry) {
+    val serverCols = entry.ptyCols ?: 0
+    val serverRows = entry.ptyRows ?: 0
+    val passive = PtyPresentation.isPassive(entry.naturalCols, serverCols)
+    entry.passive = passive
+
+    val target: Double = if (passive && entry.naturalRows > 0 && serverRows > 0) {
+        // Fit BOTH axes: with the grid pinned to the server, a taller foreign grid
+        // would otherwise overflow the pane box and clip the newest rows off the
+        // bottom (the same trap the Android mirror hit).
+        val ratio = minOf(
+            entry.naturalCols.toDouble() / serverCols.toDouble(),
+            entry.naturalRows.toDouble() / serverRows.toDouble(),
+        )
+        (entry.baseFontSize.toDouble() * ratio).coerceIn(MIRROR_FONT_MIN_PX, MIRROR_FONT_MAX_PX)
+    } else {
+        entry.baseFontSize.toDouble()
+    }
+    // Guarded: assigning fontSize rebuilds xterm's renderer and remeasures every
+    // glyph, so it must fire only on a real change.
+    val current = (entry.term.options.asDynamic().fontSize as? Number)?.toDouble()
+    if (current == null || kotlin.math.abs(current - target) > 0.01) {
+        runCatching { entry.term.options.asDynamic().fontSize = target }
+    }
+    entry.takeOverBadge?.let { badge ->
+        if (passive) badge.classList.add("visible") else badge.classList.remove("visible")
+    }
+}
+
+/**
+ * Apply the user's configured pane font size, honouring the mirror scale.
+ *
+ * The render path assigns the pane font on every config push; routing those
+ * assignments through here records the user's size as the *base* and lets
+ * [applyMirrorPresentation] derive what is actually shown, so a config push can no
+ * longer stomp the shrunken mirror font back to full size.
+ *
+ * @param entry the pane whose font to set.
+ * @param px the user's configured font size in px.
+ */
+fun setPaneFontSize(entry: TerminalEntry, px: Int) {
+    entry.baseFontSize = px
+    applyMirrorPresentation(entry)
 }
 
 /**
@@ -511,6 +611,33 @@ fun reassertSoft(entry: TerminalEntry) {
 private fun reassertGrid(entry: TerminalEntry, force: Boolean) {
     val socket = entry.socket ?: return
     if (socket.readyState.toInt() != WebSocket.OPEN.toInt()) return
+    if (entry.passive) {
+        // A mirror never votes: its grid is the *server's*, so fitting it to this
+        // container and voting the result would seize the PTY from whoever is
+        // driving simply because a pane got resized. An automatic reassert instead
+        // just rescales the mirror into the new box.
+        if (!force) {
+            // The fit proposal is measured at the shrunken mirror font; scale it
+            // back to what the user's own font would fit so the natural grid (and
+            // with it the mirror scale and the take-over target) tracks the box.
+            val proposed = runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()
+            val shown = (entry.term.options.asDynamic().fontSize as? Number)?.toDouble()
+            if (proposed != null && shown != null && shown > 0.0 && entry.baseFontSize > 0) {
+                val k = shown / entry.baseFontSize.toDouble()
+                entry.naturalCols = (proposed.first * k).toInt().coerceAtLeast(2)
+                entry.naturalRows = (proposed.second * k).toInt().coerceAtLeast(2)
+            }
+            applyMirrorPresentation(entry)
+            return
+        }
+        // Forced = an explicit take-over. Drop out of mirror mode and restore the
+        // user's own font FIRST: the fit below measures the live glyph size, so
+        // fitting while still shrunken would propose (and force) a grid several
+        // times too large.
+        entry.passive = false
+        entry.takeOverBadge?.classList?.remove("visible")
+        runCatching { entry.term.options.asDynamic().fontSize = entry.baseFontSize.toDouble() }
+    }
     // Skip while a server-mandated resize is in flight so we don't echo
     // the PTY's just-applied size back to it — that would lock the PTY at the
     // size it just told us it has, defeating the purpose of the reassert.
