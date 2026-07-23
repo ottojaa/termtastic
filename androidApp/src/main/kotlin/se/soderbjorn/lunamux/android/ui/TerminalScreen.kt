@@ -363,14 +363,14 @@ fun TerminalScreen(
                     // redraw Bytes ordered right after this Size assume.
                     val passiveNow = localGrid?.let { it.cols != sz.first } ?: false
                     passiveGridPin.set(if (passiveNow) sz else null)
-                    withContext(emulatorDispatcher) {
-                        synchronized(emulator) {
-                            // Width only — rows stay at the view's capacity so a taller
-                            // server screen bottom-anchors (scrolling its earlier rows
-                            // into scrollback) instead of clipping the prompt. See the
-                            // pin note in TerminalEmulatorHolder.updateSize.
-                            runCatching { emulator.resize(sz.first, emulator.mRows, 1, 1) }
-                        }
+                    // Deliberately NOT on the emulator dispatcher: this collector runs on
+                    // the UI dispatcher, and the view reads the buffer on the main thread
+                    // without the lock, so a background resize can reallocate it mid-read
+                    // (see the note in TerminalEmulatorHolder.updateSize). Width only —
+                    // rows stay at the view's capacity so a taller server screen
+                    // bottom-anchors instead of clipping the prompt.
+                    synchronized(emulator) {
+                        runCatching { emulator.resize(sz.first, emulator.mRows, 1, 1) }
                     }
                     return@collect
                 }

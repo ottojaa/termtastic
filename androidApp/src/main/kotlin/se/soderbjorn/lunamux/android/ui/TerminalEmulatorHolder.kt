@@ -86,12 +86,18 @@ internal fun createExternalTerminalSession(
             // taller server screen simply scrolls its earlier rows into scrollback, so
             // the mirror is bottom-anchored and the rest stays reachable by scrolling.
             val cols = passiveGridPin.get()?.first ?: columns
-            scope.launch(emulatorDispatcher) {
-                synchronized(e) {
-                    runCatching { e.resize(cols, rows, cellWidthPixels, cellHeightPixels) }
-                }
-                terminalViewRef.value?.post { terminalViewRef.value?.invalidate() }
+            // Resize on the CALLING (main) thread rather than hopping to the emulator
+            // dispatcher. TerminalView renders and reads the buffer (onScreenUpdated ->
+            // getText) on the main thread WITHOUT taking the emulator lock, so a resize
+            // running on a background thread can reallocate mLines / change mTotalRows
+            // underneath a live read — seen as ArrayIndexOutOfBoundsException and NPE
+            // crashes, most reliably while pinch-zooming (one resize per gesture step).
+            // Running it here makes resize and render mutually exclusive by being on one
+            // thread; the lock still excludes the background append path.
+            synchronized(e) {
+                runCatching { e.resize(cols, rows, cellWidthPixels, cellHeightPixels) }
             }
+            terminalViewRef.value?.invalidate()
             // Deliberately no ptySocket.resize() here — see the kdoc: the grid
             // listener in TerminalScreen is the sole, deduped voting path.
         }
