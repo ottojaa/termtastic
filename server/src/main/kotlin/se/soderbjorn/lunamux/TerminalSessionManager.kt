@@ -51,6 +51,7 @@ import se.soderbjorn.lunamux.pty.ClientSizeArbiter
 import se.soderbjorn.lunamux.pty.OscScanner
 import se.soderbjorn.lunamux.pty.ProcessCwdReader
 import se.soderbjorn.lunamux.pty.ReplaySanitizer
+import se.soderbjorn.lunamux.pty.SessionGrid
 import se.soderbjorn.lunamux.pty.ShellInitFiles
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -486,6 +487,16 @@ class TerminalSession private constructor(
 
     private val screen = ScreenEmulator(initialCols = initialCols, initialRows = initialRows)
 
+    /**
+     * The canonical server-side screen: the same vendored Termux emulator the
+     * Android client renders with, fed the same raw PTY stream as the rings and
+     * [screen]. Declared before the `init` block so restored scrollback is
+     * ingested into it in the same order it reaches the rings. Observer-only for
+     * now — maintained but not yet consumed (a later phase reads it back to
+     * synthesize width-correct attach/resync redraws).
+     */
+    private val grid = SessionGrid(initialCols, initialRows)
+
     // Recent output for replay, split by which screen buffer produced it.
     // Interleaving the two in one ring is what made restored scrollback show a
     // dead TUI's frame where the shell history belonged: a full-screen program
@@ -577,6 +588,9 @@ class TerminalSession private constructor(
                 // into the new shell's first prompt.
                 val gap = "\r\n\r\n".toByteArray(Charsets.UTF_8)
                 mainRing.append(gap, 0, gap.size, authorWidth)
+                // Same epilogue into the canonical grid, in the same order.
+                grid.feed(RESTORE_MODE_RESET, RESTORE_MODE_RESET.size)
+                grid.feed(gap, gap.size)
             }
         }
     }
@@ -611,6 +625,10 @@ class TerminalSession private constructor(
             // the way out).
             val clean = ReplaySanitizer.stripQueries(blob)
             altTracker.feed(clean, clean.size, ringSink)
+            // Reconstruct the same scrollback into the canonical grid. Any query
+            // sequences a legacy blob still carries are answered into the grid's
+            // discard sink, so nothing escapes — the grid needs no sanitizing.
+            grid.feed(clean, clean.size)
         } finally {
             ingestingRestoredBlob = false
             altRing.clear()
@@ -630,6 +648,7 @@ class TerminalSession private constructor(
             if (n <= 0) break
             osc.feed(buf, n)
             screen.feed(buf, n)
+            grid.feed(buf, n)
             val chunk = buf.copyOf(n)
             appendToRing(chunk)
             _output.emit(chunk)
@@ -671,6 +690,7 @@ class TerminalSession private constructor(
     override fun resetTerminalModes() {
         val bytes = RESTORE_MODE_RESET + SHOW_CURSOR_SUFFIX
         appendToRing(bytes)
+        grid.feed(bytes, bytes.size)
         scope.launch { _output.emit(bytes) }
     }
 
@@ -745,6 +765,7 @@ class TerminalSession private constructor(
             // Ignore; resize races are benign.
         }
         screen.resize(c, r)
+        grid.resize(c, r)
         _sizeEvents.value = Pair(c, r)
         // Bytes authored from now on belong to a c-wide epoch in the main ring.
         authorWidth = c
