@@ -714,28 +714,31 @@ fun TerminalScreen(
                 // — fit the shared PTY to this phone's width. Neutral copy: the size
                 // broadcast doesn't carry which device is driving.
                 if (showTakeOver) {
+                    // Filled with the accent (rather than the surface tint) so it reads
+                    // as an action over the mirrored content instead of blending into
+                    // the terminal chrome — same treatment as the "New output" pill.
                     Row(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(top = 10.dp)
                             .clip(RoundedCornerShape(999.dp))
-                            .background(Color(terminalPalette.surface))
+                            .background(Color(terminalPalette.accent))
                             .clickable { scope.launch { ensureDriving() } }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                            .padding(horizontal = 16.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(
-                            text = "Another device is driving",
-                            color = Color(terminalPalette.text),
+                            text = "Mirroring another device",
+                            color = Color(terminalPalette.bg),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
                             text = "· Tap to take over",
-                            color = Color(terminalPalette.accent),
+                            color = Color(terminalPalette.bg),
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            fontWeight = FontWeight.Bold,
                         )
                     }
                 }

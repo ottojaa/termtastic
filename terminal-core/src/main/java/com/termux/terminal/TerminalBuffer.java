@@ -74,6 +74,16 @@ public final class TerminalBuffer {
                 x2 = columns;
             }
             TerminalRow lineObject = mLines[externalToInternalRow(row)];
+            if (lineObject == null) {
+                // Rows are allocated lazily (see allocateFullLineIfNecessary) and are
+                // nulled out again by clearTranscript(), so a row inside the requested
+                // range can legitimately be absent — e.g. in the window between a
+                // resize that grew the screen and the repaint that fills it. Reading it
+                // must treat that as a blank line instead of dereferencing null, which
+                // crashed the Android view's onScreenUpdated() -> getText() path.
+                if (row < selY2 && row < mScreenRows - 1) builder.append('\n');
+                continue;
+            }
             int x1Index = lineObject.findStartOfColumn(x1);
             int x2Index = (x2 < mColumns) ? lineObject.findStartOfColumn(x2) : lineObject.getSpaceUsed();
             if (x2Index == x1Index) {
@@ -185,7 +195,10 @@ public final class TerminalBuffer {
     }
 
     public boolean getLineWrap(int row) {
-        return mLines[externalToInternalRow(row)].mLineWrap;
+        // Null-safe for the same reason as getSelectedText: rows are lazily
+        // allocated, and an unallocated row is by definition not wrapped.
+        TerminalRow line = mLines[externalToInternalRow(row)];
+        return line != null && line.mLineWrap;
     }
 
     public void clearLineWrap(int row) {

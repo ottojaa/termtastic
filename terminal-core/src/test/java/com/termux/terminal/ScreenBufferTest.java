@@ -62,4 +62,23 @@ public class ScreenBufferTest extends TerminalTestCase {
 		assertEquals("", mTerminal.getScreen().getWordAtLocation(1, 2));
 		assertEquals("", mTerminal.getScreen().getWordAtLocation(2, 2));
 	}
+
+	/**
+	 * Rows are allocated lazily and nulled again by clearTranscript(), so a row inside a
+	 * requested range can legitimately be absent. Reading one must treat it as blank
+	 * rather than dereferencing null — this crashed the Android view, whose
+	 * onScreenUpdated() -> getText() reads the whole screen and could land in the window
+	 * between a resize that grew the screen and the repaint that fills it.
+	 */
+	public void testReadingAnUnallocatedRowIsBlankNotACrash() {
+		withTerminalSized(10, 4).enterString("abc");
+		TerminalBuffer screen = mTerminal.getScreen();
+		screen.mLines[screen.externalToInternalRow(2)] = null;
+
+		// Mirrors TerminalView.getText(): read the whole screen.
+		String text = screen.getSelectedText(0, 0, 10, 3);
+		assertTrue("written rows survive: " + text, text.contains("abc"));
+		// The unallocated row must also read as not-wrapped rather than throwing.
+		assertFalse(screen.getLineWrap(2));
+	}
 }
