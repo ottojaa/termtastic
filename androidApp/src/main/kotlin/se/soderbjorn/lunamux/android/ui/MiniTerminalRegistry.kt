@@ -113,7 +113,11 @@ class MiniTerminalRegistry(
             emulatorDispatcher = dispatcher,
             terminalViewRef = viewRef,
             ptySocket = socket,
-            takeOver = {},
+            // No view drives updateSize here, so the pin is never read; the
+            // thumbnail sizes its emulator directly in the Size collector below.
+            // A thumbnail never takes input, so the input handler is a no-op.
+            passiveGridPin = java.util.concurrent.atomic.AtomicReference(null),
+            handleInput = {},
         )
         val emulator = createSyncedEmulator(session)
         val lines = MutableStateFlow<List<String>>(emptyList())
