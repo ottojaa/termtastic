@@ -295,11 +295,21 @@ fun TerminalScreen(
             val lg = localGrid
             val sg = serverGrid
             val passiveNow = lg != null && sg != null && sg.first != lg.cols
-            if (passiveNow && PtyPresentation.isAmbientReport(bytes)) {
-                // Ambient mirror report — drop it.
-            } else {
-                ensureDriving()
-                runCatching { ptySocket.send(bytes) }
+            when {
+                // The emulator answering a query the remote program sent (cursor
+                // position, device attributes, colour reports). Must be delivered — the
+                // program is waiting — but it is NOT user intent: treating it as such
+                // made the phone seize the PTY whenever a program probed the terminal.
+                PtyPresentation.isDeviceReply(bytes) ->
+                    runCatching { ptySocket.send(bytes) }
+                // Mouse wheel / focus reports the mirror emits from scrolling or focus:
+                // neither input nor a take-over.
+                passiveNow && PtyPresentation.isAmbientReport(bytes) -> Unit
+                // Real input: take over first so it lands at this phone's width.
+                else -> {
+                    ensureDriving()
+                    runCatching { ptySocket.send(bytes) }
+                }
             }
         }
     }

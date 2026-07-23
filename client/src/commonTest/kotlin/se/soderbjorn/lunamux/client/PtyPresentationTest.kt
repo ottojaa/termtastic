@@ -63,6 +63,30 @@ class PtyPresentationTest {
     }
 
     @Test
+    fun classifierRecognisesDeviceReplies() {
+        // Replies the emulator generates by itself when the remote program probes it.
+        assertTrue(PtyPresentation.isDeviceReply("$esc[24;80R".toByteArray()))          // cursor position
+        assertTrue(PtyPresentation.isDeviceReply("$esc[?62;c".toByteArray()))           // device attributes
+        assertTrue(PtyPresentation.isDeviceReply("$esc[>0;10;1c".toByteArray()))        // secondary DA
+        assertTrue(PtyPresentation.isDeviceReply("$esc[?2004;1\$y".toByteArray()))      // mode report
+        assertTrue(PtyPresentation.isDeviceReply("$esc]10;rgb:abab/cdcd/0000\u0007".toByteArray())) // OSC reply (BEL)
+        assertTrue(PtyPresentation.isDeviceReply("$esc]11;rgb:0/0/0$esc\\".toByteArray()))          // OSC reply (ST)
+        assertTrue(PtyPresentation.isDeviceReply("$esc[24;80R$esc[?62;c".toByteArray()))// a burst of them
+    }
+
+    @Test
+    fun classifierDoesNotMistakeInputForADeviceReply() {
+        assertFalse(PtyPresentation.isDeviceReply("a".toByteArray()))            // printable
+        assertFalse(PtyPresentation.isDeviceReply("\r".toByteArray()))           // Enter
+        assertFalse(PtyPresentation.isDeviceReply("$esc[A".toByteArray()))       // up arrow
+        assertFalse(PtyPresentation.isDeviceReply("$esc[<64;10;5M".toByteArray()))// mouse report
+        assertFalse(PtyPresentation.isDeviceReply("$esc]10;rgb:0/0/0".toByteArray())) // unterminated OSC
+        assertFalse(PtyPresentation.isDeviceReply(ByteArray(0)))
+        // A reply followed by real typing is not purely a reply.
+        assertFalse(PtyPresentation.isDeviceReply("$esc[24;80Rls".toByteArray()))
+    }
+
+    @Test
     fun classifierTreatsRealInputAsNonAmbient() {
         assertFalse(PtyPresentation.isAmbientReport("a".toByteArray()))                // printable
         assertFalse(PtyPresentation.isAmbientReport("$esc[A".toByteArray()))           // up arrow (CSI)
