@@ -23,7 +23,7 @@
  *
  * Security note: the one genuinely sensitive value — the device-auth token — is
  * deliberately *not* kept in the plain `local_state.json`. It lives in the
- * platform [SecureStore] (iOS Keychain, Android `EncryptedSharedPreferences`),
+ * platform [SecureStore] (iOS Keychain, Android durable private preferences),
  * while every other field stays in the unified JSON file. The repository ties
  * the two together so callers still see one [getOrCreateAuthToken] entry point.
  *
@@ -114,7 +114,7 @@ fun createLocalRepository(localStore: LocalStore, secureStore: SecureStore): Loc
  *
  * @param store the platform JSON-file store backing `local_state.json`.
  * @param secureStore the platform secret store holding the device-auth token
- *   (iOS Keychain, Android `EncryptedSharedPreferences`) outside the plain JSON.
+ *   (iOS Keychain, Android durable private preferences) outside the plain JSON.
  * @param scope coroutine scope used by [start] and internal writes; defaults to a
  *   background [SupervisorJob] scope so a failed write never tears down siblings.
  */
@@ -204,7 +204,7 @@ class LocalRepository(
      * base64url token on first use. Idempotent after the first call on a device.
      *
      * Unlike the other fields, the token is read from and written to the platform
-     * [SecureStore] (iOS Keychain, Android `EncryptedSharedPreferences`) under
+     * [SecureStore] (iOS Keychain, Android durable private preferences) under
      * [SECURE_AUTH_TOKEN_KEY], never the plain `local_state.json`. On iOS the key
      * matches the pre-consolidation `KeychainAuthTokenStore`, so an existing
      * device's token — and its server approval — carries over.
