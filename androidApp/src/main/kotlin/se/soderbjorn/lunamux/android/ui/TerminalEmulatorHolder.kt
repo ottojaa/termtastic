@@ -38,11 +38,12 @@ import androidx.compose.runtime.MutableState
  * double-sent every natural resize.
  *
  * Input the view produces (keystrokes) is forwarded to the server, but only
- * after [takeOver] runs first: this (mobile) client attaches as a viewer that
- * mirrors the desktop, so the first keystroke must claim the driver role (a
- * forceResize to the phone's grid) *before* its bytes reach the PTY, or the
- * shell would process them at the desktop's width. [takeOver] is a one-shot —
- * a no-op once the client has already taken over.
+ * after [takeOver] runs first: the phone drives its own width, so [takeOver]
+ * fits the shared PTY to the phone's grid *before* the bytes reach the PTY when
+ * the server isn't already at that width (otherwise the shell would process the
+ * input at another device's width). It no-ops when the phone is already driving,
+ * so ordinary typing costs nothing, and it re-fits automatically after another
+ * device (e.g. the laptop) reclaims the PTY.
  */
 internal fun createExternalTerminalSession(
     scope: CoroutineScope,
