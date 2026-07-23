@@ -308,7 +308,8 @@ fun updateOobOverlay(entry: TerminalEntry) {
         el.className = "oob-overlay oob-overlay-$slot"
         el.setAttribute(
             "title",
-            "Unused by the current PTY size \u2014 press Reformat to reclaim this space"
+            "Unused by the current PTY size \u2014 type in this pane, or press " +
+                "Reformat, to fit the terminal to it"
         )
         entry.container.appendChild(el)
         if (slot == "right") entry.oobOverlayRight = el else entry.oobOverlayBottom = el
@@ -352,30 +353,32 @@ fun updateOobOverlay(entry: TerminalEntry) {
 
     val gapRight = containerWidth - (screenLeft + screenWidth)
     val gapBottom = containerHeight - (screenTop + screenHeight)
-    // Gate on what a reformat could actually *reclaim*: compute the grid a
-    // reformat would apply ([proposeSafeDimensions] — the SAME math [safeFit]
-    // uses, including its viewport row clamp) and show a strip only when it
-    // would add at least one column/row. Judging by the raw pixel gap against
-    // the container rect over-counts the structural insets around the xterm
-    // element (its padding and the scrollbar gutter) as "unused space", and
-    // judging by the fit addon's raw proposal over-counts the one clamped row —
-    // both kept a strip permanently lit that no reformat could ever clear. When
-    // no proposal is available (terminal not measurable yet), show nothing
-    // rather than guess.
-    val safeTarget = runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()
-    val reclaimCols = (safeTarget?.first ?: 0) - entry.term.cols
-    val reclaimRows = (safeTarget?.second ?: 0) - entry.term.rows
-
-    if (reclaimCols >= 1 && gapRight > 0 && screenHeight > 0) {
+    // Right dead zone: with the width ratchet ([applyServerSize]) the render grid
+    // (term.cols) can be wider than the live PTY (entry.ptyCols) — a phone took
+    // over at a narrower width, or wide replay history holds the grid open.
+    // Hatch the columns [ptyCols, term.cols), sized arithmetically from cells so
+    // the scrollbar gutter / padding is never miscounted as dead space. Width is
+    // no longer *reclaimable* here: the ratchet keeps the render grid at least
+    // the container fit, so a reformat can never add columns — only the bottom
+    // rows (below) still reclaim, since rows track the PTY rather than ratchet.
+    val liveCols = entry.ptyCols ?: entry.term.cols
+    val deadCols = entry.term.cols - liveCols
+    if (deadCols >= 1 && cellW != null && screenHeight > 0) {
         val right = ensure("right")
         right.style.display = "block"
-        right.style.left = "${screenLeft + screenWidth}px"
+        right.style.left = "${screenLeft + liveCols * cellW}px"
         right.style.top = "${screenTop}px"
-        right.style.width = "${gapRight}px"
+        right.style.width = "${deadCols * cellW}px"
         right.style.height = "${screenHeight}px"
     } else {
         entry.oobOverlayRight?.style?.display = "none"
     }
+
+    // Bottom reclaim gap: gate on the fit proposal (the same math safeFit uses,
+    // including its viewport row clamp) so structural insets aren't miscounted;
+    // show nothing when no proposal is available (terminal not measurable yet).
+    val reclaimRows =
+        (runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()?.second ?: 0) - entry.term.rows
 
     if (reclaimRows >= 1 && gapBottom > 0 && containerWidth > 0) {
         val bottom = ensure("bottom")
@@ -398,12 +401,23 @@ fun updateOobOverlay(entry: TerminalEntry) {
  * re-presented at the new grid too ([spikeOnServerSize]) so the pane stays a
  * truthful window onto the PTY.
  *
+ * The **width ratchet**: xterm's render grid never narrows below the desktop's
+ * own fit or the widest replayed content ([maxReplayCols]) — shrinking xterm's
+ * columns rewraps its scrollback lossily (the desktop counterpart of the phone
+ * mangling), so when another client (a phone) governs the PTY narrower, the
+ * desktop keeps its width and marks the now-unused columns as a dead zone
+ * instead of reflowing. Rows always follow the PTY. The live PTY grid is kept
+ * in [TerminalEntry.ptyCols]/[TerminalEntry.ptyRows] for the dead-zone overlay
+ * and mouse math; only the *render* grid ratchets.
+ *
  * @param entry the [TerminalEntry] to resize
- * @param cols the server-mandated column count
+ * @param cols the server-mandated column count (the live PTY width)
  * @param rows the server-mandated row count
+ * @param maxReplayCols widest column width in the server's replay history; the
+ *   render grid never drops below it so wide replayed content isn't reflowed.
  * @see spikeOnServerSize
  */
-fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
+fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: Int = 0) {
     // While the world is open, every server-mandated size is logged: a grid key
     // sends ForceResize(new) and, if some other client (or this client's own 2D
     // machinery) counter-votes, the very next broadcast arrives with the old
@@ -416,10 +430,15 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
     }
     entry.ptyCols = cols
     entry.ptyRows = rows
-    if (cols != entry.term.cols || rows != entry.term.rows) {
+    // Ratchet the render width up to the widest of: the live PTY, the desktop's
+    // own container fit, and the replay-history width. Rows track the PTY.
+    val fitCols = runCatching { proposeSafeDimensions(entry.term, entry.fit)?.first }.getOrNull() ?: cols
+    val renderCols = maxOf(cols, fitCols, maxReplayCols)
+    val renderRows = rows
+    if (renderCols != entry.term.cols || renderRows != entry.term.rows) {
         entry.applyingServerSize = true
         try {
-            runCatching { entry.term.asDynamic().resize(cols, rows) }
+            runCatching { entry.term.asDynamic().resize(renderCols, renderRows) }
         } finally {
             entry.applyingServerSize = false
         }
@@ -430,13 +449,13 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
 
 /**
  * Forces the terminal to refit to its container and sends a [PtyControl.ForceResize]
- * command to the server to update the PTY size.
+ * command to the server to seize the PTY size.
  *
- * Called by the "Reformat" button in the pane header *and* automatically
- * from [se.soderbjorn.lunula.web.shell.AppShellSpec.onGeometryChanged]
- * after every committed geometry change (split-bar resize end,
- * maximize/restore, layout-preset apply) to reclaim unused terminal
- * space without requiring the user to click Reformat.
+ * Reserved for **explicit** user reformats — the "Reformat" button in the pane
+ * header and the ⌃⌥R hotkey — because a force seizes governance and would
+ * overthrow a phone that has taken over the session. The *automatic* refits
+ * (webfont load, tab activation, `onGeometryChanged`) use [reassertSoft], which
+ * votes instead of seizing.
  *
  * Uses [fitPreservingScroll] (not [safeFit]) so the user's scroll
  * position survives the refit — specifically, "I was at the bottom"
@@ -450,15 +469,51 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
  * body comment for why fitting there is circular.
  *
  * @param entry the [TerminalEntry] to refit and reassert
- * @see fitPreservingScroll
+ * @see reassertSoft @see fitPreservingScroll
  */
 fun forceReassert(entry: TerminalEntry) {
+    reassertGrid(entry, force = true)
+}
+
+/**
+ * The **soft** counterpart of [forceReassert]: refit to the container and send
+ * a plain [PtyControl.Resize] size **vote** (at [SizePriority.NORMAL]) instead
+ * of a [PtyControl.ForceResize].
+ *
+ * Used by the *automatic* reasserts — webfont load, hidden→visible tab
+ * activation, and the toolkit's `onGeometryChanged` — none of which is a
+ * deliberate "reformat to my size" gesture. Forcing from those paths would
+ * seize governance with no user intent and overthrow a phone that has taken
+ * over the session (see the sizing plan's viewer/driver model). A soft vote
+ * still refits this desktop's own grid and applies immediately when this client
+ * is the governor (the common single-desktop case), but leaves a phone driver's
+ * size alone; the desktop reclaims by *typing*, not by an ambient resize.
+ *
+ * The explicit Reformat button / ⌃⌥R hotkey keep calling [forceReassert].
+ *
+ * @param entry the [TerminalEntry] to refit and soft-vote.
+ * @see forceReassert @see sendResizeVote
+ */
+fun reassertSoft(entry: TerminalEntry) {
+    reassertGrid(entry, force = false)
+}
+
+/**
+ * Shared body of [forceReassert] / [reassertSoft]: apply the common guards, fit
+ * the terminal to its container, then push the grid to the server — as a
+ * [PtyControl.ForceResize] when [force], else as a soft [PtyControl.Resize]
+ * vote.
+ *
+ * @param entry the [TerminalEntry] to refit and reassert.
+ * @param force `true` to seize the PTY size (explicit Reformat), `false` to
+ *   only register a vote (automatic refit).
+ */
+private fun reassertGrid(entry: TerminalEntry, force: Boolean) {
     val socket = entry.socket ?: return
     if (socket.readyState.toInt() != WebSocket.OPEN.toInt()) return
     // Skip while a server-mandated resize is in flight so we don't echo
-    // the PTY's just-applied size back to it as a "forced" value — that
-    // would lock the PTY at the size it just told us it has, defeating
-    // the purpose of the reassert (forcing the PTY to match our grid).
+    // the PTY's just-applied size back to it — that would lock the PTY at the
+    // size it just told us it has, defeating the purpose of the reassert.
     if (entry.applyingServerSize) return
     // Hold off while a cold-restored pane is still settling: its grid is
     // pinned to the server-restored width and a reassert here would fit to a
@@ -470,14 +525,14 @@ fun forceReassert(entry: TerminalEntry) {
     // currently holds. While the world is up it is the sole size authority
     // (setPaneGrid sends its own ForceResize) and the 2D shell is hidden, so every
     // 2D-driven reassert here fits the grid to a hidden/transitional container and
-    // force-resizes the shared PTY, reverting the 3D grid.
+    // resizes the shared PTY, reverting the 3D grid.
     //
     // The old guard bailed only for panes *currently in the ring*
     // ([isRidingSpikePlane] = `spikeOpen && paneId in spikePanes`). But a **world
     // switch** (⌥⌘O, or the 2D world switcher) briefly drops the departing/arriving
     // world's panes out of the ring while the toolkit rebuilds the 2D shell and
-    // fires `maybeReapplyPreset` → this `forceReassert` on them (see the console
-    // stack). Those slipped past the ring check and force-resized the PTY out from
+    // fires `maybeReapplyPreset` → this reassert on them (see the console
+    // stack). Those slipped past the ring check and resized the PTY out from
     // under the still-mounted 3D term — leaving the pane blank on return, curable
     // only by a real 2D re-fit (a 2D world switch) after close. Guarding on
     // `spikeOpen` alone closes that window. The world-close 2D restore still runs:
@@ -485,7 +540,8 @@ fun forceReassert(entry: TerminalEntry) {
     // @see isRidingSpikePlane @see maybeReapplyPreset
     if (spikeOpen) return
     try { fitPreservingScroll(entry.term, entry.fit) } catch (_: Throwable) {}
-    sendForceResize(socket, entry.term)
+    if (force) sendForceResize(socket, entry.term)
+    else sendResizeVote(socket, entry.term.cols, entry.term.rows, SizePriority.NORMAL)
 }
 
 /**

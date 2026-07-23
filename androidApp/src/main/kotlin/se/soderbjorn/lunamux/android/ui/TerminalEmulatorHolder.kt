@@ -24,7 +24,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunamux.client.PtySocket
 import androidx.compose.runtime.MutableState
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Build a [TerminalSession] subclass whose I/O is wired to the supplied
@@ -32,17 +31,26 @@ import java.util.concurrent.atomic.AtomicBoolean
  * (set after construction via [setEmulator]).
  *
  * Resize calls coming from the view are routed through [emulatorDispatcher]
- * with a lock on the emulator instance to serialise with append + onDraw.
- * If [applyingServerSize] is set we skip echoing the new dims back to the
- * server — this is what stops Android from clobbering a web client's
- * Reformat.
+ * with a lock on the emulator instance to serialise with append + onDraw. The
+ * view's `updateSize` resizes the local emulator here but does **not** vote the
+ * new dims to the server: the single (deduped) size-vote chokepoint is the
+ * view's grid-size-changed listener in [TerminalScreen], so voting here too
+ * double-sent every natural resize.
+ *
+ * Input the view produces (keystrokes) is forwarded to the server, but only
+ * after [takeOver] runs first: the phone drives its own width, so [takeOver]
+ * fits the shared PTY to the phone's grid *before* the bytes reach the PTY when
+ * the server isn't already at that width (otherwise the shell would process the
+ * input at another device's width). It no-ops when the phone is already driving,
+ * so ordinary typing costs nothing, and it re-fits automatically after another
+ * device (e.g. the laptop) reclaims the PTY.
  */
 internal fun createExternalTerminalSession(
     scope: CoroutineScope,
     emulatorDispatcher: CoroutineDispatcher,
     terminalViewRef: MutableState<TerminalView?>,
-    applyingServerSize: AtomicBoolean,
     ptySocket: PtySocket,
+    takeOver: suspend () -> Unit,
 ): TerminalSession {
     return object : TerminalSession(
         "/system/bin/sh",
@@ -59,18 +67,15 @@ internal fun createExternalTerminalSession(
         override fun getEmulator(): TerminalEmulator? = externalEmulator
 
         override fun updateSize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
-            val e = externalEmulator
-            if (e != null) {
-                scope.launch(emulatorDispatcher) {
-                    synchronized(e) {
-                        runCatching { e.resize(columns, rows, cellWidthPixels, cellHeightPixels) }
-                    }
-                    terminalViewRef.value?.post { terminalViewRef.value?.invalidate() }
+            val e = externalEmulator ?: return
+            scope.launch(emulatorDispatcher) {
+                synchronized(e) {
+                    runCatching { e.resize(columns, rows, cellWidthPixels, cellHeightPixels) }
                 }
+                terminalViewRef.value?.post { terminalViewRef.value?.invalidate() }
             }
-            if (!applyingServerSize.get()) {
-                scope.launch { runCatching { ptySocket.resize(columns, rows) } }
-            }
+            // Deliberately no ptySocket.resize() here — see the kdoc: the grid
+            // listener in TerminalScreen is the sole, deduped voting path.
         }
 
         override fun initializeEmulator(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
@@ -79,7 +84,7 @@ internal fun createExternalTerminalSession(
 
         override fun write(data: ByteArray, offset: Int, count: Int) {
             val copy = data.copyOfRange(offset, offset + count)
-            scope.launch { ptySocket.send(copy) }
+            scope.launch { takeOver(); ptySocket.send(copy) }
         }
 
         // TerminalSession's default implementations of these forward to mClient,
@@ -113,7 +118,7 @@ internal fun createExternalTerminalSession(
                 }
             }
             val bytes = out.toByteArray()
-            scope.launch { ptySocket.send(bytes) }
+            scope.launch { takeOver(); ptySocket.send(bytes) }
         }
     }
 }

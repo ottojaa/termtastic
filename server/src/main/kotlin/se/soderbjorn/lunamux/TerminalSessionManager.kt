@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunamux.pty.AltScreenTracker
+import se.soderbjorn.lunamux.pty.ClientPosture
 import se.soderbjorn.lunamux.pty.ClientSizeArbiter
 import se.soderbjorn.lunamux.pty.OscScanner
 import se.soderbjorn.lunamux.pty.ProcessCwdReader
@@ -136,6 +137,20 @@ interface TermSession {
      */
     fun noteClientInput(clientId: String) {}
 
+    /**
+     * Declare [clientId]'s size-governance [posture] when it attaches. A
+     * [ClientPosture.DRIVER] may seize the grid by typing or forcing; a
+     * [ClientPosture.VIEWER] (a phone mirroring the desktop) governs only after
+     * it explicitly takes over. Called once per connection by the `/pty` route,
+     * before any votes. Default no-op so PTY-less sessions (`AgentSession`)
+     * ignore it — every client is treated as a driver there.
+     *
+     * @param clientId the attaching client.
+     * @param posture how that client participates in size arbitration.
+     * @see se.soderbjorn.lunamux.pty.ClientSizeArbiter.setPosture
+     */
+    fun setClientPosture(clientId: String, posture: ClientPosture) {}
+
     /** Broadcast mode-reset sequences to attached clients (see issue #91). */
     fun resetTerminalModes()
 
@@ -146,11 +161,11 @@ interface TermSession {
      * Register [clientId]'s viewport size vote at the given [priority] tier.
      * The vote feeds the latest-active-client arbitration (see
      * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]): it applies immediately
-     * when [clientId] is the governing client (or when it is a
-     * [SizePriority.MOBILE] vote, which claims governance — a phone must be
-     * readable the moment it attaches); otherwise it is stored and takes
-     * effect if the client later becomes the governor. With no recorded
-     * activity the classic tiered min() aggregation decides.
+     * when [clientId] is the governing client; otherwise it is stored and takes
+     * effect if the client later becomes the governor. A plain vote is ambient
+     * — it never seizes governance, so a phone/viewer attaching cannot shrink
+     * the grid the desktop owns. With no recorded activity the classic tiered
+     * min() over the drivers' votes decides.
      */
     fun setClientSize(
         clientId: String,
@@ -160,11 +175,12 @@ interface TermSession {
     )
 
     /**
-     * Force the grid to [clientId]'s size, evicting other clients' votes and
-     * making it the governing client — an explicit user action (Reformat)
-     * always wins. Other clients re-vote on their next automatic refit, but
-     * ambient re-votes no longer steal the size back (see
-     * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]).
+     * Force the grid to [clientId]'s size and make it the governing client —
+     * an explicit user action (Reformat / phone take-over) always wins, even
+     * over a 3D override. Other clients' votes are **kept**, not evicted:
+     * governance is decided by which client the user most recently acted on, so
+     * a laptop reclaims the grid by simply typing. A viewer that forces is
+     * promoted to a driver (see [se.soderbjorn.lunamux.pty.ClientSizeArbiter]).
      */
     fun forceClientSize(
         clientId: String,
@@ -181,6 +197,19 @@ interface TermSession {
 
     /** Recent output for reconnect replay. */
     fun snapshot(): ByteArray
+
+    /**
+     * The widest PTY column width represented in the replay [snapshot] — i.e.
+     * the narrowest render grid at which a reconnecting/attaching client can
+     * repaint the replayed history without reinterpreting wide content at a
+     * narrower width (which rewraps it lossily). Sent to clients in
+     * [PtyServerMessage.Size] so their render grid can ratchet up to it; it
+     * decays as wide history ages out of the ring. Defaults to 0 (no hint) for
+     * sessions that keep no width-tracked ring.
+     *
+     * @return the widest represented width, or 0 when unknown.
+     */
+    fun maxReplayCols(): Int = 0
 
     /**
      * Recent output to persist for a restore after the server exits.
@@ -470,7 +499,7 @@ class TerminalSession private constructor(
     // persisted — so its size is a memory *and* SQLite write-volume cost per
     // active pane. Excluding redraw traffic is what lets it stay small: a TUI
     // can no longer evict real history.
-    private val mainRing = ByteRing(MAIN_RING_CAPACITY)
+    private val mainRing = ByteRing(MAIN_RING_CAPACITY, trackWidth = true)
 
     // Traffic from the full-screen program currently holding the alternate
     // buffer, replayed to clients reconnecting mid-session so a running vim or
@@ -483,12 +512,25 @@ class TerminalSession private constructor(
     private val ringLock = Any()
 
     /**
+     * The PTY column width bytes are currently being authored at, used to tag
+     * [mainRing] epochs for [maxReplayCols]. Tracks [sizeEvents] but is declared
+     * here — before the restore-ingest init block — and seeded from the
+     * constructor's [initialCols] so restored scrollback (which was persisted at
+     * that width) is tagged correctly before [_sizeEvents] itself exists.
+     */
+    private var authorWidth: Int = initialCols
+
+    /**
      * Routes tracked output into [mainRing] / [altRing]. Guarded by
      * [ringLock] via its callers; never invoked concurrently.
      */
     private val ringSink = object : AltScreenTracker.Sink {
         override fun onSegment(chunk: ByteArray, from: Int, until: Int, alt: Boolean) {
-            (if (alt) altRing else mainRing).append(chunk, from, until)
+            // Tag normal-buffer bytes with the width they were authored at so
+            // maxReplayCols can decay; alt-buffer redraws aren't persisted or
+            // width-tracked (altRing has trackWidth = false).
+            if (alt) altRing.append(chunk, from, until)
+            else mainRing.append(chunk, from, until, authorWidth)
         }
 
         override fun onSpanClosed() {
@@ -530,11 +572,11 @@ class TerminalSession private constructor(
             // (correctly, for real PTY output) read as evidence that
             // everything before it was orphaned TUI paint.
             synchronized(ringLock) {
-                mainRing.append(RESTORE_MODE_RESET, 0, RESTORE_MODE_RESET.size)
+                mainRing.append(RESTORE_MODE_RESET, 0, RESTORE_MODE_RESET.size, authorWidth)
                 // Blank line so the restored scrollback doesn't run straight
                 // into the new shell's first prompt.
                 val gap = "\r\n\r\n".toByteArray(Charsets.UTF_8)
-                mainRing.append(gap, 0, gap.size)
+                mainRing.append(gap, 0, gap.size, authorWidth)
             }
         }
     }
@@ -648,23 +690,28 @@ class TerminalSession private constructor(
 
     /** Register the declared terminal size for [clientId] at [priority]. */
     override fun setClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {
-        applySize(sizeArbiter.setSize(clientId, SizeVote(max(1, cols), max(1, rows), priority)))
+        val vote = SizeVote(max(MIN_GRID_COLS, cols), max(MIN_GRID_ROWS, rows), priority)
+        applySize(sizeArbiter.setSize(clientId, vote))
+    }
+
+    /** Register [clientId]'s declared governance [posture] for this connection. */
+    override fun setClientPosture(clientId: String, posture: ClientPosture) {
+        sizeArbiter.setPosture(clientId, posture)
     }
 
     /**
-     * "Reformat" handler: evict every other client's entry, pin this
-     * client's cols/rows (at [priority]), make it the governing client, and
-     * apply immediately.
+     * "Reformat" / take-over handler: pin this client's cols/rows (at
+     * [priority]), make it the governing client, and apply immediately. Other
+     * clients' votes are kept — the arbiter decides governance by recency of
+     * activity, not by which votes survive (see [ClientSizeArbiter.forceSize]).
      *
-     * The dims are clamped to a usable floor ([MIN_FORCE_COLS]×[MIN_FORCE_ROWS]),
-     * not just ≥1: a forced size is broadcast to and obeyed by **every** attached
-     * client, so a degenerate value from an unmeasured/hidden view (e.g. a 3D
-     * preview mid-layout proposing ~1×1) would collapse all of them at once.
-     * Regular [setClientSize] votes keep the ≥1 clamp — arbitration across
-     * clients already bounds their effect.
+     * The dims share the same [MIN_GRID_COLS]×[MIN_GRID_ROWS] floor as a plain
+     * vote: a forced size is broadcast to and obeyed by **every** attached
+     * client, so a degenerate value from an unmeasured/hidden view must not be
+     * able to collapse all of them at once.
      */
     override fun forceClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {
-        val only = SizeVote(max(MIN_FORCE_COLS, cols), max(MIN_FORCE_ROWS, rows), priority)
+        val only = SizeVote(max(MIN_GRID_COLS, cols), max(MIN_GRID_ROWS, rows), priority)
         applySize(sizeArbiter.forceSize(clientId, only))
     }
 
@@ -699,6 +746,8 @@ class TerminalSession private constructor(
         }
         screen.resize(c, r)
         _sizeEvents.value = Pair(c, r)
+        // Bytes authored from now on belong to a c-wide epoch in the main ring.
+        authorWidth = c
     }
 
     /** Check the currently-rendered screen for AI assistant state markers. */
@@ -760,6 +809,19 @@ class TerminalSession private constructor(
         // next frame.
         return ReplaySanitizer.stripQueries(ringBytes) + SHOW_CURSOR_SUFFIX
     }
+
+    /**
+     * The widest width represented in the (normal-buffer) replay ring. The
+     * alternate buffer is deliberately excluded: an alt-screen repaint is
+     * always authored at the *current* PTY width, which the client already
+     * receives as [PtyServerMessage.Size.cols] and folds into its render grid,
+     * so tracking it here would add nothing. Reading only [mainRing] means the
+     * hint decays as wide scrollback ages out.
+     *
+     * @return the widest column width still in the main ring, or 0 when empty.
+     * @see TermSession.maxReplayCols
+     */
+    override fun maxReplayCols(): Int = synchronized(ringLock) { mainRing.maxRepresentedCols() }
 
     /**
      * Build the blob to persist for a restore after the server exits.
@@ -865,15 +927,18 @@ class TerminalSession private constructor(
         private const val ALT_RING_CAPACITY = 256 * 1024
 
         /**
-         * Floor for a **forced** resize ([forceClientSize]) — the smallest grid a
-         * single client may pin the shared PTY (and thereby every other attached
+         * Floor for any client-supplied grid — the smallest size a single
+         * client may drive the shared PTY (and thereby every other attached
          * client) to. Generous enough for any real view, small enough to never
-         * fight a legitimately tiny pane. Regular per-client votes
-         * ([setClientSize]) are not floored beyond ≥1: they only ever *lower*
-         * the effective size via min() and never evict anyone.
+         * fight a legitimately tiny pane. Applied to both a forced resize
+         * ([forceClientSize]) and a plain vote ([setClientSize]): under the
+         * latest-active arbiter a plain vote can also become the governing size
+         * and be broadcast to everyone, so a degenerate value from an
+         * unmeasured/hidden view (e.g. a 3D preview mid-layout proposing ~1×1)
+         * must not be able to collapse every client through either path.
          */
-        private const val MIN_FORCE_COLS = 20
-        private const val MIN_FORCE_ROWS = 5
+        private const val MIN_GRID_COLS = 20
+        private const val MIN_GRID_ROWS = 5
 
         /**
          * Default grid until a client registers a real size — also the
@@ -943,7 +1008,7 @@ class TerminalSession private constructor(
  * @property capacity maximum bytes retained.
  * @see TerminalSession
  */
-private class ByteRing(private val capacity: Int) {
+private class ByteRing(private val capacity: Int, private val trackWidth: Boolean = false) {
     private val buf = ByteArray(capacity)
     private var size = 0
     private var start = 0
@@ -959,8 +1024,28 @@ private class ByteRing(private val capacity: Int) {
     var overflowed = false
         private set
 
-    /** Append `chunk[from, until)`, evicting oldest bytes when full. */
-    fun append(chunk: ByteArray, from: Int, until: Int) {
+    /**
+     * A run of contiguous bytes in the ring that were authored at the same PTY
+     * column width. Only maintained when [trackWidth] is set (the main ring).
+     */
+    private class Epoch(var bytes: Int, val cols: Int)
+
+    /**
+     * Width epochs, oldest first; their byte counts always sum to [size].
+     * Eviction shrinks the head, appends extend or push the tail. This lets
+     * [maxRepresentedCols] report the widest width still present in the ring —
+     * a value that naturally *decays* as wide epochs age out, so the client
+     * width-ratchet is released once no wide content remains to reconstruct.
+     */
+    private val epochs = ArrayDeque<Epoch>()
+
+    /**
+     * Append `chunk[from, until)`, evicting oldest bytes when full.
+     *
+     * @param cols the PTY column width these bytes were authored at, recorded
+     *   as an epoch when [trackWidth] is set (ignored otherwise).
+     */
+    fun append(chunk: ByteArray, from: Int, until: Int, cols: Int = 0) {
         for (i in from until until) {
             buf[(start + size) % capacity] = chunk[i]
             if (size < capacity) {
@@ -968,9 +1053,32 @@ private class ByteRing(private val capacity: Int) {
             } else {
                 start = (start + 1) % capacity
                 overflowed = true
+                if (trackWidth) evictOneEpochByte()
             }
         }
+        if (trackWidth && until > from) recordEpoch(cols, until - from)
     }
+
+    /** Drop one byte off the oldest epoch, removing it when emptied. */
+    private fun evictOneEpochByte() {
+        val head = epochs.firstOrNull() ?: return
+        head.bytes--
+        if (head.bytes <= 0) epochs.removeFirst()
+    }
+
+    /** Extend the tail epoch when the width matches, else start a new one. */
+    private fun recordEpoch(cols: Int, count: Int) {
+        val tail = epochs.lastOrNull()
+        if (tail != null && tail.cols == cols) tail.bytes += count
+        else epochs.addLast(Epoch(count, cols))
+    }
+
+    /**
+     * The widest column width still represented in the ring, or 0 when empty /
+     * untracked. Callers use it as a lower bound on a client's render width so
+     * wide replayed history is never reinterpreted at a narrower width.
+     */
+    fun maxRepresentedCols(): Int = epochs.maxOfOrNull { it.cols } ?: 0
 
     /** @return the contents, oldest byte first. */
     fun copy(): ByteArray {
@@ -986,10 +1094,11 @@ private class ByteRing(private val capacity: Int) {
         return out
     }
 
-    /** Drop everything, including the [overflowed] mark. */
+    /** Drop everything, including the [overflowed] mark and width epochs. */
     fun clear() {
         size = 0
         start = 0
         overflowed = false
+        epochs.clear()
     }
 }

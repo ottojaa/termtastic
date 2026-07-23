@@ -22,6 +22,8 @@ package se.soderbjorn.lunamux.android.ui
 import se.soderbjorn.lunula.core.*
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -58,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -77,8 +80,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import se.soderbjorn.lunamux.android.net.ConnectionHolder
+import se.soderbjorn.lunamux.client.PtyEvent
 
 /** Theme accent colour for the terminal screen top bar. */
 private val HeaderAccent: Color
@@ -91,6 +95,15 @@ private val HeaderAccent: Color
  * everything else (idle or dead) gets a reconnect + reset-prefixed replay.
  */
 private const val PTY_RESUME_STALE_MS = 3_000L
+
+/**
+ * Open-animation timing. The terminal is held invisible until it is genuinely at
+ * the phone's width (see [TerminalScreen]); [REVEAL_TIMEOUT_MS] caps that hold so
+ * a slow reflow round-trip can never leave it hidden, and [REVEAL_ANIM_MS] is the
+ * fade/scale-in that masks the resize the user would otherwise see.
+ */
+private const val REVEAL_TIMEOUT_MS = 250L
+private const val REVEAL_ANIM_MS = 180
 
 /**
  * Whether [bytes] contains a full terminal reset (RIS, `ESC c`). Termux's
@@ -202,7 +215,61 @@ fun TerminalScreen(
         mutableStateOf<AndroidGridDims?>(null)
     }
 
-    val applyingServerSize = remember(sessionId) { AtomicBoolean(false) }
+    // The phone renders and DRIVES its own readable width. The emulator uses the
+    // TerminalView's own pixel-derived grid (see the reverted upstream
+    // updateSize), so wide PTY output rewraps to the phone width (legible; TUI
+    // box frames wrap imperfectly — accepted). This screen no longer mirrors the
+    // desktop's wide grid.
+    //
+    // [serverGrid] is the server's last authoritative PTY size (Compose state so
+    // the take-over badge can react); [drivingTo] is the grid we last forced to,
+    // held optimistically so a burst of keystrokes doesn't each fire a
+    // forceResize before the server's Size echo returns.
+    var serverGrid by remember(sessionId) { mutableStateOf<Pair<Int, Int>?>(null) }
+    val drivingTo = remember(sessionId) { AtomicReference<Pair<Int, Int>?>(null) }
+
+    // Fit the shared PTY to this phone's grid whenever the server isn't already at
+    // our width. Called on open + rotation (grid listener), before every keystroke
+    // (the holder's `takeOver`), on tap, and by the take-over badge — the hybrid
+    // "intent, not presence" model: input or an explicit tap drives, bare focus
+    // never does. No-ops when the server already matches (ordinary typing is
+    // free). The laptop reclaims by typing (latest-active governance); the next
+    // phone input then re-drives (drivingTo is cleared when the server drifts off
+    // our grid — see the events.Size branch).
+    val ensureDriving: suspend () -> Unit = remember(sessionId) {
+        {
+            val local = localGrid
+            if (local != null && local.cols > 0 && local.rows > 0) {
+                val target = local.cols to local.rows
+                if (serverGrid != target && drivingTo.get() != target) {
+                    drivingTo.set(target)
+                    runCatching { ptySocket.forceResize(target.first, target.second) }
+                }
+            }
+        }
+    }
+
+    // Open-animation gate: the terminal is held invisible (alpha 0) until the
+    // first frame that is genuinely at the phone's width, so the user never sees
+    // the emulator reflow from its 80x24 seed down to the phone grid. Flipped true
+    // when the server confirms our width (the clean reflowed frame is ordered
+    // right after that Size, per B′) or [REVEAL_TIMEOUT_MS] elapses — whichever is
+    // first. Instant when the phone was the last driver (server already at our
+    // width). Drives the graphicsLayer fade on the AndroidView below.
+    var revealed by remember(sessionId) { mutableStateOf(false) }
+    // Whether the phone has rendered at its OWN width yet (the server confirmed
+    // our grid at least once). Until it has, we feed the emulator everything —
+    // including the reconnect / tab-return REPLAY that carries the scrollback —
+    // so re-entering a terminal never loses history (the nav stack destroys and
+    // rebuilds this screen, so scrollback comes back only via that replay). Only
+    // AFTER the phone has its own clean frame does the passive freeze engage, so
+    // live contention repaints can't stack while a stale wide replay can't be lost.
+    var hasDrivenOwnWidth by remember(sessionId) { mutableStateOf(false) }
+    val revealAlpha by animateFloatAsState(
+        targetValue = if (revealed) 1f else 0f,
+        animationSpec = tween(durationMillis = REVEAL_ANIM_MS),
+        label = "terminalReveal",
+    )
 
     // Scroll-pause: whether the user has scrolled up off the bottom (drives the
     // floating "jump to bottom" pill) and whether fresh output arrived while
@@ -219,15 +286,85 @@ fun TerminalScreen(
             scope = scope,
             emulatorDispatcher = emulatorDispatcher,
             terminalViewRef = terminalViewRef,
-            applyingServerSize = applyingServerSize,
             ptySocket = ptySocket,
+            takeOver = ensureDriving,
         )
     }
 
     val emulator = remember(sessionId) { createSyncedEmulator(session) }
 
+    // Single ordered event stream: output bytes, size changes and reconnect
+    // resets are applied to the emulator in the order the server produced them,
+    // so a resize never races the redraw bytes it triggers (the old split
+    // output + ptySize flows could interleave and mangle the grid).
     LaunchedEffect(sessionId) {
-        ptySocket.output.collect { chunk ->
+        // A server Size may have been recorded in the conflated ptySize mirror
+        // before this collector started; seed from it so ensureDriving and the
+        // reveal check see the current PTY width immediately.
+        ptySocket.ptySize.value?.let { serverGrid = it }
+        ptySocket.events.collect { ev ->
+            // Passive = the server PTY is at another device's width. Raw bytes are
+            // cursor-addressed for that width, so appending them into this phone's
+            // narrow grid is the mangle — and the repeated wide repaints during
+            // contention (you type on the laptop while the phone holds a different
+            // width) stack up as the duplicated banners/input-lines. So once the
+            // phone has its OWN clean frame we FREEZE while passive: hold the last
+            // clean frame and drop output + reconnect resets until the phone is at
+            // its own width again. BEFORE that first frame ([hasDrivenOwnWidth] is
+            // false) we feed everything — including the tab-return replay that
+            // carries the scrollback — so re-entering a terminal never loses history.
+            val passive = localGrid?.let { lg -> serverGrid?.let { it.first != lg.cols } } ?: false
+            val freeze = passive && hasDrivenOwnWidth
+            when (ev) {
+                is PtyEvent.Size -> {
+                    val sz = ev.cols to ev.rows
+                    serverGrid = sz
+                    // Server drifted off the grid we drove to → another device
+                    // reclaimed; drop the optimistic guard so the next phone input
+                    // re-drives to this phone's width.
+                    val d = drivingTo.get()
+                    if (d != null && d != sz) drivingTo.set(null)
+                    // Reveal once the server confirms our width — the clean
+                    // reflowed frame is ordered right after this Size (B′) — and
+                    // mark that we now have our own frame, so the passive freeze
+                    // may engage for subsequent contention.
+                    if (localGrid?.cols == ev.cols) {
+                        if (!revealed) revealed = true
+                        hasDrivenOwnWidth = true
+                    }
+                    // Phone renders its OWN width: do nothing to the emulator.
+                    return@collect
+                }
+                PtyEvent.Reset -> {
+                    // Reconnect boundary: the server is about to replay the ring
+                    // buffer. While frozen, hold the frame — a background reconnect
+                    // must not clear it (the replay would be at another device's
+                    // width anyway). Before the first own-width frame we DO let the
+                    // reset + replay through, so tab-return rebuilds the scrollback.
+                    if (freeze) return@collect
+                    // Feed a RIS to clear the emulator before the replay, then
+                    // re-apply the theme (RIS resets the colour table) and stash
+                    // the scroll offset so the user lands near where they were
+                    // once the replay settles.
+                    withContext(emulatorDispatcher) {
+                        synchronized(emulator) {
+                            val ris = byteArrayOf(0x1b, 'c'.code.toByte()) // RIS (ESC c)
+                            emulator.append(ris, ris.size)
+                        }
+                    }
+                    terminalViewRef.value?.post {
+                        terminalViewRef.value?.let {
+                            applyTerminalColors(it, emulator, terminalPalette)
+                        }
+                    }
+                    if (scrollPause.lastOffset < 0) {
+                        scrollPause.pendingRestore = scrollPause.lastOffset
+                    }
+                    return@collect
+                }
+                is PtyEvent.Bytes -> if (freeze) return@collect
+            }
+            val chunk = ev.data
             withContext(emulatorDispatcher) {
                 synchronized(emulator) {
                     emulator.append(chunk, chunk.size)
@@ -318,34 +455,32 @@ fun TerminalScreen(
         }
     }
 
+    // The phone auto-drives its own width on open: the grid-size listener fires
+    // once the view is laid out and calls [ensureDriving], forceResizing the
+    // shared PTY to this phone's grid so the program formats for the phone. The
+    // laptop reclaims its width just by typing on it (latest-active governance).
+
+    // Open-animation safety cap: reveal the terminal regardless after the timeout,
+    // so a slow reflow round-trip can never leave it hidden.
     LaunchedEffect(sessionId) {
-        ptySocket.ptySize.collect { size ->
-            if (size == null) return@collect
-            val (cols, rows) = size
-            val view = terminalViewRef.value ?: return@collect
-            val renderer = view.mRenderer ?: return@collect
-            val cellW = renderer.fontWidth.toInt().coerceAtLeast(1)
-            val cellH = renderer.fontLineSpacing.coerceAtLeast(1)
-            applyingServerSize.set(true)
-            withContext(emulatorDispatcher) {
-                synchronized(emulator) {
-                    runCatching { emulator.resize(cols, rows, cellW, cellH) }
-                }
-            }
-            view.post {
-                view.onScreenUpdated()
-                view.post { applyingServerSize.set(false) }
-            }
-        }
+        delay(REVEAL_TIMEOUT_MS)
+        revealed = true
     }
 
-    var hasAutoReformatted by remember(sessionId) { mutableStateOf(false) }
-    LaunchedEffect(sessionId, localGrid) {
-        if (hasAutoReformatted) return@LaunchedEffect
-        val natural = localGrid ?: return@LaunchedEffect
-        if (natural.cols <= 0 || natural.rows <= 0) return@LaunchedEffect
-        hasAutoReformatted = true
-        runCatching { ptySocket.forceResize(natural.cols, natural.rows) }
+    // Passive = the server's PTY is at a width other than this phone's, i.e.
+    // another device (typically the laptop) is driving. The take-over badge is
+    // shown only after the open animation settles, and debounced so a momentary
+    // handoff blip doesn't flash it.
+    val passive = revealed && localGrid != null && serverGrid != null &&
+        serverGrid!!.first != localGrid!!.cols
+    var showTakeOver by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(passive) {
+        if (passive) {
+            delay(300)
+            showTakeOver = true
+        } else {
+            showTakeOver = false
+        }
     }
 
     DisposableEffect(sessionId) {
@@ -434,6 +569,12 @@ fun TerminalScreen(
                     IconButton(onClick = {
                         val natural = localGrid
                         if (natural != null && natural.cols > 0 && natural.rows > 0) {
+                            // Explicit fit: force this phone's grid unconditionally
+                            // (bypass ensureDriving's no-op check — Reformat is how
+                            // the user re-asserts their width even when the server
+                            // already reports it). Record it so it doesn't
+                            // immediately re-drive on the next keystroke.
+                            drivingTo.set(natural.cols to natural.rows)
                             scope.launch {
                                 runCatching { ptySocket.forceResize(natural.cols, natural.rows) }
                             }
@@ -463,7 +604,16 @@ fun TerminalScreen(
             ) {
                 AndroidView(
                     modifier = Modifier
-                        .fillMaxSize(),
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            // Open animation: fade + gentle scale-in. The view is
+                            // laid out and fed while hidden, so by the time the
+                            // fade finishes the clean phone-width frame is in.
+                            alpha = revealAlpha
+                            val s = 0.99f + 0.01f * revealAlpha
+                            scaleX = s
+                            scaleY = s
+                        },
                     factory = { context ->
                         val view = TerminalView(context, null)
                         val currentTextSize = intArrayOf(30)
@@ -471,15 +621,16 @@ fun TerminalScreen(
                         view.setTypeface(TerminalFont.typeface(context))
                         view.isFocusable = true
                         view.isFocusableInTouchMode = true
-                        var lastSent: Pair<Int, Int>? = null
                         view.setOnTerminalGridSizeChangedListener { cols, rows ->
-                            if (applyingServerSize.get()) return@setOnTerminalGridSizeChangedListener
-                            val next = cols to rows
                             localGrid = AndroidGridDims(cols = cols, rows = rows)
-                            if (next != lastSent) {
-                                lastSent = next
-                                scope.launch { runCatching { ptySocket.resize(cols, rows) } }
-                            }
+                            // Auto-drive on open + re-assert on rotation: fit the
+                            // PTY to this phone's own grid. This is the phone's sole
+                            // sizing signal (no separate passive vote); ensureDriving
+                            // no-ops when the server already matches.
+                            scope.launch { ensureDriving() }
+                            // Open instantly if the server is already at our width
+                            // (the phone was the last driver — no reflow needed).
+                            if (!revealed && serverGrid?.first == cols) revealed = true
                         }
                         view.setTerminalViewClient(object : TerminalViewClient {
                             override fun onScale(scale: Float): Float {
@@ -498,6 +649,11 @@ fun TerminalScreen(
                                 view.requestFocus()
                                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                                 imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                                // Tap-to-focus is a deliberate "use this pane"
+                                // gesture (a tap, not a scroll — scrolls do not
+                                // route here), so it takes over: fit the PTY to
+                                // this phone. No-ops if already driving.
+                                scope.launch { ensureDriving() }
                             }
                             override fun shouldBackButtonBeMappedToEscape(): Boolean = false
                             override fun shouldEnforceCharBasedInput(): Boolean = false
@@ -530,6 +686,10 @@ fun TerminalScreen(
                         }
                         applyTerminalColors(view, emulator, terminalPalette)
                         terminalViewRef.value = view
+                        // No size seeding here: the phone renders its own
+                        // pixel-derived width once laid out (grid listener), and
+                        // serverGrid is seeded from the ptySize mirror in the
+                        // events collector.
                         view
                     },
                     update = { view ->
@@ -541,6 +701,37 @@ fun TerminalScreen(
                         if (view.topRow < 0) view.invalidate() else view.onScreenUpdated()
                     },
                 )
+
+                // Take-over badge: shown while another device drives the PTY (this
+                // phone is passive). Tapping it is an explicit, input-free take-over
+                // — fit the shared PTY to this phone's width. Neutral copy: the size
+                // broadcast doesn't carry which device is driving.
+                if (showTakeOver) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 10.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(Color(terminalPalette.surface))
+                            .clickable { scope.launch { ensureDriving() } }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "Another device is driving",
+                            color = Color(terminalPalette.text),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "· Tap to take over",
+                            color = Color(terminalPalette.accent),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
 
                 // Floating "jump to bottom" pill, shown only while scrolled up.
                 // Tapping it snaps back to the bottom and resumes auto-follow.
@@ -607,6 +798,10 @@ fun TerminalScreen(
                         // the user can press Enter without leaving word mode.
                         val text = swipeText
                         scope.launch {
+                            // Take over before the input reaches the PTY (see
+                            // [ensureDriving]) so it is processed at this phone's
+                            // grid, not the desktop's.
+                            ensureDriving()
                             if (text.isNotEmpty()) {
                                 ptySocket.send(text.toByteArray(Charsets.UTF_8))
                             }
@@ -624,7 +819,7 @@ fun TerminalScreen(
                 shiftSticky = shiftSticky.value,
                 onShiftToggle = { shiftSticky.value = !shiftSticky.value },
                 onSend = { bytes ->
-                    scope.launch { ptySocket.send(bytes) }
+                    scope.launch { ensureDriving(); ptySocket.send(bytes) }
                 },
                 theme = terminalPalette,
             )
