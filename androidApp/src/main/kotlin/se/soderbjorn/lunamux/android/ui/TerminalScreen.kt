@@ -76,6 +76,7 @@ import com.termux.view.TerminalViewClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -204,7 +205,11 @@ fun TerminalScreen(
     val sessionStates by client.windowState.states.collectAsStateWithLifecycle()
     val paneState = sessionStates[sessionId]
 
-    val ptySocket = remember(sessionId) { client.openPtySocket(sessionId) }
+    // The grid this phone currently renders, mirrored onto the connect URL so the
+    // server synthesizes the attach redraw at our width (no 80x24-seed reflow
+    // flash). Updated by the TerminalView grid-size listener below.
+    val gridFlow = remember(sessionId) { MutableStateFlow<Pair<Int, Int>?>(null) }
+    val ptySocket = remember(sessionId) { client.openPtySocket(sessionId, gridFlow) }
     val ctrlSticky = remember { mutableStateOf(false) }
     val shiftSticky = remember { mutableStateOf(false) }
     var swipeInputActive by remember { mutableStateOf(false) }
@@ -336,27 +341,15 @@ fun TerminalScreen(
                     return@collect
                 }
                 PtyEvent.Reset -> {
-                    // Reconnect boundary: the server is about to replay the ring
-                    // buffer. While frozen, hold the frame — a background reconnect
-                    // must not clear it (the replay would be at another device's
-                    // width anyway). Before the first own-width frame we DO let the
-                    // reset + replay through, so tab-return rebuilds the scrollback.
+                    // Reconnect boundary: the server re-sends a fresh synthesized
+                    // attach redraw (RIS-prefixed) as the next Bytes, which clears
+                    // and repaints the emulator itself — so, unlike the old ring
+                    // replay, we no longer feed a local RIS here, and the theme is
+                    // re-applied on the Bytes path (containsTerminalReset detects the
+                    // redraw's RIS). While frozen, hold the current frame (the replay
+                    // is at another device's width anyway); before the first own-width
+                    // frame we let it through so tab-return rebuilds the scrollback.
                     if (freeze) return@collect
-                    // Feed a RIS to clear the emulator before the replay, then
-                    // re-apply the theme (RIS resets the colour table) and stash
-                    // the scroll offset so the user lands near where they were
-                    // once the replay settles.
-                    withContext(emulatorDispatcher) {
-                        synchronized(emulator) {
-                            val ris = byteArrayOf(0x1b, 'c'.code.toByte()) // RIS (ESC c)
-                            emulator.append(ris, ris.size)
-                        }
-                    }
-                    terminalViewRef.value?.post {
-                        terminalViewRef.value?.let {
-                            applyTerminalColors(it, emulator, terminalPalette)
-                        }
-                    }
                     if (scrollPause.lastOffset < 0) {
                         scrollPause.pendingRestore = scrollPause.lastOffset
                     }
@@ -623,6 +616,8 @@ fun TerminalScreen(
                         view.isFocusableInTouchMode = true
                         view.setOnTerminalGridSizeChangedListener { cols, rows ->
                             localGrid = AndroidGridDims(cols = cols, rows = rows)
+                            // Publish our grid so the socket declares it on (re)connect.
+                            gridFlow.value = cols to rows
                             // Auto-drive on open + re-assert on rotation: fit the
                             // PTY to this phone's own grid. This is the phone's sole
                             // sizing signal (no separate passive vote); ensureDriving

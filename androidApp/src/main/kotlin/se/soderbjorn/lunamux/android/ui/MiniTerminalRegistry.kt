@@ -128,10 +128,11 @@ class MiniTerminalRegistry(
                     synchronized(emulator) {
                         when (ev) {
                             is PtyEvent.Size ->
-                                // Preview at least as wide as replayed history so
-                                // wide lines aren't rewrap-mangled in the thumbnail.
+                                // The thumbnail passes no grid on connect, so the
+                                // server synthesizes the redraw at the PTY dims — the
+                                // thumbnail just renders at exactly that width.
                                 runCatching {
-                                    emulator.resize(maxOf(ev.cols, ev.maxReplayCols), ev.rows, 1, 1)
+                                    emulator.resize(ev.cols, ev.rows, 1, 1)
                                 }
                             is PtyEvent.Bytes -> emulator.append(ev.data, ev.data.size)
                             PtyEvent.Reset -> {

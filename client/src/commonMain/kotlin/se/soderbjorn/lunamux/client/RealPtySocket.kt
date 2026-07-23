@@ -53,6 +53,7 @@ import se.soderbjorn.lunamux.PtyServerMessage
 class RealPtySocket internal constructor(
     private val client: LunamuxClient,
     override val sessionId: String,
+    private val initialGrid: StateFlow<Pair<Int, Int>?>? = null,
 ) : PtySocket {
     // One ordered stream of Bytes | Size | Reset. `replay = 64` lets a late
     // subscriber (a screen that composes after the socket connected) catch up
@@ -117,12 +118,22 @@ class RealPtySocket internal constructor(
             var everConnected = false
             while (!closed) {
                 try {
+                    // Declare the grid this client renders so the server synthesizes
+                    // the attach redraw at our width. On the first connect the view may
+                    // not have laid out yet (Android opens the socket early), so wait
+                    // briefly for the first real grid; on reconnects the current value
+                    // is already good. No grid → the server uses the PTY dims (correct
+                    // for a passive viewer / thumbnail).
+                    val grid: Pair<Int, Int>? = if (!everConnected) {
+                        initialGrid?.let { flow -> withTimeoutOrNull(500) { flow.filterNotNull().first() } }
+                    } else {
+                        initialGrid?.value
+                    }
                     val session = client.httpClient.webSocketSession(
-                        // Declare a viewer posture: this (mobile) client mirrors
-                        // the desktop's PTY size and does not govern it until the
-                        // user deliberately takes over (a forceResize from a
-                        // tap/keystroke gesture). See PtyRoutes.readClientPosture.
-                        client.wsUrlWithAuth("/pty/$sessionId") + "&posture=viewer"
+                        // Viewer posture: this (mobile) client mirrors the desktop's PTY
+                        // size and does not govern it until the user deliberately takes
+                        // over. See PtyRoutes.readClientPosture / ptyConnectQuery.
+                        client.wsUrlWithAuth("/pty/$sessionId") + ptyConnectQuery("viewer", grid)
                     )
                     _activeSession.value = session
                     lastTrafficAtMillis = Clock.System.now().toEpochMilliseconds()
