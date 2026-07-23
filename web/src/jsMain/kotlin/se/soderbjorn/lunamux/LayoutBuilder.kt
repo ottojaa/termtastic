@@ -274,7 +274,12 @@ fun connectPane(entry: TerminalEntry) {
         connectDemoPane(entry)
         return
     }
-    val url = "$proto://$backendHost/pty/${entry.sessionId}?$authQueryParam"
+    // Declare the grid this pane currently renders so the server synthesizes the
+    // attach redraw at our width (the server-authoritative-screen model). A driver
+    // desktop's dims govern the PTY; the onopen fit vote + the server's resync
+    // correct any staleness from a not-yet-fitted first connect.
+    val url = "$proto://$backendHost/pty/${entry.sessionId}?$authQueryParam" +
+        "&cols=${entry.term.cols}&rows=${entry.term.rows}"
     connectionState[entry.sessionId] = "connecting"
     updateAggregateStatus()
 
@@ -382,17 +387,15 @@ fun connectPane(entry: TerminalEntry) {
             val bytes = org.khronos.webgl.Uint8Array(buf)
             if (entry.awaitingSnapshot) {
                 // First binary frame of this connection = the server's
-                // scrollback replay (the /pty protocol sends Size → snapshot
-                // → live output, and WebSocket frames are ordered). On a
-                // reconnect the grid still holds the previous connection's
-                // transcript and the replay would append a second full copy,
-                // so reset the terminal first (RIS) — parity with the native
-                // client, which prepends ESC c on reconnect. A first attach
-                // writes into an empty grid and needs no reset. Scroll
-                // holding is irrelevant on both paths (empty or just-reset
-                // grid), hence the direct write.
+                // synthesized attach redraw (the /pty protocol sends Size then the
+                // redraw, and WebSocket frames are ordered). It is self-clearing —
+                // a RIS (ESC c) + ED3 (CSI 3 J) prefix resets the emulator and
+                // clears scrollback before repainting — so, unlike the old ring
+                // replay, no explicit pre-reset is needed even on a reconnect: the
+                // old grid's transcript is wiped by the redraw's own RIS+ED3.
+                // Scroll holding is irrelevant against a just-reset grid, hence the
+                // direct write.
                 entry.awaitingSnapshot = false
-                if (entry.everConnected) entry.term.write("\u001bc")
                 entry.everConnected = true
                 // Gate keystrokes while xterm parses the replay: a query
                 // sequence in replayed bytes would be answered via onData
