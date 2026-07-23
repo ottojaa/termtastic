@@ -1,9 +1,8 @@
 package com.termux.terminal;
 
-import android.util.Base64;
-
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Stack;
@@ -176,7 +175,7 @@ public final class TerminalEmulator {
     /** The terminal session this emulator is bound to. */
     private final TerminalOutput mSession;
 
-    TerminalSessionClient mClient;
+    TerminalSessionClientBase mClient;
 
     /** Keeps track of the current argument of the current escape sequence. Ranges from 0 to MAX_ESCAPE_PARAMETERS-1. */
     private int mArgIndex;
@@ -322,7 +321,7 @@ public final class TerminalEmulator {
         }
     }
 
-    public TerminalEmulator(TerminalOutput session, int columns, int rows, int cellWidthPixels, int cellHeightPixels, Integer transcriptRows, TerminalSessionClient client) {
+    public TerminalEmulator(TerminalOutput session, int columns, int rows, int cellWidthPixels, int cellHeightPixels, Integer transcriptRows, TerminalSessionClientBase client) {
         mSession = session;
         mScreen = mMainBuffer = new TerminalBuffer(columns, getTerminalTranscriptRows(transcriptRows), rows);
         mAltBuffer = new TerminalBuffer(columns, rows, rows);
@@ -335,7 +334,7 @@ public final class TerminalEmulator {
         reset();
     }
 
-    public void updateTerminalSessionClient(TerminalSessionClient client) {
+    public void updateTerminalSessionClient(TerminalSessionClientBase client) {
         mClient = client;
         setCursorStyle();
         setCursorBlinkState(true);
@@ -2104,7 +2103,11 @@ public final class TerminalEmulator {
             case 52: // Manipulate Selection Data. Skip the optional first selection parameter(s).
                 int startIndex = textParameter.indexOf(";") + 1;
                 try {
-                    String clipboardText = new String(Base64.decode(textParameter.substring(startIndex), 0), StandardCharsets.UTF_8);
+                    // Vendored-code shim: android.util.Base64.decode(str, DEFAULT) → java.util.Base64.
+                    // getMimeDecoder() matches Android DEFAULT's leniency (ignores characters outside the
+                    // base64 alphabet, e.g. embedded newlines); getDecoder() would reject them and change
+                    // behaviour. Keeps this module pure-JVM.
+                    String clipboardText = new String(Base64.getMimeDecoder().decode(textParameter.substring(startIndex)), StandardCharsets.UTF_8);
                     mSession.onCopyTextToClipboard(clipboardText);
                 } catch (Exception e) {
                     Logger.logError(mClient, LOG_TAG, "OSC Manipulate selection, invalid string '" + textParameter + "");
