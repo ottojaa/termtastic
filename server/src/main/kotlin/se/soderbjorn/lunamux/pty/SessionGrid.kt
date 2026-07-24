@@ -102,12 +102,62 @@ class SessionGrid(cols: Int, rows: Int) {
     fun feed(buf: ByteArray, len: Int) {
         if (len <= 0) return
         synchronized(emulator) {
+            withdrawRedundantArchivalIfDeclared(buf, len)
             try {
                 emulator.append(buf, len)
             } catch (_: Throwable) {
                 // A malformed control sequence must never take the PTY read loop
                 // down. The grid may be left mid-sequence; the next feed recovers.
             }
+        }
+    }
+
+    /**
+     * How many complete logical lines the transcript held just before the last resize,
+     * or -1 when there is no resize awaiting a verdict.
+     *
+     * A resize arms this; the very next [feed] disarms it, whichever way it decides. See
+     * [withdrawRedundantArchivalIfDeclared] for what the verdict is and why it must wait.
+     */
+    private var transcriptLinesBeforeResize: Int = -1
+
+    /**
+     * If the resize just applied archived rows into scrollback and this chunk declares a
+     * full-screen repaint, take that archival back.
+     *
+     * Narrowing rewraps the old screen into more rows than the new screen holds, and the
+     * emulator archives the overflow — correct in general, because for most programs (a
+     * shell, a build log) that content is committed history nobody will rewrite. But a
+     * program that owns the whole screen answers the SIGWINCH by redrawing its frame from
+     * the top, and its redraw reaches only the screen: the archived copy stays in
+     * scrollback, where a per-row erase cannot touch it, and the redraw's own overflow is
+     * archived on top of it. That is one duplicate of the frame per device switch, which
+     * is what made switching cost a repaint.
+     *
+     * The decision cannot be made at resize time — nothing then distinguishes the two
+     * cases — so the archival happens as usual (the safe default: history is kept) and is
+     * withdrawn only once the program has explicitly declared otherwise. The measure used
+     * is the transcript's complete-logical-line count, which is width-invariant: rewrapping
+     * changes how many rows those lines occupy but never how many lines there are, so
+     * restoring the count restores exactly what the resize added and nothing older.
+     *
+     * Alt-screen programs (vim, less) are skipped: the alternate buffer has no scrollback,
+     * so their repaints never had anything to duplicate.
+     *
+     * @param buf the chunk about to be fed.
+     * @param len its length.
+     */
+    private fun withdrawRedundantArchivalIfDeclared(buf: ByteArray, len: Int) {
+        val target = transcriptLinesBeforeResize
+        if (target < 0) return
+        transcriptLinesBeforeResize = -1
+        if (emulator.isAlternateBufferActive) return
+        if (!RepaintDeclaration.declaresFullScreenRepaint(buf, len, emulator.mRows)) return
+        try {
+            emulator.mainBuffer.truncateTranscriptToCompletedLines(target)
+        } catch (_: Throwable) {
+            // Withdrawing is an optimisation; leaving the duplicate is survivable, a
+            // half-applied buffer shuffle is not.
         }
     }
 
@@ -122,6 +172,14 @@ class SessionGrid(cols: Int, rows: Int) {
     fun resize(cols: Int, rows: Int) {
         if (cols < MIN_DIM || rows < MIN_DIM) return
         synchronized(emulator) {
+            // Note what history looked like before the reflow, so the next chunk can
+            // decide whether the reflow's archival was redundant.
+            transcriptLinesBeforeResize = try {
+                if (emulator.isAlternateBufferActive) -1
+                else emulator.mainBuffer.transcriptCompletedLineCount
+            } catch (_: Throwable) {
+                -1
+            }
             try {
                 emulator.resize(cols, rows, NOMINAL_CELL_WIDTH_PX, NOMINAL_CELL_HEIGHT_PX)
             } catch (_: Throwable) {
