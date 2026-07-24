@@ -567,6 +567,11 @@ class TerminalSession private constructor(
                 break
             }
             if (n <= 0) break
+            // TEMPORARY DIAGNOSTIC: capture what the program emits immediately after a
+            // SIGWINCH. Whether its repaint tries to ERASE first (cursor-up + ED, i.e.
+            // "redraw this region in place") or simply prints again decides how the
+            // duplicate can be suppressed, so read it rather than guess.
+            SizeChurnLog.recordPostResizeOutput(buf, n)
             osc.feed(buf, n)
             screen.feed(buf, n)
             val chunk = buf.copyOf(n)
@@ -756,6 +761,40 @@ class TerminalSession private constructor(
                     "${System.currentTimeMillis()} ${from.first}x${from.second} -> " +
                         "${to.first}x${to.second}  [$kind]\n"
                 )
+            }
+            postResizeBudget.set(POST_RESIZE_CAPTURE_BYTES)
+        }
+
+        /** Bytes of program output still to capture after the most recent resize. */
+        private val postResizeBudget = java.util.concurrent.atomic.AtomicInteger(0)
+        private const val POST_RESIZE_CAPTURE_BYTES = 3_000
+
+        /**
+         * Record the start of the program's response to a SIGWINCH, escaped so control
+         * sequences are legible. The question it answers: does the repaint begin by
+         * ERASING the region it is about to redraw (cursor-up + ED — meaning it intends
+         * to overwrite in place, and only duplicates because that region has scrolled
+         * out of the screen's reach), or does it simply print its output again?
+         */
+        fun recordPostResizeOutput(buf: ByteArray, n: Int) {
+            val target = path ?: return
+            val budget = postResizeBudget.get()
+            if (budget <= 0) return
+            val take = minOf(budget, n)
+            postResizeBudget.addAndGet(-take)
+            runCatching {
+                val sb = StringBuilder(take * 2)
+                for (i in 0 until take) {
+                    when (val b = buf[i].toInt() and 0xff) {
+                        0x1b -> sb.append("<ESC>")
+                        0x07 -> sb.append("<BEL>")
+                        0x0d -> sb.append("<CR>")
+                        0x0a -> sb.append("<LF>\n")
+                        in 0x20..0x7e -> sb.append(b.toChar())
+                        else -> sb.append('.')
+                    }
+                }
+                java.io.File(target).appendText("---- post-resize output ----\n$sb\n---- end ----\n")
             }
         }
     }
