@@ -83,6 +83,14 @@ fun attachDragDrop(container: HTMLElement, term: Terminal) {
  * @see ensureTerminal
  * @see forceReassert
  */
+/**
+ * How long a pane's own size vote is treated as still in flight (ms): the 200 ms
+ * send debounce plus room for the server to arbitrate and broadcast the answer.
+ * Generous on purpose — overshooting only delays a genuine mirror slightly, while
+ * undershooting flashes "Mirroring another device" on every attach.
+ */
+private const val VOTE_PENDING_GRACE_MS = 2_000.0
+
 fun sendResize(entry: TerminalEntry) {
     if (entry.applyingServerSize) return
     // Cold-restore settling window: swallow the vote. The stale fit sampled at
@@ -152,6 +160,11 @@ fun sendResize(entry: TerminalEntry) {
     // drags, sidebar toggles): long enough to coalesce a continuous drag's
     // intermediate widths into (mostly) the final one, short enough that a
     // settled size still feels immediate.
+    // Mark our vote in flight from the moment it is scheduled: until the server
+    // answers (or this deadline lapses) a differing server width is just us waiting,
+    // not another client driving, so the mirror is not flashed up. See
+    // [TerminalEntry.votePendingUntil].
+    entry.votePendingUntil = kotlin.js.Date.now() + VOTE_PENDING_GRACE_MS
     entry.pendingResizeTimer = window.setTimeout({
         entry.pendingResizeTimer = null
         val socket = entry.socket

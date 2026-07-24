@@ -55,8 +55,12 @@ external class ResizeObserver(callback: (dynamic, dynamic) -> Unit) {
  *   the applied font is shrunk below this and restored from it on take-over
  * @property passive true while the server grid is a different width than
  *   [naturalCols] — another client is driving, so this pane renders a read-only,
- *   font-scaled mirror of the server grid and neither votes sizes nor injects the
- *   ambient reports its own view generates (see [applyMirrorPresentation])
+ *   font-scaled mirror of the server grid and drops the ambient reports its own view
+ *   generates (see [applyMirrorPresentation])
+ * @property votePendingUntil deadline (epoch ms) until which this pane's own size
+ *   vote is considered still in flight. A width mismatch during that window is just
+ *   the server not having answered us yet — not another client driving — so the
+ *   mirror is suppressed rather than flashed up for a moment on every attach.
  * @property takeOverBadge floating "Mirroring another device · Take over" pill shown
  *   while [passive], or null before it is created
  * @property oobOverlayRight DOM element for the right out-of-bounds overlay, or null
@@ -133,6 +137,7 @@ class TerminalEntry(
     var naturalRows: Int = 0,
     var baseFontSize: Int = 13,
     var passive: Boolean = false,
+    var votePendingUntil: Double = 0.0,
     var takeOverBadge: HTMLElement? = null,
     var oobOverlayRight: HTMLElement? = null,
     var oobOverlayBottom: HTMLElement? = null,
@@ -505,7 +510,15 @@ private const val MIRROR_FONT_MAX_PX = 40.0
 fun applyMirrorPresentation(entry: TerminalEntry) {
     val serverCols = entry.ptyCols ?: 0
     val serverRows = entry.ptyRows ?: 0
-    val passive = PtyPresentation.isPassive(entry.naturalCols, serverCols)
+    // A width mismatch means "somebody else's grid" only once our OWN vote has had a
+    // chance to land. On attach the server still holds the session at its persisted
+    // width, so every pane would briefly look passive and flash the mirror before the
+    // vote is answered. While the vote is outstanding, keep driving; if the deadline
+    // passes and the width still differs, another client really is governing.
+    val awaitingOurVote = entry.votePendingUntil > kotlin.js.Date.now()
+    val matchesOurVote = serverCols == entry.naturalCols
+    if (matchesOurVote) entry.votePendingUntil = 0.0
+    val passive = PtyPresentation.isPassive(entry.naturalCols, serverCols) && !awaitingOurVote
     entry.passive = passive
 
     val target: Double = if (passive && entry.naturalRows > 0 && serverRows > 0) {

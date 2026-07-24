@@ -94,7 +94,13 @@ object GridSerializer {
         val sb = StringBuilder(4096)
         sb.append(ESC).append("c")
         sb.append(CSI).append("3J")
-        emitBufferFlow(sb, e.mainBuffer, e.mColumns, e.mRows, includeTranscript = true)
+        emitBufferFlow(
+            sb, e.mainBuffer, e.mColumns, e.mRows,
+            includeTranscript = true,
+            // No cursor epilogue follows (see the kdoc), so the flow must not leave
+            // the cursor stranded below the content it just painted.
+            trimTrailingBlankRows = true,
+        )
         if (e.isAlternateBufferActive) {
             sb.append("\r\n")
             emitAltFrameInert(sb, e.altBuffer, e.mColumns, e.mRows)
@@ -118,16 +124,47 @@ object GridSerializer {
         cols: Int,
         screenRows: Int,
         includeTranscript: Boolean,
+        trimTrailingBlankRows: Boolean = false,
     ) {
         sb.append(CSI).append("H") // home before drawing so the flow is deterministic
         val transcript = if (includeTranscript) buffer.activeTranscriptRows else 0
-        val lastRow = screenRows - 1
+        val lastRow =
+            if (trimTrailingBlankRows) lastNonBlankRow(buffer, cols, screenRows, transcript)
+            else screenRows - 1
         var y = -transcript
         while (y <= lastRow) {
             val wrapped = emitRow(sb, buffer, y, cols)
             if (y != lastRow && !wrapped) sb.append("\r\n")
             y++
         }
+    }
+
+    /**
+     * The last row holding any content, searching up from the bottom of the screen;
+     * `-transcript - 1` when every row is blank (so the caller emits nothing).
+     *
+     * Used only by [serializeForPersist]. The attach form must emit the screen in
+     * full — its epilogue restores the cursor afterwards, so trailing blanks are
+     * faithful screen content — but the persist form deliberately carries no cursor
+     * epilogue (issue #91), so whatever the flow emits last is where the cursor is
+     * left. Emitting the trailing blanks parked it at the bottom of a screenful of
+     * empty rows, and the shell spawned on restore then printed its first prompt
+     * there, far below the restored content: a stacked prompt with a large gap above
+     * it, growing by one on every restore.
+     */
+    private fun lastNonBlankRow(
+        buffer: TerminalBuffer,
+        cols: Int,
+        screenRows: Int,
+        transcript: Int,
+    ): Int {
+        var y = screenRows - 1
+        while (y >= -transcript) {
+            val row = buffer.getLineOrNull(y)
+            if (row != null && lastContentColumn(row, cols) >= 0) return y
+            y--
+        }
+        return -transcript - 1
     }
 
     /**

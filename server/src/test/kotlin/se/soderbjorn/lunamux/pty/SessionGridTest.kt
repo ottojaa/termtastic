@@ -119,6 +119,34 @@ class SessionGridTest {
     }
 
     @Test
+    fun `persist form leaves the cursor just after the restored content`() {
+        // The persist form deliberately carries no cursor epilogue (#91), so wherever
+        // its row flow stops is where the restored grid's cursor is left — and the
+        // shell spawned on restore writes its first prompt from there. Emitting the
+        // screen's trailing blank rows parked the cursor at the bottom of a screenful
+        // of blanks, so the new prompt appeared far below the restored content with a
+        // large gap above it, and a further copy accumulated on each restore.
+        val grid = SessionGrid(40, 20)
+        grid.feed("line one\r\nline two\r\nprompt$ ")
+        val blob = grid.synthesizeForPersist()
+
+        val restored = SessionGrid(40, 20)
+        restored.feed(blob, blob.size)
+
+        // Content occupies rows 0..2, so the cursor must still be on row 2 — not
+        // stranded on row 19 by a run of trailing blank-row CRLFs.
+        assertEquals(2, restored.read { it.cursorRow }, "cursor must not be parked below the content")
+
+        // What the shell then writes must land directly after the restored content.
+        restored.feed("\r\nnext$ ")
+        val text = restored.transcriptText().trimEnd()
+        assertFalse(
+            text.contains("\n\n"),
+            "restored content and the new prompt must not be separated by blank rows: <$text>",
+        )
+    }
+
+    @Test
     fun `persist form does not resurrect terminal modes`() {
         // A dead full-screen app must not re-enable sticky modes on restore (#91):
         // serializeForPersist carries no mode epilogue.
