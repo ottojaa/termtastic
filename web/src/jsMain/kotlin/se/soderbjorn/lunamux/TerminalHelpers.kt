@@ -522,9 +522,12 @@ fun applyMirrorPresentation(entry: TerminalEntry) {
     }
     // Guarded: assigning fontSize rebuilds xterm's renderer and remeasures every
     // glyph, so it must fire only on a real change.
-    val current = (entry.term.options.asDynamic().fontSize as? Number)?.toDouble()
+    // NB: `Terminal.options` is declared `dynamic`, so calling `.asDynamic()` on it
+    // emits a REAL `.asDynamic()` call on the JS object and throws — see the same
+    // warning in [updateOobOverlay]. Address it directly.
+    val current = (entry.term.options.fontSize as? Number)?.toDouble()
     if (current == null || kotlin.math.abs(current - target) > 0.01) {
-        runCatching { entry.term.options.asDynamic().fontSize = target }
+        runCatching { entry.term.options.fontSize = target }
     }
     entry.takeOverBadge?.let { badge ->
         if (passive) badge.classList.add("visible") else badge.classList.remove("visible")
@@ -621,7 +624,7 @@ private fun reassertGrid(entry: TerminalEntry, force: Boolean) {
             // back to what the user's own font would fit so the natural grid (and
             // with it the mirror scale and the take-over target) tracks the box.
             val proposed = runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()
-            val shown = (entry.term.options.asDynamic().fontSize as? Number)?.toDouble()
+            val shown = (entry.term.options.fontSize as? Number)?.toDouble()
             if (proposed != null && shown != null && shown > 0.0 && entry.baseFontSize > 0) {
                 val k = shown / entry.baseFontSize.toDouble()
                 entry.naturalCols = (proposed.first * k).toInt().coerceAtLeast(2)
@@ -636,7 +639,7 @@ private fun reassertGrid(entry: TerminalEntry, force: Boolean) {
         // times too large.
         entry.passive = false
         entry.takeOverBadge?.classList?.remove("visible")
-        runCatching { entry.term.options.asDynamic().fontSize = entry.baseFontSize.toDouble() }
+        runCatching { entry.term.options.fontSize = entry.baseFontSize.toDouble() }
     }
     // Skip while a server-mandated resize is in flight so we don't echo
     // the PTY's just-applied size back to it — that would lock the PTY at the

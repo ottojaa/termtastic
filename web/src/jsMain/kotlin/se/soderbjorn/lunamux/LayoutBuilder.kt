@@ -920,7 +920,7 @@ fun mountPaneContent(paneId: String): HTMLElement {
                 // /pty/{sessionId} socket a shell pane uses, and keystrokes
                 // typed here flow back into the agent's input channel.
                 val entry = ensureTerminal(paneId, sessionId)
-                setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14)
+                try { setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14) } catch (_: Throwable) {}
                 entry.term.options.fontFamily = resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily)
                 // See the terminal branch below: don't steal the container off a
                 // 3D plane while the world is open. @see closeWorld3dSpike
@@ -950,7 +950,7 @@ fun mountPaneContent(paneId: String): HTMLElement {
             // `entry.autoReflow` at the value frozen in `ensureTerminal`, so
             // a later global-default change never drifts this open pane.
             (leaf.content?.autoReflow as? Boolean)?.let { entry.autoReflow = it }
-            setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14)
+            try { setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14) } catch (_: Throwable) {}
             entry.term.options.fontFamily = resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily)
             // While the 3D world owns this terminal, its `entry.container` is
             // reparented onto a CSS3D plane. Do NOT append it into this (hidden)
