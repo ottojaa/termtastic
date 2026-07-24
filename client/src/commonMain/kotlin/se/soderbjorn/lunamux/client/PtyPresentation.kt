@@ -19,6 +19,8 @@
  */
 package se.soderbjorn.lunamux.client
 
+import se.soderbjorn.lunamux.TerminalInputClassifier
+
 /**
  * Build the query suffix appended to the authenticated `/pty/{id}` URL (which
  * already carries `?token=…`).
@@ -131,43 +133,8 @@ object PtyPresentation {
      * @param bytes one outbound burst from the local emulator.
      * @return true only if every byte belongs to a device reply.
      */
-    fun isDeviceReply(bytes: ByteArray): Boolean {
-        if (bytes.isEmpty()) return false
-        val n = bytes.size
-        var i = 0
-        while (i < n) {
-            if (bytes[i] != ESC || i + 1 >= n) return false
-            when (bytes[i + 1]) {
-                '['.code.toByte() -> {                       // CSI … final
-                    var j = i + 2
-                    while (j < n && (bytes[j] in '0'.code.toByte()..'9'.code.toByte() ||
-                            bytes[j] == ';'.code.toByte() || bytes[j] == '?'.code.toByte() ||
-                            bytes[j] == '>'.code.toByte() || bytes[j] == '$'.code.toByte())
-                    ) j++
-                    if (j >= n) return false
-                    val f = bytes[j]
-                    // R = cursor position report, c = device attributes, y = mode report.
-                    if (f != 'R'.code.toByte() && f != 'c'.code.toByte() && f != 'y'.code.toByte()) return false
-                    i = j + 1
-                }
-                ']'.code.toByte(), 'P'.code.toByte() -> {     // OSC / DCS … BEL or ST
-                    var j = i + 2
-                    var terminated = false
-                    while (j < n) {
-                        if (bytes[j] == BEL) { j++; terminated = true; break }
-                        if (bytes[j] == ESC && j + 1 < n && bytes[j + 1] == '\\'.code.toByte()) {
-                            j += 2; terminated = true; break
-                        }
-                        j++
-                    }
-                    if (!terminated) return false
-                    i = j
-                }
-                else -> return false
-            }
-        }
-        return true
-    }
+    fun isDeviceReply(bytes: ByteArray): Boolean =
+        TerminalInputClassifier.isDeviceReply(bytes)
 
     fun isAmbientReport(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return false

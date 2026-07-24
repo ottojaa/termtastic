@@ -1059,6 +1059,7 @@ public final class TerminalView extends View {
             // capacity mid-setChar. Callers that mutate the emulator off
             // the UI thread must acquire the same monitor on mEmulator.
             synchronized (mEmulator) {
+                clampTopRow();
                 mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3]);
             }
 
@@ -1071,7 +1072,27 @@ public final class TerminalView extends View {
         return mTermSession;
     }
 
+    /**
+     * Clamp {@link #mTopRow} to the transcript that exists right now.
+     *
+     * The scroll offset is set against the transcript length at the moment of the
+     * gesture, but the transcript can shrink underneath it afterwards: a synthesized
+     * redraw begins with RIS + ED3 (clear scrollback), so a resync arriving while the
+     * user sits scrolled up leaves mTopRow pointing at rows that are gone. Reading or
+     * rendering those throws — {@code IllegalArgumentException: extRow=-3 ...
+     * mActiveTranscriptRows=0} from the renderer, {@code ArrayIndexOutOfBoundsException}
+     * from {@link #getText()}. Callers must hold the emulator monitor.
+     */
+    private void clampTopRow() {
+        int transcriptRows = mEmulator.getScreen().getActiveTranscriptRows();
+        if (mTopRow < -transcriptRows) mTopRow = -transcriptRows;
+        if (mTopRow > 0) mTopRow = 0;
+    }
+
     private CharSequence getText() {
+        synchronized (mEmulator) {
+            clampTopRow();
+        }
         return mEmulator.getScreen().getSelectedText(0, mTopRow, mEmulator.mColumns, mTopRow + mEmulator.mRows);
     }
 

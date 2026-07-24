@@ -93,8 +93,21 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
                         // one for size arbitration (latest-active wins) —
                         // recorded here, not inside write(), because write()
                         // is also used by MCP tools with no client identity.
-                        session.noteClientInput(clientId)
-                        session.write(frame.readBytes())
+                        //
+                        // Device replies are excluded: an emulator answers the
+                        // running program's queries (cursor position, device
+                        // attributes, colour/mode reports) by itself, over this
+                        // same channel. Counting those as activity let a client
+                        // that was merely mirroring seize the grid whenever the
+                        // program happened to probe the terminal — so a phone
+                        // left attached silently owned every session. They must
+                        // still be written (the program is blocked on the
+                        // answer), just not treated as the user acting here.
+                        val bytes = frame.readBytes()
+                        if (!TerminalInputClassifier.isDeviceReply(bytes)) {
+                            session.noteClientInput(clientId)
+                        }
+                        session.write(bytes)
                     }
                     is Frame.Text -> handleControl(session, clientId, frame.readText())
                     else -> Unit
