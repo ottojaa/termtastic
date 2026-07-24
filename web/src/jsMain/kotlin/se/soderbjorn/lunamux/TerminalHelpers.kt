@@ -16,6 +16,7 @@ import kotlinx.browser.document
 import org.khronos.webgl.Uint8Array
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.WebSocket
+import se.soderbjorn.lunamux.client.PtyPresentation
 
 /**
  * Kotlin/JS external declaration for the browser's ResizeObserver API.
@@ -46,6 +47,25 @@ external class ResizeObserver(callback: (dynamic, dynamic) -> Unit) {
  * @property ptyCols the last known PTY column count from the server
  * @property ptyRows the last known PTY row count from the server
  * @property applyingServerSize true while applying a server-mandated resize (suppresses sending resize back)
+ * @property naturalCols the grid width this pane fits at the user's own font — the
+ *   width it renders at while driving, sampled on every self-initiated fit. The
+ *   baseline the passive mirror is scaled against and the take-over target.
+ * @property naturalRows the row counterpart of [naturalCols]
+ * @property baseFontSize the user's configured pane font size in px; while mirroring
+ *   the applied font is shrunk below this and restored from it on take-over
+ * @property passive true while the server grid is a different width than
+ *   [naturalCols] — another client is driving, so this pane renders a read-only,
+ *   font-scaled mirror of the server grid and drops the ambient reports its own view
+ *   generates (see [applyMirrorPresentation])
+ * @property awaitingVoteAnswer true between casting a size vote and the server's next
+ *   `Size` broadcast. A width mismatch in that gap is just the server not having
+ *   answered us yet — not another client driving — so the size-mismatch affordances
+ *   stay hidden. The server's answer, not a clock, is what normally clears this.
+ * @property votePendingUntil backstop deadline (epoch ms) for [awaitingVoteAnswer].
+ *   A vote that changes nothing produces no `Size` broadcast at all, so the wait
+ *   needs an upper bound or a losing vote could suppress the mirror forever.
+ * @property takeOverBadge floating "Mirroring another device · Take over" pill shown
+ *   while [passive], or null before it is created
  * @property oobOverlayRight DOM element for the right out-of-bounds overlay, or null
  * @property oobOverlayBottom DOM element for the bottom out-of-bounds overlay, or null
  * @property scrollButton floating "jump to bottom" pill shown while the user has
@@ -116,6 +136,13 @@ class TerminalEntry(
     var ptyCols: Int? = null,
     var ptyRows: Int? = null,
     var applyingServerSize: Boolean = false,
+    var naturalCols: Int = 0,
+    var naturalRows: Int = 0,
+    var baseFontSize: Int = 13,
+    var passive: Boolean = false,
+    var awaitingVoteAnswer: Boolean = false,
+    var votePendingUntil: Double = 0.0,
+    var takeOverBadge: HTMLElement? = null,
     var oobOverlayRight: HTMLElement? = null,
     var oobOverlayBottom: HTMLElement? = null,
     var scrollButton: HTMLElement? = null,
@@ -266,6 +293,13 @@ private fun remeasureCellMetrics(term: Terminal): Boolean = runCatching {
  * @see proposeSafeDimensions
  */
 fun safeFit(term: Terminal, fit: FitAddon) {
+    // Never refit a mirror. Its grid is the server's — bending it to this container
+    // would rewrap a redraw authored for another width — and the proposal here is
+    // measured at the shrunken mirror font, so it would resize to a wildly larger
+    // grid. The many ambient fit callers (tab mount, font change, world close…) pass
+    // a bare Terminal, so the guard lives here rather than at each call site.
+    // @see applyMirrorPresentation
+    if (isMirroringTerm(term)) return
     val (targetCols, targetRows) = proposeSafeDimensions(term, fit) ?: return
     if (targetCols == term.cols && targetRows == term.rows) return
     term.asDynamic().resize(targetCols, targetRows)
@@ -293,7 +327,12 @@ fun safeFit(term: Terminal, fit: FitAddon) {
  * @see forceReassert
  */
 fun updateOobOverlay(entry: TerminalEntry) {
-    if (isRidingSpikePlane(entry)) {
+    // Nothing is "unused" while mirroring: the grid is deliberately the server's and
+    // the empty margin around it is the letterbox, not space this pane could reclaim.
+    // The gates below would also read it wrong — they compare against a fit proposal
+    // measured at the shrunken mirror font, which reports a far larger grid than the
+    // user's own font would, so the hatch would paint straight over the mirror.
+    if (isRidingSpikePlane(entry) || entry.passive || isAwaitingOwnSize(entry)) {
         entry.oobOverlayRight?.style?.display = "none"
         entry.oobOverlayBottom?.style?.display = "none"
         return
@@ -308,7 +347,8 @@ fun updateOobOverlay(entry: TerminalEntry) {
         el.className = "oob-overlay oob-overlay-$slot"
         el.setAttribute(
             "title",
-            "Unused by the current PTY size \u2014 press Reformat to reclaim this space"
+            "Unused by the current PTY size \u2014 type in this pane, or press " +
+                "Reformat, to fit the terminal to it"
         )
         entry.container.appendChild(el)
         if (slot == "right") entry.oobOverlayRight = el else entry.oobOverlayBottom = el
@@ -352,30 +392,32 @@ fun updateOobOverlay(entry: TerminalEntry) {
 
     val gapRight = containerWidth - (screenLeft + screenWidth)
     val gapBottom = containerHeight - (screenTop + screenHeight)
-    // Gate on what a reformat could actually *reclaim*: compute the grid a
-    // reformat would apply ([proposeSafeDimensions] — the SAME math [safeFit]
-    // uses, including its viewport row clamp) and show a strip only when it
-    // would add at least one column/row. Judging by the raw pixel gap against
-    // the container rect over-counts the structural insets around the xterm
-    // element (its padding and the scrollbar gutter) as "unused space", and
-    // judging by the fit addon's raw proposal over-counts the one clamped row —
-    // both kept a strip permanently lit that no reformat could ever clear. When
-    // no proposal is available (terminal not measurable yet), show nothing
-    // rather than guess.
-    val safeTarget = runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()
-    val reclaimCols = (safeTarget?.first ?: 0) - entry.term.cols
-    val reclaimRows = (safeTarget?.second ?: 0) - entry.term.rows
-
-    if (reclaimCols >= 1 && gapRight > 0 && screenHeight > 0) {
+    // Right dead zone: with the width ratchet ([applyServerSize]) the render grid
+    // (term.cols) can be wider than the live PTY (entry.ptyCols) — a phone took
+    // over at a narrower width, or wide replay history holds the grid open.
+    // Hatch the columns [ptyCols, term.cols), sized arithmetically from cells so
+    // the scrollbar gutter / padding is never miscounted as dead space. Width is
+    // no longer *reclaimable* here: the ratchet keeps the render grid at least
+    // the container fit, so a reformat can never add columns — only the bottom
+    // rows (below) still reclaim, since rows track the PTY rather than ratchet.
+    val liveCols = entry.ptyCols ?: entry.term.cols
+    val deadCols = entry.term.cols - liveCols
+    if (deadCols >= 1 && cellW != null && screenHeight > 0) {
         val right = ensure("right")
         right.style.display = "block"
-        right.style.left = "${screenLeft + screenWidth}px"
+        right.style.left = "${screenLeft + liveCols * cellW}px"
         right.style.top = "${screenTop}px"
-        right.style.width = "${gapRight}px"
+        right.style.width = "${deadCols * cellW}px"
         right.style.height = "${screenHeight}px"
     } else {
         entry.oobOverlayRight?.style?.display = "none"
     }
+
+    // Bottom reclaim gap: gate on the fit proposal (the same math safeFit uses,
+    // including its viewport row clamp) so structural insets aren't miscounted;
+    // show nothing when no proposal is available (terminal not measurable yet).
+    val reclaimRows =
+        (runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()?.second ?: 0) - entry.term.rows
 
     if (reclaimRows >= 1 && gapBottom > 0 && containerWidth > 0) {
         val bottom = ensure("bottom")
@@ -398,12 +440,31 @@ fun updateOobOverlay(entry: TerminalEntry) {
  * re-presented at the new grid too ([spikeOnServerSize]) so the pane stays a
  * truthful window onto the PTY.
  *
+ * The local grid always follows the server **exactly**. This replaced the old
+ * *width ratchet*, which held xterm's render grid open at the desktop's own fit
+ * whenever another client (a phone) governed the PTY narrower, so wide scrollback
+ * was never rewrapped. That trade no longer applies — and had become actively
+ * wrong: with the server-authoritative model the bytes on the wire are a
+ * *synthesized redraw* authored for the server's grid, and a soft-wrapped row is
+ * encoded as a full row of cells with no CRLF so the receiver's own deferred
+ * autowrap recreates the wrap. Reconstructing that in a grid held wider than the
+ * one it was authored at simply never wraps: rows run together and the flow's row
+ * count stops matching the cursor epilogue, which is what put blank bands and
+ * misplaced repaints in the desktop's scrollback after a few take-overs.
+ *
+ * Rendering the server grid 1:1 means a pane whose own fit is a different width is
+ * now showing someone else's grid; [applyMirrorPresentation] turns that into a
+ * deliberate, legible mirror rather than a mismatched viewport.
+ *
  * @param entry the [TerminalEntry] to resize
- * @param cols the server-mandated column count
+ * @param cols the server-mandated column count (the live PTY width)
  * @param rows the server-mandated row count
- * @see spikeOnServerSize
+ * @param maxReplayCols legacy field, now always 0 — the server no longer replays a
+ *   raw byte ring, so there is no historical width to hold the grid open for.
+ * @see applyMirrorPresentation @see spikeOnServerSize
  */
-fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
+@Suppress("UNUSED_PARAMETER")
+fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: Int = 0) {
     // While the world is open, every server-mandated size is logged: a grid key
     // sends ForceResize(new) and, if some other client (or this client's own 2D
     // machinery) counter-votes, the very next broadcast arrives with the old
@@ -416,6 +477,9 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
     }
     entry.ptyCols = cols
     entry.ptyRows = rows
+    // The server has spoken, so whatever we asked for has now been answered — this,
+    // not the elapsed-time backstop, is what normally ends the wait.
+    entry.awaitingVoteAnswer = false
     if (cols != entry.term.cols || rows != entry.term.rows) {
         entry.applyingServerSize = true
         try {
@@ -424,19 +488,119 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
             entry.applyingServerSize = false
         }
     }
+    applyMirrorPresentation(entry)
     updateOobOverlay(entry)
     runCatching { spikeOnServerSize(entry) }
 }
 
 /**
- * Forces the terminal to refit to its container and sends a [PtyControl.ForceResize]
- * command to the server to update the PTY size.
+ * Whether [entry] is still waiting for the PTY to reach the size it asked for.
  *
- * Called by the "Reformat" button in the pane header *and* automatically
- * from [se.soderbjorn.lunula.web.shell.AppShellSpec.onGeometryChanged]
- * after every committed geometry change (split-bar resize end,
- * maximize/restore, layout-preset apply) to reclaim unused terminal
- * space without requiring the user to click Reformat.
+ * True while a cold-restored pane is settling (during which it deliberately casts no
+ * vote) and for a grace period after each vote is scheduled. In that window the
+ * server still holds the session at its *previous* — typically persisted — grid, so
+ * the pane legitimately differs from it while the handshake completes.
+ *
+ * Both size-mismatch affordances key off this, because during startup neither is
+ * telling the user anything true: the take-over mirror would claim another device is
+ * driving when none is, and the out-of-bounds hatch would advertise space to reclaim
+ * that the in-flight vote is already reclaiming. Both resolve on their own a moment
+ * later, so showing them just makes initialisation look broken.
+ *
+ * @param entry the pane to test.
+ * @return true while the pane's own size request is outstanding.
+ * @see applyMirrorPresentation @see updateOobOverlay
+ */
+private fun isAwaitingOwnSize(entry: TerminalEntry): Boolean =
+    entry.restoreSettling ||
+        (entry.awaitingVoteAnswer && entry.votePendingUntil > kotlin.js.Date.now())
+
+/** Smallest / largest font (px) the passive mirror will scale the pane text to. */
+private const val MIRROR_FONT_MIN_PX = 4.0
+private const val MIRROR_FONT_MAX_PX = 40.0
+
+/**
+ * Reconcile this pane's presentation with the server grid it is rendering: decide
+ * whether it is driving or mirroring, and size the font accordingly.
+ *
+ * A pane is **mirroring** when the server's grid is a different width than the one
+ * this pane fits at the user's own font ([TerminalEntry.naturalCols]) — i.e. another
+ * client is driving the shared PTY. The grid itself is never bent to fit (that is
+ * what mangles a synthesized redraw, see [applyServerSize]); instead the *font* is
+ * scaled so the foreign grid fits the pane box, and the take-over pill is shown. On
+ * the way back to driving the user's own font is restored.
+ *
+ * Called from [applyServerSize] (the grid changed under us), [setPaneFontSize] (the
+ * user's font changed) and [reassertGrid] (the pane box changed).
+ *
+ * @param entry the pane to reconcile.
+ * @see PtyPresentation.isPassive @see forceReassert
+ */
+fun applyMirrorPresentation(entry: TerminalEntry) {
+    val serverCols = entry.ptyCols ?: 0
+    val serverRows = entry.ptyRows ?: 0
+    // A width mismatch means "somebody else's grid" only once our OWN vote has had a
+    // chance to land. On attach the server still holds the session at its persisted
+    // width, so every pane would briefly look passive and flash the mirror before the
+    // vote is answered. While the vote is outstanding, keep driving; if the deadline
+    // passes and the width still differs, another client really is governing.
+    val awaitingOurVote = isAwaitingOwnSize(entry)
+    val matchesOurVote = serverCols == entry.naturalCols
+    if (matchesOurVote) entry.votePendingUntil = 0.0
+    val passive = PtyPresentation.isPassive(entry.naturalCols, serverCols) && !awaitingOurVote
+    entry.passive = passive
+
+    val target: Double = if (passive && entry.naturalRows > 0 && serverRows > 0) {
+        // Fit BOTH axes: with the grid pinned to the server, a taller foreign grid
+        // would otherwise overflow the pane box and clip the newest rows off the
+        // bottom (the same trap the Android mirror hit).
+        val ratio = minOf(
+            entry.naturalCols.toDouble() / serverCols.toDouble(),
+            entry.naturalRows.toDouble() / serverRows.toDouble(),
+        )
+        (entry.baseFontSize.toDouble() * ratio).coerceIn(MIRROR_FONT_MIN_PX, MIRROR_FONT_MAX_PX)
+    } else {
+        entry.baseFontSize.toDouble()
+    }
+    // Guarded: assigning fontSize rebuilds xterm's renderer and remeasures every
+    // glyph, so it must fire only on a real change.
+    // NB: `Terminal.options` is declared `dynamic`, so calling `.asDynamic()` on it
+    // emits a REAL `.asDynamic()` call on the JS object and throws — see the same
+    // warning in [updateOobOverlay]. Address it directly.
+    val current = (entry.term.options.fontSize as? Number)?.toDouble()
+    if (current == null || kotlin.math.abs(current - target) > 0.01) {
+        runCatching { entry.term.options.fontSize = target }
+    }
+    entry.takeOverBadge?.let { badge ->
+        if (passive) badge.classList.add("visible") else badge.classList.remove("visible")
+    }
+}
+
+/**
+ * Apply the user's configured pane font size, honouring the mirror scale.
+ *
+ * The render path assigns the pane font on every config push; routing those
+ * assignments through here records the user's size as the *base* and lets
+ * [applyMirrorPresentation] derive what is actually shown, so a config push can no
+ * longer stomp the shrunken mirror font back to full size.
+ *
+ * @param entry the pane whose font to set.
+ * @param px the user's configured font size in px.
+ */
+fun setPaneFontSize(entry: TerminalEntry, px: Int) {
+    entry.baseFontSize = px
+    applyMirrorPresentation(entry)
+}
+
+/**
+ * Forces the terminal to refit to its container and sends a [PtyControl.ForceResize]
+ * command to the server to seize the PTY size.
+ *
+ * Reserved for **explicit** user reformats — the "Reformat" button in the pane
+ * header and the ⌃⌥R hotkey — because a force seizes governance and would
+ * overthrow a phone that has taken over the session. The *automatic* refits
+ * (webfont load, tab activation, `onGeometryChanged`) use [reassertSoft], which
+ * votes instead of seizing.
  *
  * Uses [fitPreservingScroll] (not [safeFit]) so the user's scroll
  * position survives the refit — specifically, "I was at the bottom"
@@ -450,15 +614,82 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int) {
  * body comment for why fitting there is circular.
  *
  * @param entry the [TerminalEntry] to refit and reassert
- * @see fitPreservingScroll
+ * @see reassertSoft @see fitPreservingScroll
  */
 fun forceReassert(entry: TerminalEntry) {
+    reassertGrid(entry, force = true)
+}
+
+/**
+ * The **soft** counterpart of [forceReassert]: refit to the container and send
+ * a plain [PtyControl.Resize] size **vote** (at [SizePriority.NORMAL]) instead
+ * of a [PtyControl.ForceResize].
+ *
+ * Used by the *automatic* reasserts — webfont load, hidden→visible tab
+ * activation, and the toolkit's `onGeometryChanged` — none of which is a
+ * deliberate "reformat to my size" gesture. Forcing from those paths would
+ * seize governance with no user intent and overthrow a phone that has taken
+ * over the session (see the sizing plan's viewer/driver model). A soft vote
+ * still refits this desktop's own grid and applies immediately when this client
+ * is the governor (the common single-desktop case), but leaves a phone driver's
+ * size alone; the desktop reclaims by *typing*, not by an ambient resize.
+ *
+ * The explicit Reformat button / ⌃⌥R hotkey keep calling [forceReassert].
+ *
+ * @param entry the [TerminalEntry] to refit and soft-vote.
+ * @see forceReassert @see sendResizeVote
+ */
+fun reassertSoft(entry: TerminalEntry) {
+    reassertGrid(entry, force = false)
+}
+
+/**
+ * Shared body of [forceReassert] / [reassertSoft]: apply the common guards, fit
+ * the terminal to its container, then push the grid to the server — as a
+ * [PtyControl.ForceResize] when [force], else as a soft [PtyControl.Resize]
+ * vote.
+ *
+ * @param entry the [TerminalEntry] to refit and reassert.
+ * @param force `true` to seize the PTY size (explicit Reformat), `false` to
+ *   only register a vote (automatic refit).
+ */
+private fun reassertGrid(entry: TerminalEntry, force: Boolean) {
     val socket = entry.socket ?: return
     if (socket.readyState.toInt() != WebSocket.OPEN.toInt()) return
+    if (entry.passive) {
+        // A mirror never votes: its grid is the *server's*, so fitting it to this
+        // container and voting the result would seize the PTY from whoever is
+        // driving simply because a pane got resized. An automatic reassert instead
+        // just rescales the mirror into the new box.
+        if (!force) {
+            // The fit proposal is measured at the shrunken mirror font; scale it
+            // back to what the user's own font would fit so the natural grid (and
+            // with it the mirror scale and the take-over target) tracks the box.
+            val proposed = runCatching { proposeSafeDimensions(entry.term, entry.fit) }.getOrNull()
+            val shown = (entry.term.options.fontSize as? Number)?.toDouble()
+            if (proposed != null && shown != null && shown > 0.0 && entry.baseFontSize > 0) {
+                val k = shown / entry.baseFontSize.toDouble()
+                entry.naturalCols = (proposed.first * k).toInt().coerceAtLeast(2)
+                entry.naturalRows = (proposed.second * k).toInt().coerceAtLeast(2)
+            }
+            applyMirrorPresentation(entry)
+            // Still cast the soft vote (of the natural grid — see [sendResize]).
+            // Returning without voting is what let a lone client latch to passive
+            // with nothing able to release it.
+            sendResize(entry)
+            return
+        }
+        // Forced = an explicit take-over. Drop out of mirror mode and restore the
+        // user's own font FIRST: the fit below measures the live glyph size, so
+        // fitting while still shrunken would propose (and force) a grid several
+        // times too large.
+        entry.passive = false
+        entry.takeOverBadge?.classList?.remove("visible")
+        runCatching { entry.term.options.fontSize = entry.baseFontSize.toDouble() }
+    }
     // Skip while a server-mandated resize is in flight so we don't echo
-    // the PTY's just-applied size back to it as a "forced" value — that
-    // would lock the PTY at the size it just told us it has, defeating
-    // the purpose of the reassert (forcing the PTY to match our grid).
+    // the PTY's just-applied size back to it — that would lock the PTY at the
+    // size it just told us it has, defeating the purpose of the reassert.
     if (entry.applyingServerSize) return
     // Hold off while a cold-restored pane is still settling: its grid is
     // pinned to the server-restored width and a reassert here would fit to a
@@ -470,14 +701,14 @@ fun forceReassert(entry: TerminalEntry) {
     // currently holds. While the world is up it is the sole size authority
     // (setPaneGrid sends its own ForceResize) and the 2D shell is hidden, so every
     // 2D-driven reassert here fits the grid to a hidden/transitional container and
-    // force-resizes the shared PTY, reverting the 3D grid.
+    // resizes the shared PTY, reverting the 3D grid.
     //
     // The old guard bailed only for panes *currently in the ring*
     // ([isRidingSpikePlane] = `spikeOpen && paneId in spikePanes`). But a **world
     // switch** (⌥⌘O, or the 2D world switcher) briefly drops the departing/arriving
     // world's panes out of the ring while the toolkit rebuilds the 2D shell and
-    // fires `maybeReapplyPreset` → this `forceReassert` on them (see the console
-    // stack). Those slipped past the ring check and force-resized the PTY out from
+    // fires `maybeReapplyPreset` → this reassert on them (see the console
+    // stack). Those slipped past the ring check and resized the PTY out from
     // under the still-mounted 3D term — leaving the pane blank on return, curable
     // only by a real 2D re-fit (a 2D world switch) after close. Guarding on
     // `spikeOpen` alone closes that window. The world-close 2D restore still runs:
@@ -485,7 +716,8 @@ fun forceReassert(entry: TerminalEntry) {
     // @see isRidingSpikePlane @see maybeReapplyPreset
     if (spikeOpen) return
     try { fitPreservingScroll(entry.term, entry.fit) } catch (_: Throwable) {}
-    sendForceResize(socket, entry.term)
+    if (force) sendForceResize(socket, entry.term)
+    else sendResizeVote(socket, entry.term.cols, entry.term.rows, SizePriority.NORMAL)
 }
 
 /**

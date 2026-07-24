@@ -74,6 +74,16 @@ public final class TerminalBuffer {
                 x2 = columns;
             }
             TerminalRow lineObject = mLines[externalToInternalRow(row)];
+            if (lineObject == null) {
+                // Rows are allocated lazily (see allocateFullLineIfNecessary) and are
+                // nulled out again by clearTranscript(), so a row inside the requested
+                // range can legitimately be absent — e.g. in the window between a
+                // resize that grew the screen and the repaint that fills it. Reading it
+                // must treat that as a blank line instead of dereferencing null, which
+                // crashed the Android view's onScreenUpdated() -> getText() path.
+                if (row < selY2 && row < mScreenRows - 1) builder.append('\n');
+                continue;
+            }
             int x1Index = lineObject.findStartOfColumn(x1);
             int x2Index = (x2 < mColumns) ? lineObject.findStartOfColumn(x2) : lineObject.getSpaceUsed();
             if (x2Index == x1Index) {
@@ -153,6 +163,84 @@ public final class TerminalBuffer {
     }
 
     /**
+     * LUNAMUX ADDITION. The number of logical lines that are *complete* inside the transcript —
+     * that is, transcript rows which do not wrap into the next row, each of which terminates one
+     * logical line.
+     * <p>
+     * This is a width-invariant measure of "how much history has been committed": rewrapping
+     * changes how many rows a logical line occupies but never how many logical lines there are.
+     * A run that starts in the transcript and continues onto the screen counts as zero, both
+     * before and after a resize, so it cannot skew the comparison either way.
+     *
+     * @return the count of non-wrapped rows in the transcript.
+     * @see #truncateTranscriptToCompletedLines(int)
+     */
+    public int getTranscriptCompletedLineCount() {
+        int count = 0;
+        for (int i = 0; i < mActiveTranscriptRows; i++) {
+            TerminalRow line = mLines[externalToInternalRow(-1 - i)];
+            if (line == null || !line.mLineWrap) count++;
+        }
+        return count;
+    }
+
+    /**
+     * LUNAMUX ADDITION. Drop the newest rows from the transcript until it again holds at most
+     * {@code target} complete logical lines, leaving the visible screen untouched.
+     * <p>
+     * Used to withdraw an archival that a resize performed but a program then made redundant:
+     * narrowing rewraps the old screen into more rows than the new screen holds and the overflow
+     * is archived, but a full-screen TUI answering the SIGWINCH redraws that same content from
+     * the top — so without this the frame's top is left in scrollback twice. The caller records
+     * {@link #getTranscriptCompletedLineCount()} before the resize and passes it here only once
+     * the program has explicitly declared a full-screen repaint.
+     * <p>
+     * Rows are dropped from the newest end (external row -1 backwards), which means shifting the
+     * screen window back over them; the screen's rows are moved with it so its contents and the
+     * cursor's external coordinates are unchanged. Dropping stops at a logical-line boundary, so
+     * a partially-rewrapped run is never left headless.
+     *
+     * @param target the completed-line count to restore the transcript to; negative is treated as 0.
+     * @return the number of rows actually dropped (0 when the transcript already holds no more
+     *         than {@code target} lines, e.g. after a widening resize).
+     */
+    public int truncateTranscriptToCompletedLines(int target) {
+        if (target < 0) target = 0;
+        int drop = 0;
+        int completed = getTranscriptCompletedLineCount();
+        // Walk back from the newest transcript row, counting how many rows must go for the
+        // completed-line count to fall to the target. Stop on the row that completes the last
+        // line we intend to keep, so the survivor set ends exactly on a line boundary.
+        while (completed > target && drop < mActiveTranscriptRows) {
+            int internal = externalToInternalRow(-1 - drop);
+            TerminalRow line = mLines[internal];
+            if (line == null || !line.mLineWrap) completed--;
+            drop++;
+        }
+        if (drop <= 0) return 0;
+
+        // Shift the screen window back over the dropped rows. Ascending order is required: the
+        // destination range starts below the source range, so copying forwards cannot clobber a
+        // slot that has yet to be read.
+        for (int i = 0; i < mScreenRows; i++) {
+            int from = (mScreenFirstRow + i) % mTotalRows;
+            int to = (mScreenFirstRow - drop + i + mTotalRows) % mTotalRows;
+            mLines[to] = mLines[from];
+        }
+        mScreenFirstRow = (mScreenFirstRow - drop + mTotalRows) % mTotalRows;
+        mActiveTranscriptRows -= drop;
+        // The slots just past the shifted screen still alias rows that are now live further back,
+        // and scrollDownOneLine() blanks the slot at mScreenFirstRow + mScreenRows *in place* when
+        // it is non-null — which would clear a visible row through the alias. Release them so the
+        // next scroll allocates a fresh row instead. They lie outside the addressable range
+        // (transcript + screen + drop ≤ mTotalRows), so nothing else can observe them.
+        for (int i = 0; i < drop; i++) {
+            mLines[(mScreenFirstRow + mScreenRows + i) % mTotalRows] = null;
+        }
+        return drop;
+    }
+
+    /**
      * Convert a row value from the public external coordinate system to our internal private coordinate system.
      *
      * <pre>
@@ -185,7 +273,10 @@ public final class TerminalBuffer {
     }
 
     public boolean getLineWrap(int row) {
-        return mLines[externalToInternalRow(row)].mLineWrap;
+        // Null-safe for the same reason as getSelectedText: rows are lazily
+        // allocated, and an unallocated row is by definition not wrapped.
+        TerminalRow line = mLines[externalToInternalRow(row)];
+        return line != null && line.mLineWrap;
     }
 
     public void clearLineWrap(int row) {
@@ -290,10 +381,23 @@ public final class TerminalBuffer {
                     lastNonSpaceIndex = oldLine.getSpaceUsed();
                     if (cursorAtThisRow) justToCursor = true;
                 } else {
-                    for (int i = 0; i < oldLine.getSpaceUsed(); i++)
-                        // NEWLY INTRODUCED BUG! Should not index oldLine.mStyle with char indices
-                        if (oldLine.mText[i] != ' '/* || oldLine.mStyle[i] != currentStyle */)
+                    // Find the last cell that carries content. A trailing space
+                    // is only truly blank when its cell also has the default
+                    // style; a differently-styled space (a coloured status bar
+                    // or box row that is all spaces) is real content and must
+                    // survive the rewrap. mStyle is indexed by *column*, not by
+                    // char index, so walk the column counter alongside i and
+                    // read the style via getStyle(col) — indexing mStyle[i] was
+                    // the earlier bug that dropped styled trailing spaces.
+                    int col = 0;
+                    for (int i = 0; i < oldLine.getSpaceUsed(); i++) {
+                        char c = oldLine.mText[i];
+                        int codePoint = (Character.isHighSurrogate(c)) ? Character.toCodePoint(c, oldLine.mText[++i]) : c;
+                        int displayWidth = WcWidth.width(codePoint);
+                        if (c != ' ' || (displayWidth > 0 && oldLine.getStyle(col) != currentStyle))
                             lastNonSpaceIndex = i + 1;
+                        if (displayWidth > 0) col += displayWidth;
+                    }
                 }
 
                 int currentOldCol = 0;
@@ -457,6 +561,21 @@ public final class TerminalBuffer {
 
     public long getStyleAt(int externalRow, int column) {
         return allocateFullLineIfNecessary(externalToInternalRow(externalRow)).getStyle(column);
+    }
+
+    /**
+     * The row at [externalRow], or null when that row has never been written (a
+     * blank, default-styled line). Non-allocating — unlike {@link #getStyleAt}
+     * it does not materialize the row, so it is safe to walk the whole buffer
+     * while serializing without mutating it. Added for the server-side
+     * GridSerializer, which reads cells (chars, styles, wrap flag) directly.
+     *
+     * @param externalRow a row in the external coordinate system
+     *   (-{@link #getActiveTranscriptRows()} .. {@link #mScreenRows}-1).
+     * @return the backing {@link TerminalRow}, or null if unallocated (blank).
+     */
+    public TerminalRow getLineOrNull(int externalRow) {
+        return mLines[externalToInternalRow(externalRow)];
     }
 
     /** Support for http://vt100.net/docs/vt510-rm/DECCARA and http://vt100.net/docs/vt510-rm/DECCARA */

@@ -77,6 +77,10 @@ tasks.named("processResources") {
 
 dependencies {
     implementation(projects.clientServer)
+    // Vendored Termux terminal core, extracted to a pure-JVM module so the server
+    // can run a canonical headless screen (SessionGrid) with the exact emulator the
+    // Android renderer uses. No Android dependency — safe on the bundled JRE.
+    implementation(projects.terminalCore)
     implementation(libs.lunula.core)
     implementation(libs.lunula.store)
     implementation(libs.logback)
@@ -131,4 +135,12 @@ tasks.named<JavaExec>("run") {
         "Library/Application Support/Termtastic/lunamux-dev.db",
     )
     systemProperty("lunamux.dbPath", devDb.absolutePath)
+    // TEMPORARY DIAGNOSTIC: `-PsizeChurnLog=<path>` makes the server append every
+    // effective PTY size change to that file, so take-over repaint churn can be
+    // counted rather than guessed at. A Gradle property rather than an environment
+    // variable because this task forks a JVM from the daemon, whose environment can
+    // be stale. Remove with SizeChurnLog in TerminalSessionManager.
+    (findProperty("sizeChurnLog") as? String)?.let {
+        systemProperty("lunamux.sizeChurnLog", it)
+    }
 }

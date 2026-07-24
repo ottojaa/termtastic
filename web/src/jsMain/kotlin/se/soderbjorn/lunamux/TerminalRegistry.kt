@@ -18,6 +18,20 @@ import org.w3c.dom.HTMLElement
 internal val terminals = HashMap<String, TerminalEntry>()
 
 /**
+ * Whether [term] currently renders another client's grid as a read-only mirror
+ * ([TerminalEntry.passive]).
+ *
+ * Exists because the ambient fit callers reach for a bare [Terminal] rather than the
+ * owning [TerminalEntry]; [safeFit] uses this to refuse to reflow a mirror.
+ *
+ * @param term the xterm instance to classify.
+ * @return true when some live entry owning [term] is mirroring.
+ * @see safeFit @see applyMirrorPresentation
+ */
+internal fun isMirroringTerm(term: Terminal): Boolean =
+    terminals.values.any { it.passive && it.term === term }
+
+/**
  * Pane id of the terminal the user most recently interacted with, or
  * `null` if the user has never focused a terminal in this session.
  *

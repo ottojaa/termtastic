@@ -1,49 +1,56 @@
 package com.termux.terminal;
 
-import android.util.Log;
-
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
 public class Logger {
 
-    public static void logError(TerminalSessionClient client, String logTag, String message) {
+    // Vendored-code shim: the upstream Termux build falls back to android.util.Log
+    // when no TerminalSessionClient is attached. This module is pure-JVM (shared by
+    // the Android app and the headless server-side emulator), so the fallback writes
+    // to System.err instead. On Android a real client is always attached, so this
+    // branch is only exercised by the client-less server grid.
+    private static void fallback(char level, String logTag, String message) {
+        System.err.println(level + "/" + logTag + ": " + message);
+    }
+
+    public static void logError(TerminalSessionClientBase client, String logTag, String message) {
         if (client != null)
             client.logError(logTag, message);
         else
-            Log.e(logTag, message);
+            fallback('E', logTag, message);
     }
 
-    public static void logWarn(TerminalSessionClient client, String logTag, String message) {
+    public static void logWarn(TerminalSessionClientBase client, String logTag, String message) {
         if (client != null)
             client.logWarn(logTag, message);
         else
-            Log.w(logTag, message);
+            fallback('W', logTag, message);
     }
 
-    public static void logInfo(TerminalSessionClient client, String logTag, String message) {
+    public static void logInfo(TerminalSessionClientBase client, String logTag, String message) {
         if (client != null)
             client.logInfo(logTag, message);
         else
-            Log.i(logTag, message);
+            fallback('I', logTag, message);
     }
 
-    public static void logDebug(TerminalSessionClient client, String logTag, String message) {
+    public static void logDebug(TerminalSessionClientBase client, String logTag, String message) {
         if (client != null)
             client.logDebug(logTag, message);
         else
-            Log.d(logTag, message);
+            fallback('D', logTag, message);
     }
 
-    public static void logVerbose(TerminalSessionClient client, String logTag, String message) {
+    public static void logVerbose(TerminalSessionClientBase client, String logTag, String message) {
         if (client != null)
             client.logVerbose(logTag, message);
         else
-            Log.v(logTag, message);
+            fallback('V', logTag, message);
     }
 
-    public static void logStackTraceWithMessage(TerminalSessionClient client, String tag, String message, Throwable throwable) {
+    public static void logStackTraceWithMessage(TerminalSessionClientBase client, String tag, String message, Throwable throwable) {
         logError(client, tag, getMessageAndStackTraceString(message, throwable));
     }
 

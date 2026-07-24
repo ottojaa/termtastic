@@ -76,9 +76,20 @@ STARTED_SERVER=0
 if port_is_free "$PORT"; then
     echo "==> Starting dev server on port $PORT (db: $DEV_DB)"
     echo "    Logs: $SERVER_LOG"
+    # TEMPORARY DIAGNOSTIC: with LUNAMUX_SIZE_CHURN_LOG set, forward it to the
+    # server as a Gradle property so it appends every effective PTY size change to
+    # that file. Converted here rather than exported, because `:server:run` forks
+    # its JVM from the Gradle daemon, whose environment can be stale from an
+    # earlier invocation — the command line is the dependable channel.
+    CHURN_ARGS=()
+    if [[ -n "${LUNAMUX_SIZE_CHURN_LOG:-}" ]]; then
+        echo "    Size-churn log: $LUNAMUX_SIZE_CHURN_LOG"
+        CHURN_ARGS+=("-PsizeChurnLog=$LUNAMUX_SIZE_CHURN_LOG")
+    fi
     ./gradlew :server:run \
         -Dlunamux.port="$PORT" \
         -Dlunamux.dbPath="$DEV_DB" \
+        "${CHURN_ARGS[@]+"${CHURN_ARGS[@]}"}" \
         >"$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
     STARTED_SERVER=1

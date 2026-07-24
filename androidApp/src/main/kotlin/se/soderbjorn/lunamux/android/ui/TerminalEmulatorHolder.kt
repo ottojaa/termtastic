@@ -24,7 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunamux.client.PtySocket
 import androidx.compose.runtime.MutableState
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Build a [TerminalSession] subclass whose I/O is wired to the supplied
@@ -32,17 +32,34 @@ import java.util.concurrent.atomic.AtomicBoolean
  * (set after construction via [setEmulator]).
  *
  * Resize calls coming from the view are routed through [emulatorDispatcher]
- * with a lock on the emulator instance to serialise with append + onDraw.
- * If [applyingServerSize] is set we skip echoing the new dims back to the
- * server — this is what stops Android from clobbering a web client's
- * Reformat.
+ * with a lock on the emulator instance to serialise with append + onDraw. The
+ * view's `updateSize` resizes the local emulator here but does **not** vote the
+ * new dims to the server: the single (deduped) size-vote chokepoint is the
+ * view's grid-size-changed listener in [TerminalScreen], so voting here too
+ * double-sent every natural resize.
+ *
+ * **Passive mirror pin.** In the server-authoritative model the phone renders
+ * the server's grid (a live mirror), not its own pixel-derived one. When
+ * [passiveGridPin] holds a `(cols, rows)`, `updateSize` resizes the emulator to
+ * *that* — the server grid — instead of the view's computed grid, so the
+ * synthesized redraw the server sends (authored at those dims) reconstructs
+ * cell-for-cell regardless of the phone's font/viewport. Null → drive the
+ * view's own grid (the phone is the governor).
+ *
+ * Input the view produces (keystrokes, mouse/focus reports) goes to
+ * [handleInput], which decides per burst: while passively mirroring, ambient
+ * reports are dropped and real input takes over (forces the PTY to the phone's
+ * grid) before the bytes are sent; while driving, it just sends. Keeping that
+ * policy in [TerminalScreen] (where the mode state lives) is why this indirects
+ * through a callback rather than sending directly.
  */
 internal fun createExternalTerminalSession(
     scope: CoroutineScope,
     emulatorDispatcher: CoroutineDispatcher,
     terminalViewRef: MutableState<TerminalView?>,
-    applyingServerSize: AtomicBoolean,
     ptySocket: PtySocket,
+    passiveGridPin: AtomicReference<Pair<Int, Int>?>,
+    handleInput: suspend (ByteArray) -> Unit,
 ): TerminalSession {
     return object : TerminalSession(
         "/system/bin/sh",
@@ -59,18 +76,30 @@ internal fun createExternalTerminalSession(
         override fun getEmulator(): TerminalEmulator? = externalEmulator
 
         override fun updateSize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
-            val e = externalEmulator
-            if (e != null) {
-                scope.launch(emulatorDispatcher) {
-                    synchronized(e) {
-                        runCatching { e.resize(columns, rows, cellWidthPixels, cellHeightPixels) }
-                    }
-                    terminalViewRef.value?.post { terminalViewRef.value?.invalidate() }
-                }
+            val e = externalEmulator ?: return
+            // While passively mirroring, pin only the COLUMNS to the server's grid:
+            // cols decide wrapping, so the synthesized redraw must be reconstructed at
+            // exactly that width. ROWS always follow the view's own capacity. Pinning
+            // rows too made a server screen taller than the phone can draw (the font is
+            // clamped at a legibility floor, so cells are bigger than a pure fit) clip
+            // at the bottom — losing the prompt and newest output. With rows free, a
+            // taller server screen simply scrolls its earlier rows into scrollback, so
+            // the mirror is bottom-anchored and the rest stays reachable by scrolling.
+            val cols = passiveGridPin.get()?.first ?: columns
+            // Resize on the CALLING (main) thread rather than hopping to the emulator
+            // dispatcher. TerminalView renders and reads the buffer (onScreenUpdated ->
+            // getText) on the main thread WITHOUT taking the emulator lock, so a resize
+            // running on a background thread can reallocate mLines / change mTotalRows
+            // underneath a live read — seen as ArrayIndexOutOfBoundsException and NPE
+            // crashes, most reliably while pinch-zooming (one resize per gesture step).
+            // Running it here makes resize and render mutually exclusive by being on one
+            // thread; the lock still excludes the background append path.
+            synchronized(e) {
+                runCatching { e.resize(cols, rows, cellWidthPixels, cellHeightPixels) }
             }
-            if (!applyingServerSize.get()) {
-                scope.launch { runCatching { ptySocket.resize(columns, rows) } }
-            }
+            terminalViewRef.value?.invalidate()
+            // Deliberately no ptySocket.resize() here — see the kdoc: the grid
+            // listener in TerminalScreen is the sole, deduped voting path.
         }
 
         override fun initializeEmulator(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
@@ -79,7 +108,7 @@ internal fun createExternalTerminalSession(
 
         override fun write(data: ByteArray, offset: Int, count: Int) {
             val copy = data.copyOfRange(offset, offset + count)
-            scope.launch { ptySocket.send(copy) }
+            scope.launch { handleInput(copy) }
         }
 
         // TerminalSession's default implementations of these forward to mClient,
@@ -113,7 +142,7 @@ internal fun createExternalTerminalSession(
                 }
             }
             val bytes = out.toByteArray()
-            scope.launch { ptySocket.send(bytes) }
+            scope.launch { handleInput(bytes) }
         }
     }
 }

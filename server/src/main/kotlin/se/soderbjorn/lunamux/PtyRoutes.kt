@@ -18,12 +18,13 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import se.soderbjorn.lunamux.auth.DeviceAuth
 import se.soderbjorn.lunamux.persistence.SettingsRepository
+import se.soderbjorn.lunamux.pty.ClientPosture
 
 /** Tolerant JSON used for parsing inbound /pty control messages. */
 private val controlJson = Json { ignoreUnknownKeys = true }
@@ -60,40 +61,28 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
         }
 
         val clientId = java.util.UUID.randomUUID().toString()
-        // A phone/tablet on this session must always win the PTY size so the
-        // terminal stays readable there (see [SizePriority.MOBILE]); we classify
-        // it once here from the reported client type and elevate all of its size
-        // votes accordingly in [handleControl]. Desktop/web clients keep the
-        // per-vote priority they send (NORMAL, or THREE_D from the 3D world).
-        val mobile = isMobileClientType(info.type)
+        // How this client participates in size governance (see [ClientPosture]).
+        // A driver may seize the grid by typing/forcing; a viewer mirrors the
+        // desktop until it explicitly takes over. The client declares it with a
+        // `posture=viewer|driver` query param; absent that we sniff the reported
+        // client type (a phone/tablet defaults to viewer, everything else to a
+        // driver) so older clients still behave sensibly.
+        val posture = call.readClientPosture(info.type)
+        session.setClientPosture(clientId, posture)
 
-        val (initialCols, initialRows) = session.sizeEvents.value
-        send(
-            Frame.Text(
-                windowJson.encodeToString<PtyServerMessage>(
-                    PtyServerMessage.Size(initialCols, initialRows)
-                )
-            )
-        )
+        // The client declares the grid its own emulator currently renders via
+        // ?cols=&rows= so the server can synthesize the attach redraw at that
+        // width. A governing driver's vote resizes+reflows the grid before
+        // synthesis; a viewer's is stored (it mirrors the desktop's width). Absent
+        // params (an older client) → synthesize at the current PTY dims.
+        val qCols = call.request.queryParameters["cols"]?.toIntOrNull()
+        val qRows = call.request.queryParameters["rows"]?.toIntOrNull()
 
-        val snapshot = session.snapshot()
-        if (snapshot.isNotEmpty()) {
-            send(Frame.Binary(true, snapshot))
-        }
-
-        val outJob = launch {
-            session.output.collect { chunk ->
-                send(Frame.Binary(true, chunk))
-            }
-        }
-
-        val sizeJob = launch {
-            session.sizeEvents.drop(1).collect { (cols, rows) ->
-                val payload = windowJson.encodeToString<PtyServerMessage>(
-                    PtyServerMessage.Size(cols, rows)
-                )
-                send(Frame.Text(payload))
-            }
+        // One writer coroutine over the single ordered event stream. It sends the
+        // attach Size + synthesized redraw first, then streams live events gated by
+        // seq — exact ordering by construction, replacing the old wall-clock merge{}.
+        val writerJob = launch {
+            session.streamAttach(clientId, qCols, qRows) { frame -> send(frame) }
         }
 
         try {
@@ -104,20 +93,87 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
                         // one for size arbitration (latest-active wins) —
                         // recorded here, not inside write(), because write()
                         // is also used by MCP tools with no client identity.
-                        session.noteClientInput(clientId)
-                        session.write(frame.readBytes())
+                        //
+                        // Device replies are excluded: an emulator answers the
+                        // running program's queries (cursor position, device
+                        // attributes, colour/mode reports) by itself, over this
+                        // same channel. Counting those as activity let a client
+                        // that was merely mirroring seize the grid whenever the
+                        // program happened to probe the terminal — so a phone
+                        // left attached silently owned every session. They must
+                        // still be written (the program is blocked on the
+                        // answer), just not treated as the user acting here.
+                        val bytes = frame.readBytes()
+                        if (!TerminalInputClassifier.isDeviceReply(bytes)) {
+                            session.noteClientInput(clientId)
+                        }
+                        session.write(bytes)
                     }
-                    is Frame.Text -> handleControl(session, clientId, mobile, frame.readText())
+                    is Frame.Text -> handleControl(session, clientId, frame.readText())
                     else -> Unit
                 }
             }
         } finally {
-            outJob.cancel()
-            sizeJob.cancel()
+            writerJob.cancel()
             session.removeClient(clientId)
         }
     }
 }
+
+/**
+ * Stream a `/pty` attach to [send]: adopt the client's declared grid (if any),
+ * then send the attach `Size` + synthesized redraw, followed by the live
+ * [TermSession.events] — each gated so events already folded into the attach
+ * payload are not re-sent. Suspends until the collecting coroutine is cancelled.
+ *
+ * The Size + redraw are sent inside [onSubscription], which runs after the
+ * subscription is registered but before any event is delivered to this collector.
+ * That closes the gap the old snapshot-then-subscribe flow had: an event emitted
+ * between capturing the redraw and starting to collect can't be lost, because the
+ * subscription already exists when [attachPayload] samples the seq, and any event
+ * with a greater seq is delivered by the collector.
+ *
+ * Factored out of the socket handler so the ordering (Size-before-redraw, seq
+ * gating) is unit-testable without a real WebSocket.
+ *
+ * @param clientId this connection's size-arbitration id.
+ * @param qCols the client's declared grid width from the connect URL, or null.
+ * @param qRows the client's declared grid height, or null.
+ * @param send sink for outbound frames (the WebSocket's `send`, or a test double).
+ * @see TermSession.attachPayload
+ */
+internal suspend fun TermSession.streamAttach(
+    clientId: String,
+    qCols: Int?,
+    qRows: Int?,
+    send: suspend (Frame) -> Unit,
+) {
+    if (qCols != null && qRows != null && qCols > 0 && qRows > 0) {
+        setClientSize(clientId, qCols, qRows)
+    }
+    var attachSeq = Long.MIN_VALUE
+    events
+        .onSubscription {
+            val attach = attachPayload()
+            attachSeq = attach.seq
+            send(Frame.Text(sizeFrame(attach.cols, attach.rows)))
+            if (attach.bytes.isNotEmpty()) send(Frame.Binary(true, attach.bytes))
+        }
+        .collect { ev ->
+            when (ev) {
+                is SessionEvent.Output -> if (ev.seq > attachSeq) send(Frame.Binary(true, ev.bytes))
+                is SessionEvent.Size -> if (ev.seq > attachSeq) send(Frame.Text(sizeFrame(ev.cols, ev.rows)))
+            }
+        }
+}
+
+/**
+ * Encode a `Size` control frame. `maxReplayCols` is always 0 now — the redraw is
+ * synthesized at the client's own width, so the width-ratchet hint it fed is
+ * retired (the field stays in the wire schema for old clients).
+ */
+private fun sizeFrame(cols: Int, rows: Int): String =
+    windowJson.encodeToString<PtyServerMessage>(PtyServerMessage.Size(cols, rows, 0))
 
 /**
  * Handle a JSON control message received on a `/pty/{id}` WebSocket.
@@ -126,33 +182,53 @@ internal fun Route.ptyRoutes(settingsRepo: SettingsRepository) {
  * to the [TerminalSession]. Unknown or malformed messages are silently
  * dropped.
  */
-internal fun handleControl(session: TermSession, clientId: String, mobile: Boolean, text: String) {
+internal fun handleControl(session: TermSession, clientId: String, text: String) {
     val control = runCatching {
         controlJson.decodeFromString<PtyControl>(text)
     }.getOrNull() ?: return
     when (control) {
-        // A mobile client's votes are elevated to the MOBILE tier so they win
-        // over any 2D/3D size; a desktop/web client keeps the tier it sent
-        // (NORMAL, or THREE_D when the 3D world asserts a Pane.grid3d override).
-        is PtyControl.Resize -> {
-            val priority = if (mobile) SizePriority.MOBILE else control.priority
-            session.setClientSize(clientId, control.cols, control.rows, priority)
-        }
-        is PtyControl.ForceResize -> {
-            val priority = if (mobile) SizePriority.MOBILE else SizePriority.NORMAL
-            session.forceClientSize(clientId, control.cols, control.rows, priority)
-        }
+        // Every client keeps the tier it sent (NORMAL, or THREE_D when the 3D
+        // world asserts a Pane.grid3d override). A phone no longer gets a
+        // special tier — it governs by posture/take-over, not by winning min().
+        is PtyControl.Resize ->
+            session.setClientSize(clientId, control.cols, control.rows, control.priority)
+        is PtyControl.ForceResize ->
+            session.forceClientSize(clientId, control.cols, control.rows, control.priority)
         is PtyControl.ResetModes -> session.resetTerminalModes()
     }
 }
 
 /**
+ * Decide the connecting client's [ClientPosture] for size governance.
+ *
+ * Prefers the client's own declaration — a `posture=viewer|driver` query param
+ * on the `/pty` URL (the web has no request-header channel, so a query param is
+ * the portable way for it to declare intent). When absent or unrecognised it
+ * falls back to sniffing the reported client [type] via [isMobileClientType]:
+ * a phone/tablet defaults to [ClientPosture.VIEWER] (it mirrors the desktop
+ * until the user takes over), everything else to [ClientPosture.DRIVER]. This
+ * keeps older clients that send no `posture` behaving sensibly.
+ *
+ * @param type the self-reported client type (from [readClientInfo]).
+ * @return the posture to register with the session for this connection.
+ * @see ClientSizeArbiter.setPosture
+ */
+internal fun io.ktor.server.application.ApplicationCall.readClientPosture(
+    type: String,
+): ClientPosture = when (request.queryParameters["posture"]?.lowercase()) {
+    "viewer" -> ClientPosture.VIEWER
+    "driver" -> ClientPosture.DRIVER
+    else -> if (isMobileClientType(type)) ClientPosture.VIEWER else ClientPosture.DRIVER
+}
+
+/**
  * Classify a reported client [type] (the `X-Termtastic-Client-Type` /
  * `clientType` value — e.g. `"Web"`, `"Computer"`, `"Android"`, `"iOS"`) as a
- * phone/tablet. Mobile clients have their PTY-size votes elevated to
- * [SizePriority.MOBILE] so their smaller viewport always drives the shared
- * grid. Matched leniently (substring, case-insensitive) so future mobile type
- * strings (`"iPhone"`, `"iPad"`, …) are covered without another code change.
+ * phone/tablet. Used by [readClientPosture] as the *fallback* posture signal
+ * when a client sends no explicit `posture=` declaration: a mobile client
+ * defaults to a viewer that mirrors the desktop. Matched leniently (substring,
+ * case-insensitive) so future mobile type strings (`"iPhone"`, `"iPad"`, …) are
+ * covered without another code change.
  *
  * @param type the self-reported client type, possibly `"Unknown"`.
  * @return `true` if [type] denotes a mobile client.

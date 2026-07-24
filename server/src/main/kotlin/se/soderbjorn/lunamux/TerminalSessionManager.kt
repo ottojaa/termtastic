@@ -6,9 +6,9 @@
  * `s<n>` ids, and torn down when the last referencing pane closes.
  *
  * [TerminalSession] is a single PTY-backed session: it owns the
- * `PtyProcess`, replays recent output to reconnecting clients from a pair of
- * ring buffers split by screen buffer (see [AltScreenTracker]), runs
- * a headless [ScreenEmulator] in parallel for AI-state detection, and
+ * `PtyProcess`, maintains the canonical server-side screen ([SessionGrid]) that
+ * clients attach to via a synthesized width-correct redraw, runs a headless
+ * [ScreenEmulator] in parallel for AI-state detection, and
  * negotiates a per-PTY winsize via latest-active-client arbitration
  * (tmux `window-size latest` semantics — see
  * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]), falling back to the
@@ -31,8 +31,10 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -45,11 +47,12 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import se.soderbjorn.lunamux.pty.AltScreenTracker
+import se.soderbjorn.lunamux.pty.ClientPosture
 import se.soderbjorn.lunamux.pty.ClientSizeArbiter
+import se.soderbjorn.lunamux.pty.GridSerializer
 import se.soderbjorn.lunamux.pty.OscScanner
 import se.soderbjorn.lunamux.pty.ProcessCwdReader
-import se.soderbjorn.lunamux.pty.ReplaySanitizer
+import se.soderbjorn.lunamux.pty.SessionGrid
 import se.soderbjorn.lunamux.pty.ShellInitFiles
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -62,13 +65,13 @@ import kotlin.time.Duration.Companion.milliseconds
  * agent-console sessions (`AgentSession` in `mcp/AgentSession.kt`). It is
  * exactly the contract the rest of the server programs against:
  *
- *  - `/pty/{id}` bridges [output] / [snapshot] / [write] /
+ *  - `/pty/{id}` bridges [events] / [attachPayload] / [write] /
  *    [setClientSize] / [forceClientSize] / [removeClient] /
  *    [resetTerminalModes] / [sizeEvents],
- *  - the scrollback saver uses [bytesWritten] + [snapshot],
+ *  - the scrollback saver uses [bytesWritten] + [persistSnapshot],
  *  - the state poller uses [detectState],
- *  - the MCP read tools use [screenText] / [isProcessAlive] / [cwd] /
- *    [programTitle],
+ *  - the MCP read tools use [transcriptText] / [screenText] /
+ *    [isProcessAlive] / [cwd] / [programTitle],
  *  - [TerminalSessions.destroy] uses [shutdown].
  *
  * For an agent session, [write] carries the *user's* keystrokes from
@@ -116,6 +119,27 @@ interface TermSession {
     /** Effective (cols, rows) grid, updated as clients (dis)connect/resize. */
     val sizeEvents: StateFlow<Pair<Int, Int>>
 
+    /**
+     * The single ordered outbound stream — output chunks and size changes
+     * interleaved with monotonic [SessionEvent.seq]. `/pty` clients collect this
+     * (seq-gated against their [attachPayload]) instead of merging [output] and
+     * [sizeEvents], which makes delivery order exact rather than wall-clock
+     * dependent. [output] and [sizeEvents] remain for MCP tools and internal use.
+     */
+    val events: kotlinx.coroutines.flow.SharedFlow<SessionEvent>
+
+    /**
+     * Snapshot the session for a newly-attaching client: the grid dimensions to
+     * adopt and a self-contained redraw reconstructing the current screen at
+     * those dims, tagged with the last [SessionEvent.seq] it reflects. The client
+     * adopts the size, applies the redraw, then processes [events] with a greater
+     * seq. Captured atomically with seq assignment, so it is exact against the
+     * live stream.
+     *
+     * @return the attach seed.
+     */
+    fun attachPayload(): AttachPayload
+
     /** Total output bytes produced (drives incremental scrollback saves). */
     fun bytesWritten(): Long
 
@@ -136,6 +160,20 @@ interface TermSession {
      */
     fun noteClientInput(clientId: String) {}
 
+    /**
+     * Declare [clientId]'s size-governance [posture] when it attaches. A
+     * [ClientPosture.DRIVER] may seize the grid by typing or forcing; a
+     * [ClientPosture.VIEWER] (a phone mirroring the desktop) governs only after
+     * it explicitly takes over. Called once per connection by the `/pty` route,
+     * before any votes. Default no-op so PTY-less sessions (`AgentSession`)
+     * ignore it — every client is treated as a driver there.
+     *
+     * @param clientId the attaching client.
+     * @param posture how that client participates in size arbitration.
+     * @see se.soderbjorn.lunamux.pty.ClientSizeArbiter.setPosture
+     */
+    fun setClientPosture(clientId: String, posture: ClientPosture) {}
+
     /** Broadcast mode-reset sequences to attached clients (see issue #91). */
     fun resetTerminalModes()
 
@@ -146,11 +184,11 @@ interface TermSession {
      * Register [clientId]'s viewport size vote at the given [priority] tier.
      * The vote feeds the latest-active-client arbitration (see
      * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]): it applies immediately
-     * when [clientId] is the governing client (or when it is a
-     * [SizePriority.MOBILE] vote, which claims governance — a phone must be
-     * readable the moment it attaches); otherwise it is stored and takes
-     * effect if the client later becomes the governor. With no recorded
-     * activity the classic tiered min() aggregation decides.
+     * when [clientId] is the governing client; otherwise it is stored and takes
+     * effect if the client later becomes the governor. A plain vote is ambient
+     * — it never seizes governance, so a phone/viewer attaching cannot shrink
+     * the grid the desktop owns. With no recorded activity the classic tiered
+     * min() over the drivers' votes decides.
      */
     fun setClientSize(
         clientId: String,
@@ -160,11 +198,12 @@ interface TermSession {
     )
 
     /**
-     * Force the grid to [clientId]'s size, evicting other clients' votes and
-     * making it the governing client — an explicit user action (Reformat)
-     * always wins. Other clients re-vote on their next automatic refit, but
-     * ambient re-votes no longer steal the size back (see
-     * [se.soderbjorn.lunamux.pty.ClientSizeArbiter]).
+     * Force the grid to [clientId]'s size and make it the governing client —
+     * an explicit user action (Reformat / phone take-over) always wins, even
+     * over a 3D override. Other clients' votes are **kept**, not evicted:
+     * governance is decided by which client the user most recently acted on, so
+     * a laptop reclaims the grid by simply typing. A viewer that forces is
+     * promoted to a driver (see [se.soderbjorn.lunamux.pty.ClientSizeArbiter]).
      */
     fun forceClientSize(
         clientId: String,
@@ -179,20 +218,22 @@ interface TermSession {
     /** Detect an AI-assistant state from the rendered screen, if any. */
     fun detectState(): SessionState?
 
-    /** Recent output for reconnect replay. */
-    fun snapshot(): ByteArray
+    /**
+     * The session's scrollback as text for the MCP `read_scrollback` tool. May
+     * carry control sequences (callers strip): a PTY session returns its
+     * canonical grid transcript (already plain), an agent session its raw output.
+     *
+     * @return the scrollback text.
+     */
+    fun transcriptText(): String
 
     /**
-     * Recent output to persist for a restore after the server exits.
-     *
-     * Split from [snapshot] because a restore replays into a fresh shell with
-     * the recorded program gone, while a reconnect attaches to one that is
-     * still running and still painting. Defaults to [snapshot] for sessions
-     * with no such distinction to draw.
+     * Recent output to persist for a restore after the server exits: a
+     * self-contained blob replayed into a fresh session's screen on restart.
      *
      * @see ScrollbackSaver.saveAll
      */
-    fun persistSnapshot(): ByteArray = snapshot()
+    fun persistSnapshot(): ByteArray
 
     /** The currently rendered viewport as plain text. */
     fun screenText(): String
@@ -416,6 +457,7 @@ object TerminalSessions {
  *  - A headless [ScreenEmulator] mirrors what xterm.js renders so
  *    [detectState] runs against the actual on-screen text.
  */
+@OptIn(FlowPreview::class)
 class TerminalSession private constructor(
     private val pty: PtyProcess,
     initialScrollback: ByteArray? = null,
@@ -457,53 +499,30 @@ class TerminalSession private constructor(
 
     private val screen = ScreenEmulator(initialCols = initialCols, initialRows = initialRows)
 
-    // Recent output for replay, split by which screen buffer produced it.
-    // Interleaving the two in one ring is what made restored scrollback show a
-    // dead TUI's frame where the shell history belonged: a full-screen program
-    // out-writes the ring many times over, so the `?1049h` that entered the
-    // alternate buffer slides off the head and the surviving redraw bytes
-    // replay into the *normal* buffer of a fresh terminal.
-    //
-    // [mainRing] therefore only ever holds normal-buffer traffic. It is the
-    // ceiling on how much scrollback survives a reconnect or a restart (both
-    // reset the client grid and reseed it from here), and it is what gets
-    // persisted — so its size is a memory *and* SQLite write-volume cost per
-    // active pane. Excluding redraw traffic is what lets it stay small: a TUI
-    // can no longer evict real history.
-    private val mainRing = ByteRing(MAIN_RING_CAPACITY)
-
-    // Traffic from the full-screen program currently holding the alternate
-    // buffer, replayed to clients reconnecting mid-session so a running vim or
-    // Claude Code still appears. Discarded the moment the program returns to
-    // the normal buffer: at that point the frame is gone from a real terminal
-    // too, and keeping it would resurrect it as phantom scrollback.
-    private val altRing = ByteRing(ALT_RING_CAPACITY)
-
-    private val altTracker = AltScreenTracker()
-    private val ringLock = Any()
-
     /**
-     * Routes tracked output into [mainRing] / [altRing]. Guarded by
-     * [ringLock] via its callers; never invoked concurrently.
+     * The canonical server-side screen: the same vendored Termux emulator the
+     * Android client renders with, fed the same raw PTY stream as the rings and
+     * [screen]. Declared before the `init` block so restored scrollback is
+     * ingested into it in the same order it reaches the rings. Observer-only for
+     * now — maintained but not yet consumed (a later phase reads it back to
+     * synthesize width-correct attach/resync redraws).
      */
-    private val ringSink = object : AltScreenTracker.Sink {
-        override fun onSegment(chunk: ByteArray, from: Int, until: Int, alt: Boolean) {
-            (if (alt) altRing else mainRing).append(chunk, from, until)
-        }
+    private val grid = SessionGrid(initialCols, initialRows)
 
-        override fun onSpanClosed() {
-            altRing.clear()
-        }
+    // ── Ordered outbound stream (see SessionEvent) ──────────────────────────
+    // seq assignment and the grid feed/resize/synthesize the seq refers to happen
+    // together under [outboundLock], so [attachPayload] captures a grid state and a
+    // seq that are mutually consistent — making the client's seq gate exact rather
+    // than a wall-clock race (strictly stronger than the old merge{} in PtyRoutes).
+    private val outboundLock = Any()
+    private var eventSeq = 0L
+    private val eventChannel = Channel<SessionEvent>(Channel.UNLIMITED)
+    private val _events = MutableSharedFlow<SessionEvent>(replay = 0, extraBufferCapacity = 1024)
+    override val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
 
-        override fun onOrphanExit() {
-            // Only meaningful while ingesting a blob persisted by a server
-            // that predates span tracking (see [ingestRestoredBlob]).
-            if (ingestingRestoredBlob) mainRing.clear()
-        }
-    }
-
-    /** True only for the duration of the restored-blob ingest in `init`. */
-    private var ingestingRestoredBlob = false
+    // Fired on every cols change; the heavyweight synthesized resync redraw is
+    // coalesced to fire once, RESYNC_DEBOUNCE_MS after the last change in a storm.
+    private val resyncTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
 
     @Volatile
     private var bytesWritten: Long = 0
@@ -512,67 +531,29 @@ class TerminalSession private constructor(
 
     init {
         if (initialScrollback != null && initialScrollback.isNotEmpty()) {
-            ingestRestoredBlob(initialScrollback)
-            // The restored scrollback may contain DECSET sequences from a
-            // full-screen app (vim, htop, …) that died with the old server:
-            // mouse tracking, focus reporting, bracketed paste, application
-            // cursor keys, alternate screen. Replaying them verbatim leaves
-            // the client terminal generating mouse/focus escape reports that
-            // the fresh shell receives as garbage input — and nothing ever
-            // sends the matching DECRST (issue #91). Neutralize those modes
-            // right here in the ring, before the new shell's output, so every
-            // future replay of this scrollback ends in a sane state. The new
-            // shell's own output follows later in the ring and re-enables
-            // anything it actually wants (e.g. readline's bracketed paste).
+            // Reconstruct the persisted scrollback into the canonical grid. The
+            // blob is normally the server's own serializeForPersist() output
+            // (self-contained styled rows); a legacy raw-byte blob works too —
+            // its device queries are answered harmlessly into the grid's discard
+            // sink, and the mode-reset epilogue below cancels any sticky modes
+            // (mouse/paste/focus/alt) a dead full-screen app may have left set,
+            // so a restore never leaves the fresh shell wedged (issue #91).
+            grid.feed(initialScrollback, initialScrollback.size)
+            grid.feed(RESTORE_MODE_RESET, RESTORE_MODE_RESET.size)
+            // Break the line so the new shell's prompt starts below the restored
+            // content rather than continuing it — but only when something was
+            // actually restored, and only by a single line.
             //
-            // Appended straight to [mainRing] rather than through the tracker:
-            // it carries an alternate-buffer *exit*, which the tracker would
-            // (correctly, for real PTY output) read as evidence that
-            // everything before it was orphaned TUI paint.
-            synchronized(ringLock) {
-                mainRing.append(RESTORE_MODE_RESET, 0, RESTORE_MODE_RESET.size)
-                // Blank line so the restored scrollback doesn't run straight
-                // into the new shell's first prompt.
-                val gap = "\r\n\r\n".toByteArray(Charsets.UTF_8)
-                mainRing.append(gap, 0, gap.size)
+            // This used to be an unconditional "\r\n\r\n". Two breaks made sense when
+            // the persist form could end mid-line (it kept the live prompt row), but
+            // it now ends at a committed line boundary, so the second break is a blank
+            // line the user never asked for — and after a `clear` the blob restores
+            // nothing at all, so BOTH breaks landed above the first prompt as two
+            // stray empty lines at the top of a brand-new session.
+            if (grid.transcriptText().isNotBlank()) {
+                val gap = "\r\n".toByteArray(Charsets.UTF_8)
+                grid.feed(gap, gap.size)
             }
-        }
-    }
-
-    /**
-     * Load a persisted scrollback blob into [mainRing], dropping any
-     * alternate-buffer content it carries.
-     *
-     * Blobs written by the current server hold normal-buffer bytes only, plus
-     * (when a program was mid-flight) an inert rendered frame — nothing here
-     * has to fire. The work is for blobs persisted *before* spans were
-     * tracked, which are raw interleaved rings:
-     *  - A complete alternate span is recognized and discarded like any other.
-     *  - A span whose enter sequence was already evicted looks like an exit
-     *    with nothing open. Everything before it is then orphaned TUI paint,
-     *    not scrollback, so the ring is dropped up to that point — this is the
-     *    one-time cleanup that stops a dead program's frame from reappearing
-     *    after upgrading. It can in principle discard real history if a
-     *    program emitted a defensive `?1049l` it never matched with an enter;
-     *    a lost blob tail beats a permanently corrupted restore.
-     *
-     * The tracker is reset afterwards so a blob that ends mid-span cannot
-     * misroute the *live* shell's first bytes into [altRing].
-     */
-    private fun ingestRestoredBlob(blob: ByteArray) = synchronized(ringLock) {
-        ingestingRestoredBlob = true
-        try {
-            // Older blobs still contain terminal query sequences (DSR, DA, OSC
-            // color reads, …); strip them once at ingestion so every future
-            // replay of this ring is clean. Newly persisted blobs are already
-            // sanitized (the saver persists [persistSnapshot], which strips on
-            // the way out).
-            val clean = ReplaySanitizer.stripQueries(blob)
-            altTracker.feed(clean, clean.size, ringSink)
-        } finally {
-            ingestingRestoredBlob = false
-            altRing.clear()
-            altTracker.reset()
         }
     }
 
@@ -586,11 +567,42 @@ class TerminalSession private constructor(
                 break
             }
             if (n <= 0) break
+            // TEMPORARY DIAGNOSTIC: capture what the program emits immediately after a
+            // SIGWINCH. Whether its repaint tries to ERASE first (cursor-up + ED, i.e.
+            // "redraw this region in place") or simply prints again decides how the
+            // duplicate can be suppressed, so read it rather than guess.
+            SizeChurnLog.recordPostResizeOutput(buf, n)
             osc.feed(buf, n)
             screen.feed(buf, n)
             val chunk = buf.copyOf(n)
-            appendToRing(chunk)
+            // Feed the canonical grid and assign this chunk's seq atomically, so a
+            // concurrent attach/resize can't observe the grid updated but the seq
+            // not yet advanced (which would re-deliver the chunk) or vice versa.
+            synchronized(outboundLock) {
+                grid.feed(buf, n)
+                eventChannel.trySend(SessionEvent.Output(++eventSeq, chunk))
+            }
+            bytesWritten += n
             _output.emit(chunk)
+        }
+    }
+
+    // Drains the ordered event channel into the broadcast flow. A single forwarder
+    // preserves channel (== seq) order; the producers can't emit to the SharedFlow
+    // directly because that suspends, which is illegal under [outboundLock].
+    private val forwarderJob: Job = scope.launch {
+        for (ev in eventChannel) _events.emit(ev)
+    }
+
+    // Emits one synthesized resync redraw after a cols-change storm settles. The
+    // redraw is RIS-prefixed and self-contained, so only the last one matters; the
+    // per-change Size events still go out immediately from applySize.
+    private val resyncJob: Job = scope.launch {
+        resyncTrigger.debounce(RESYNC_DEBOUNCE_MS).collect {
+            synchronized(outboundLock) {
+                val bytes = grid.synthesizeRedraw()
+                eventChannel.trySend(SessionEvent.Output(++eventSeq, bytes))
+            }
         }
     }
 
@@ -619,8 +631,8 @@ class TerminalSession private constructor(
      * Cancel sticky client-side terminal modes on every attached client.
      *
      * Broadcasts [RESTORE_MODE_RESET] (plus a cursor show) as ordinary
-     * session output and stamps it into the ring buffer so future replays
-     * inherit the sane state. Called by [handleControl] when a client
+     * session output and feeds it into the canonical grid so future attach
+     * redraws inherit the sane state. Called by [handleControl] when a client
      * sends [PtyControl.ResetModes] — the pane menu's "Reset terminal"
      * escape hatch for a terminal wedged in mouse-reporting mode
      * (issue #91). Touches only the client-side emulator state; the PTY
@@ -628,7 +640,11 @@ class TerminalSession private constructor(
      */
     override fun resetTerminalModes() {
         val bytes = RESTORE_MODE_RESET + SHOW_CURSOR_SUFFIX
-        appendToRing(bytes)
+        synchronized(outboundLock) {
+            grid.feed(bytes, bytes.size)
+            eventChannel.trySend(SessionEvent.Output(++eventSeq, bytes))
+        }
+        bytesWritten += bytes.size
         scope.launch { _output.emit(bytes) }
     }
 
@@ -648,23 +664,28 @@ class TerminalSession private constructor(
 
     /** Register the declared terminal size for [clientId] at [priority]. */
     override fun setClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {
-        applySize(sizeArbiter.setSize(clientId, SizeVote(max(1, cols), max(1, rows), priority)))
+        val vote = SizeVote(max(MIN_GRID_COLS, cols), max(MIN_GRID_ROWS, rows), priority)
+        applySize(sizeArbiter.setSize(clientId, vote))
+    }
+
+    /** Register [clientId]'s declared governance [posture] for this connection. */
+    override fun setClientPosture(clientId: String, posture: ClientPosture) {
+        sizeArbiter.setPosture(clientId, posture)
     }
 
     /**
-     * "Reformat" handler: evict every other client's entry, pin this
-     * client's cols/rows (at [priority]), make it the governing client, and
-     * apply immediately.
+     * "Reformat" / take-over handler: pin this client's cols/rows (at
+     * [priority]), make it the governing client, and apply immediately. Other
+     * clients' votes are kept — the arbiter decides governance by recency of
+     * activity, not by which votes survive (see [ClientSizeArbiter.forceSize]).
      *
-     * The dims are clamped to a usable floor ([MIN_FORCE_COLS]×[MIN_FORCE_ROWS]),
-     * not just ≥1: a forced size is broadcast to and obeyed by **every** attached
-     * client, so a degenerate value from an unmeasured/hidden view (e.g. a 3D
-     * preview mid-layout proposing ~1×1) would collapse all of them at once.
-     * Regular [setClientSize] votes keep the ≥1 clamp — arbitration across
-     * clients already bounds their effect.
+     * The dims share the same [MIN_GRID_COLS]×[MIN_GRID_ROWS] floor as a plain
+     * vote: a forced size is broadcast to and obeyed by **every** attached
+     * client, so a degenerate value from an unmeasured/hidden view must not be
+     * able to collapse all of them at once.
      */
     override fun forceClientSize(clientId: String, cols: Int, rows: Int, priority: SizePriority) {
-        val only = SizeVote(max(MIN_FORCE_COLS, cols), max(MIN_FORCE_ROWS, rows), priority)
+        val only = SizeVote(max(MIN_GRID_COLS, cols), max(MIN_GRID_ROWS, rows), priority)
         applySize(sizeArbiter.forceSize(clientId, only))
     }
 
@@ -692,13 +713,96 @@ class TerminalSession private constructor(
      */
     private fun applySize(next: Pair<Int, Int>?) {
         val (c, r) = next ?: return
+        val colsChanged = c != _sizeEvents.value.first
+        // TEMPORARY DIAGNOSTIC (remove once the take-over repaint churn is understood).
+        // Every effective size change is a SIGWINCH, and a live TUI answers a SIGWINCH
+        // by repainting — which, in the normal buffer, appends another copy of its
+        // output. Duplicated blocks are therefore a count of size changes, so record
+        // them with their cause to compare against the pre-refactor build.
+        SizeChurnLog.record(_sizeEvents.value, Pair(c, r), colsChanged)
         try {
             pty.winSize = WinSize(c, r)
         } catch (_: Throwable) {
             // Ignore; resize races are benign.
         }
         screen.resize(c, r)
+        // Resize the grid and emit the Size event atomically with seq assignment,
+        // ordered ahead of any output authored at the new width.
+        synchronized(outboundLock) {
+            grid.resize(c, r)
+            eventChannel.trySend(SessionEvent.Size(++eventSeq, c, r))
+        }
         _sizeEvents.value = Pair(c, r)
+        // Only a cols change rewraps the grid, so only then does the client need a
+        // resync redraw; a rows-only change is carried by the Size event alone.
+        if (colsChanged) resyncTrigger.tryEmit(Unit)
+    }
+
+    /**
+     * TEMPORARY DIAGNOSTIC. Appends every effective PTY size change to a file so the
+     * take-over repaint churn can be counted instead of guessed at.
+     *
+     * Enabled by pointing either the `lunamux.sizeChurnLog` system property (set from
+     * Gradle with `-PsizeChurnLog=<path>`) or the `LUNAMUX_SIZE_CHURN_LOG` environment
+     * variable at a path; a no-op otherwise, so it costs nothing when unset. The
+     * system property is the dependable one — `:server:run` forks a JVM from the
+     * Gradle daemon, whose environment can be stale from an earlier invocation.
+     * Remove together with its call site once the cause is found.
+     */
+    private object SizeChurnLog {
+        private val path: String? =
+            System.getProperty("lunamux.sizeChurnLog") ?: System.getenv("LUNAMUX_SIZE_CHURN_LOG")
+
+        fun record(from: Pair<Int, Int>, to: Pair<Int, Int>, colsChanged: Boolean) {
+            val target = path ?: return
+            runCatching {
+                val kind = if (colsChanged) "COLS+RESYNC" else "rows-only"
+                java.io.File(target).appendText(
+                    "${System.currentTimeMillis()} ${from.first}x${from.second} -> " +
+                        "${to.first}x${to.second}  [$kind]\n"
+                )
+            }
+            postResizeBudget.set(POST_RESIZE_CAPTURE_BYTES)
+        }
+
+        /** Bytes of program output still to capture after the most recent resize. */
+        private val postResizeBudget = java.util.concurrent.atomic.AtomicInteger(0)
+        private const val POST_RESIZE_CAPTURE_BYTES = 3_000
+
+        /**
+         * Record the start of the program's response to a SIGWINCH, escaped so control
+         * sequences are legible. The question it answers: does the repaint begin by
+         * ERASING the region it is about to redraw (cursor-up + ED — meaning it intends
+         * to overwrite in place, and only duplicates because that region has scrolled
+         * out of the screen's reach), or does it simply print its output again?
+         */
+        fun recordPostResizeOutput(buf: ByteArray, n: Int) {
+            val target = path ?: return
+            val budget = postResizeBudget.get()
+            if (budget <= 0) return
+            val take = minOf(budget, n)
+            postResizeBudget.addAndGet(-take)
+            runCatching {
+                val sb = StringBuilder(take * 2)
+                for (i in 0 until take) {
+                    when (val b = buf[i].toInt() and 0xff) {
+                        0x1b -> sb.append("<ESC>")
+                        0x07 -> sb.append("<BEL>")
+                        0x0d -> sb.append("<CR>")
+                        0x0a -> sb.append("<LF>\n")
+                        in 0x20..0x7e -> sb.append(b.toChar())
+                        else -> sb.append('.')
+                    }
+                }
+                java.io.File(target).appendText("---- post-resize output ----\n$sb\n---- end ----\n")
+            }
+        }
+    }
+
+    override fun attachPayload(): AttachPayload = synchronized(outboundLock) {
+        // Capture the synthesized redraw and the seq it reflects together, so the
+        // client's "process events with seq > attach.seq" gate is exact.
+        grid.read { e -> AttachPayload(eventSeq, e.mColumns, e.mRows, GridSerializer.serialize(e)) }
     }
 
     /** Check the currently-rendered screen for AI assistant state markers. */
@@ -733,73 +837,27 @@ class TerminalSession private constructor(
     }
 
     /**
-     * Return a copy of the ring buffer contents for reconnect replay, with
-     * terminal *query* sequences stripped ([ReplaySanitizer.stripQueries]):
-     * replaying a recorded query would make the client terminal answer it
-     * again, injecting the answer into the shell as phantom input. The live
-     * output stream is never filtered — only this replay copy.
+     * The canonical grid's normal-buffer transcript (scrollback + screen) as
+     * plain text — backed by the server-side grid, so it stays correct across
+     * width changes. Consumed by the MCP `read_scrollback` tool.
+     *
+     * @return the transcript text.
      */
-    override fun snapshot(): ByteArray {
-        val ringBytes = synchronized(ringLock) {
-            if (!altTracker.inAltScreen) {
-                mainRing.copy()
-            } else {
-                // A program owns the alternate buffer right now and is still
-                // running, so replay its traffic verbatim and let it keep
-                // painting. When its own `?1049h` has already been evicted
-                // from [altRing], synthesize one: without it the client would
-                // render the redraws into the normal buffer, over the
-                // scrollback [mainRing] just replayed.
-                val enter = if (altRing.overflowed) ENTER_ALT_SCREEN else ByteArray(0)
-                mainRing.copy() + enter + altRing.copy()
-            }
-        }
-        // Ring-buffer replay can end mid-render with a trailing DECTCEM hide
-        // (ESC[?25l) and no matching show. Append a show to the replay tail;
-        // a TUI that genuinely wants the cursor hidden will re-hide it on its
-        // next frame.
-        return ReplaySanitizer.stripQueries(ringBytes) + SHOW_CURSOR_SUFFIX
-    }
+    override fun transcriptText(): String = grid.transcriptText()
 
     /**
-     * Build the blob to persist for a restore after the server exits.
+     * Build the blob to persist for a restore after the server exits: the
+     * canonical grid serialized to a self-contained, replayable redraw — styled
+     * scrollback, and (for a live TUI) an inert frozen frame. It carries no
+     * cursor/mode epilogue, so a restored dead session cannot resurrect
+     * mouse/paste/focus modes (issue #91). Fed into a fresh grid on restart
+     * (see `init`).
      *
-     * Differs from [snapshot] in what it does about a program holding the
-     * alternate buffer, because the two callers face opposite situations. A
-     * reconnecting client attaches to a *live* program that will carry on
-     * painting, so [snapshot] hands it the raw traffic. A restore has no such
-     * program — it died with the server — and the pane comes back as a fresh
-     * shell, so raw traffic would be unrepaintable, always truncated part-way
-     * through a frame, and would replay into the normal buffer as phantom
-     * scrollback. Instead the live frame is frozen into inert styled text
-     * ([ScreenEmulator.renderAlternateScreenFrame]) and appended below the
-     * scrollback, which is as close to the screen at the moment of death as
-     * anything reconstructible — the new shell's prompt then continues under
-     * it.
-     *
-     * When no program holds the alternate buffer this is just the
-     * normal-buffer history: the same thing a real terminal shows once a TUI
-     * exits.
-     *
-     * @return sanitized bytes for `pane_scrollback`.
+     * @return bytes for `pane_scrollback`.
      * @see ScrollbackSaver.saveAll
+     * @see GridSerializer.serializeForPersist
      */
-    override fun persistSnapshot(): ByteArray {
-        val history = synchronized(ringLock) { mainRing.copy() }
-        val clean = ReplaySanitizer.stripQueries(history)
-        val frame = screen.renderAlternateScreenFrame() ?: return clean
-        return clean + FRAME_SEPARATOR + frame
-    }
-
-    /**
-     * Record [chunk] into the replay rings, splitting it by screen buffer.
-     *
-     * Called from the PTY read loop for every byte the session emits.
-     */
-    private fun appendToRing(chunk: ByteArray) = synchronized(ringLock) {
-        altTracker.feed(chunk, chunk.size, ringSink)
-        bytesWritten += chunk.size
-    }
+    override fun persistSnapshot(): ByteArray = grid.synthesizeForPersist()
 
     companion object {
         /**
@@ -835,45 +893,18 @@ class TerminalSession private constructor(
         private val SHOW_CURSOR_SUFFIX = "[?25h".toByteArray(Charsets.US_ASCII)
 
         /**
-         * DECSET 1049 — enter the alternate buffer. Synthesized ahead of
-         * [altRing] on reconnect when that ring has overflowed and lost the
-         * real one, so a running TUI's redraws land in the alternate buffer
-         * where they belong instead of painting over replayed scrollback.
-         */
-        private val ENTER_ALT_SCREEN = "[?1049h".toByteArray(Charsets.US_ASCII)
-
-        /** Blank line between replayed scrollback and a frozen TUI frame. */
-        private val FRAME_SEPARATOR = "\r\n".toByteArray(Charsets.US_ASCII)
-
-        /**
-         * Normal-buffer replay capacity — the ceiling on scrollback surviving
-         * a reconnect or restart. Holds roughly 3000 rows of shell output.
-         * Modest by design and affordable *because* it is modest: it is copied
-         * per reconnect and written to SQLite per pane every 10 s. Alternate-
-         * buffer redraws are excluded ([altRing]), so a single `vim` or
-         * `claude` run can no longer evict real history from it.
-         */
-        private const val MAIN_RING_CAPACITY = 256 * 1024
-
-        /**
-         * Alternate-buffer replay capacity — enough for a full repaint of a
-         * large grid, which is all a reconnecting client needs. Never
-         * persisted and dropped when the program exits, so overshooting only
-         * costs resident memory while a TUI is actually running; undershooting
-         * is handled by [ENTER_ALT_SCREEN].
-         */
-        private const val ALT_RING_CAPACITY = 256 * 1024
-
-        /**
-         * Floor for a **forced** resize ([forceClientSize]) — the smallest grid a
-         * single client may pin the shared PTY (and thereby every other attached
+         * Floor for any client-supplied grid — the smallest size a single
+         * client may drive the shared PTY (and thereby every other attached
          * client) to. Generous enough for any real view, small enough to never
-         * fight a legitimately tiny pane. Regular per-client votes
-         * ([setClientSize]) are not floored beyond ≥1: they only ever *lower*
-         * the effective size via min() and never evict anyone.
+         * fight a legitimately tiny pane. Applied to both a forced resize
+         * ([forceClientSize]) and a plain vote ([setClientSize]): under the
+         * latest-active arbiter a plain vote can also become the governing size
+         * and be broadcast to everyone, so a degenerate value from an
+         * unmeasured/hidden view (e.g. a 3D preview mid-layout proposing ~1×1)
+         * must not be able to collapse every client through either path.
          */
-        private const val MIN_FORCE_COLS = 20
-        private const val MIN_FORCE_ROWS = 5
+        private const val MIN_GRID_COLS = 20
+        private const val MIN_GRID_ROWS = 5
 
         /**
          * Default grid until a client registers a real size — also the
@@ -883,6 +914,14 @@ class TerminalSession private constructor(
          */
         private const val DEFAULT_COLS = 120
         private const val DEFAULT_ROWS = 32
+
+        /**
+         * How long a cols-change storm must settle before the (heavyweight)
+         * synthesized resync redraw is emitted. Every Size event still goes out
+         * immediately; only the redraw is coalesced, and since each redraw is
+         * RIS-prefixed and self-contained, emitting just the last one is correct.
+         */
+        private const val RESYNC_DEBOUNCE_MS = 100L
 
         /**
          * Spawn the user's shell on a fresh PTY and wrap it in a session.
@@ -928,68 +967,5 @@ class TerminalSession private constructor(
                 .start()
             return TerminalSession(pty, initialScrollback, cols, rows)
         }
-    }
-}
-
-/**
- * Fixed-capacity byte ring for replay history: appends never block or grow,
- * and once full each new byte evicts the oldest.
- *
- * [TerminalSession] keeps one per screen buffer. Reads copy the whole ring, so
- * capacity is a direct cost per reconnect and per persistence pass.
- *
- * Not thread-safe; callers serialize on the session's ring lock.
- *
- * @property capacity maximum bytes retained.
- * @see TerminalSession
- */
-private class ByteRing(private val capacity: Int) {
-    private val buf = ByteArray(capacity)
-    private var size = 0
-    private var start = 0
-
-    /**
-     * Whether the ring has ever evicted a byte — i.e. its contents no longer
-     * begin at the start of the recorded stream.
-     *
-     * [TerminalSession.snapshot] reads this to tell a truncated alternate-span
-     * replay (whose enter sequence is gone and must be synthesized) from a
-     * complete one.
-     */
-    var overflowed = false
-        private set
-
-    /** Append `chunk[from, until)`, evicting oldest bytes when full. */
-    fun append(chunk: ByteArray, from: Int, until: Int) {
-        for (i in from until until) {
-            buf[(start + size) % capacity] = chunk[i]
-            if (size < capacity) {
-                size++
-            } else {
-                start = (start + 1) % capacity
-                overflowed = true
-            }
-        }
-    }
-
-    /** @return the contents, oldest byte first. */
-    fun copy(): ByteArray {
-        if (size == 0) return ByteArray(0)
-        val out = ByteArray(size)
-        if (start + size <= capacity) {
-            System.arraycopy(buf, start, out, 0, size)
-        } else {
-            val tail = capacity - start
-            System.arraycopy(buf, start, out, 0, tail)
-            System.arraycopy(buf, 0, out, tail, size - tail)
-        }
-        return out
-    }
-
-    /** Drop everything, including the [overflowed] mark. */
-    fun clear() {
-        size = 0
-        start = 0
-        overflowed = false
     }
 }

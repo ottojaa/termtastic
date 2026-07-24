@@ -84,6 +84,20 @@ public final class TerminalView extends View {
 
     /** The top row of text to display. Ranges from -activeTranscriptRows to 0. */
     int mTopRow;
+
+    /**
+     * When true, a scroll gesture always scrolls this view's own transcript and is
+     * never translated into something the remote program sees (wheel mouse reports
+     * while mouse tracking is on, arrow keys while the alternate buffer is active).
+     *
+     * Set while the view is a read-only mirror of another client's grid: the
+     * synthesized redraw replays the driving program's DEC modes, so mouse tracking
+     * is typically active on the mirror too — and the wheel reports it produced were
+     * dropped (a mirror must not inject input), which left the mirror unscrollable.
+     *
+     * @see #setLocalScrollOnly(boolean)
+     */
+    private boolean mLocalScrollOnly;
     int[] mDefaultSelectors = new int[]{-1,-1,-1,-1};
 
     float mScaleFactor = 1.f;
@@ -579,14 +593,25 @@ public final class TerminalView extends View {
         mEmulator.sendMouseEvent(button, x, y, pressed);
     }
 
+    /**
+     * Whether scroll gestures scroll this view's own transcript instead of being
+     * forwarded to the remote program. Enabled while the view mirrors another
+     * client's grid read-only.
+     *
+     * @param localScrollOnly true to keep scrolling local.
+     */
+    public void setLocalScrollOnly(boolean localScrollOnly) {
+        mLocalScrollOnly = localScrollOnly;
+    }
+
     /** Perform a scroll, either from dragging the screen or by scrolling a mouse wheel. */
     void doScroll(MotionEvent event, int rowsDown) {
         boolean up = rowsDown < 0;
         int amount = Math.abs(rowsDown);
         for (int i = 0; i < amount; i++) {
-            if (mEmulator.isMouseTrackingActive()) {
+            if (!mLocalScrollOnly && mEmulator.isMouseTrackingActive()) {
                 sendMouseEventCode(event, up ? TerminalEmulator.MOUSE_WHEELUP_BUTTON : TerminalEmulator.MOUSE_WHEELDOWN_BUTTON, true);
-            } else if (mEmulator.isAlternateBufferActive()) {
+            } else if (!mLocalScrollOnly && mEmulator.isAlternateBufferActive()) {
                 // Send up and down key events for scrolling, which is what some terminals do to make scroll work in
                 // e.g. less, which shifts to the alt screen without mouse handling.
                 handleKeyCode(up ? KeyEvent.KEYCODE_DPAD_UP : KeyEvent.KEYCODE_DPAD_DOWN, 0);
@@ -1034,6 +1059,7 @@ public final class TerminalView extends View {
             // capacity mid-setChar. Callers that mutate the emulator off
             // the UI thread must acquire the same monitor on mEmulator.
             synchronized (mEmulator) {
+                clampTopRow();
                 mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3]);
             }
 
@@ -1046,7 +1072,27 @@ public final class TerminalView extends View {
         return mTermSession;
     }
 
+    /**
+     * Clamp {@link #mTopRow} to the transcript that exists right now.
+     *
+     * The scroll offset is set against the transcript length at the moment of the
+     * gesture, but the transcript can shrink underneath it afterwards: a synthesized
+     * redraw begins with RIS + ED3 (clear scrollback), so a resync arriving while the
+     * user sits scrolled up leaves mTopRow pointing at rows that are gone. Reading or
+     * rendering those throws — {@code IllegalArgumentException: extRow=-3 ...
+     * mActiveTranscriptRows=0} from the renderer, {@code ArrayIndexOutOfBoundsException}
+     * from {@link #getText()}. Callers must hold the emulator monitor.
+     */
+    private void clampTopRow() {
+        int transcriptRows = mEmulator.getScreen().getActiveTranscriptRows();
+        if (mTopRow < -transcriptRows) mTopRow = -transcriptRows;
+        if (mTopRow > 0) mTopRow = 0;
+    }
+
     private CharSequence getText() {
+        synchronized (mEmulator) {
+            clampTopRow();
+        }
         return mEmulator.getScreen().getSelectedText(0, mTopRow, mEmulator.mColumns, mTopRow + mEmulator.mRows);
     }
 

@@ -26,6 +26,7 @@ import org.w3c.dom.Node
 import org.w3c.dom.events.FocusEvent
 import org.w3c.dom.events.MouseEvent
 import kotlin.js.json
+import se.soderbjorn.lunamux.client.PtyPresentation
 import se.soderbjorn.lunula.web.themeeditor.resolveFontFamilyCss
 
 /**
@@ -82,6 +83,17 @@ fun attachDragDrop(container: HTMLElement, term: Terminal) {
  * @see ensureTerminal
  * @see forceReassert
  */
+/**
+ * Upper bound (ms) on waiting for the server to answer a size vote.
+ *
+ * This is a backstop, not the mechanism: the wait normally ends when the server's
+ * next `Size` broadcast arrives (see [TerminalEntry.awaitingVoteAnswer]). It exists
+ * only because a vote that changes nothing — the arbiter reports null when the
+ * effective size is unchanged — produces no broadcast at all, so a losing vote would
+ * otherwise suppress the take-over mirror forever.
+ */
+private const val VOTE_PENDING_GRACE_MS = 2_000.0
+
 fun sendResize(entry: TerminalEntry) {
     if (entry.applyingServerSize) return
     // Cold-restore settling window: swallow the vote. The stale fit sampled at
@@ -111,7 +123,23 @@ fun sendResize(entry: TerminalEntry) {
     // forceReassert, which bypasses this gate). See [resizeGestureActive].
     if (resizeGestureActive) return
     if (!entryOpen(entry)) return
-    val cols = entry.term.cols; val rows = entry.term.rows
+    // Vote this pane's NATURAL grid — the one it renders at with the user's own
+    // font. While mirroring, `term.cols/rows` is the *server's* grid rendered at a
+    // shrunken font, so voting it would either echo the driver's size back or, once
+    // this pane's box changed, vote a number derived from the mirror scale rather
+    // than from anything the user chose.
+    //
+    // A mirror does still vote. It is a soft vote, and the arbiter only hands
+    // governance over on an explicit force or on real input, so this loses to a
+    // client that is actually driving and wins by `driverFallback` when nobody is —
+    // which is the whole point: the earlier "a mirror never votes" guard deadlocked
+    // a lone client. On restore the server holds the session at its *persisted*
+    // width, so the only client attached could differ from it, latch to passive, and
+    // then never be able to say so: no vote, no refit, no take-over. It sat
+    // "Mirroring another device" with no other device in existence.
+    val passiveNow = entry.passive && entry.naturalCols > 0 && entry.naturalRows > 0
+    val cols = if (passiveNow) entry.naturalCols else entry.term.cols
+    val rows = if (passiveNow) entry.naturalRows else entry.term.rows
     // While the pane rides a 3D-world plane, this automatic vote lands on the
     // *same* socket/clientId as the 3D world's explicit vote — fired by
     // `term.onResize` the instant `setPaneGrid` resizes the grid, and again on
@@ -135,6 +163,12 @@ fun sendResize(entry: TerminalEntry) {
     // drags, sidebar toggles): long enough to coalesce a continuous drag's
     // intermediate widths into (mostly) the final one, short enough that a
     // settled size still feels immediate.
+    // Mark our vote in flight from the moment it is scheduled: until the server
+    // answers (or this deadline lapses) a differing server width is just us waiting,
+    // not another client driving, so the mirror is not flashed up. See
+    // [TerminalEntry.votePendingUntil].
+    entry.awaitingVoteAnswer = true
+    entry.votePendingUntil = kotlin.js.Date.now() + VOTE_PENDING_GRACE_MS
     entry.pendingResizeTimer = window.setTimeout({
         entry.pendingResizeTimer = null
         val socket = entry.socket
@@ -274,7 +308,12 @@ fun connectPane(entry: TerminalEntry) {
         connectDemoPane(entry)
         return
     }
-    val url = "$proto://$backendHost/pty/${entry.sessionId}?$authQueryParam"
+    // Declare the grid this pane currently renders so the server synthesizes the
+    // attach redraw at our width (the server-authoritative-screen model). A driver
+    // desktop's dims govern the PTY; the onopen fit vote + the server's resync
+    // correct any staleness from a not-yet-fitted first connect.
+    val url = "$proto://$backendHost/pty/${entry.sessionId}?$authQueryParam" +
+        "&cols=${entry.term.cols}&rows=${entry.term.rows}"
     connectionState[entry.sessionId] = "connecting"
     updateAggregateStatus()
 
@@ -372,24 +411,25 @@ fun connectPane(entry: TerminalEntry) {
         if (data is String) {
             runCatching {
                 val msg = windowJson.decodeFromString<PtyServerMessage>(data)
-                when (msg) { is PtyServerMessage.Size -> applyServerSize(entry, msg.cols, msg.rows) }
+                when (msg) {
+                    is PtyServerMessage.Size ->
+                        applyServerSize(entry, msg.cols, msg.rows, msg.maxReplayCols)
+                }
             }
         } else {
             val buf = data as org.khronos.webgl.ArrayBuffer
             val bytes = org.khronos.webgl.Uint8Array(buf)
             if (entry.awaitingSnapshot) {
                 // First binary frame of this connection = the server's
-                // scrollback replay (the /pty protocol sends Size → snapshot
-                // → live output, and WebSocket frames are ordered). On a
-                // reconnect the grid still holds the previous connection's
-                // transcript and the replay would append a second full copy,
-                // so reset the terminal first (RIS) — parity with the native
-                // client, which prepends ESC c on reconnect. A first attach
-                // writes into an empty grid and needs no reset. Scroll
-                // holding is irrelevant on both paths (empty or just-reset
-                // grid), hence the direct write.
+                // synthesized attach redraw (the /pty protocol sends Size then the
+                // redraw, and WebSocket frames are ordered). It is self-clearing —
+                // a RIS (ESC c) + ED3 (CSI 3 J) prefix resets the emulator and
+                // clears scrollback before repainting — so, unlike the old ring
+                // replay, no explicit pre-reset is needed even on a reconnect: the
+                // old grid's transcript is wiped by the redraw's own RIS+ED3.
+                // Scroll holding is irrelevant against a just-reset grid, hence the
+                // direct write.
                 entry.awaitingSnapshot = false
-                if (entry.everConnected) entry.term.write("\u001bc")
                 entry.everConnected = true
                 // Gate keystrokes while xterm parses the replay: a query
                 // sequence in replayed bytes would be answered via onData
@@ -478,6 +518,22 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
         "<span class=\"stb-arrow\">↓</span>"
     container.appendChild(scrollBtn)
 
+    // Take-over pill: shown while this pane renders another client's grid (see
+    // [applyMirrorPresentation]). Clicking it is an input-free take-over — fit the
+    // shared PTY to this window. Neutral copy: the size broadcast doesn't say which
+    // device is driving.
+    val takeOverBadge = document.createElement("button") as HTMLElement
+    takeOverBadge.className = "take-over-badge"
+    takeOverBadge.setAttribute("type", "button")
+    takeOverBadge.setAttribute(
+        "title",
+        "Another device is driving this session at a different size — " +
+            "click to fit it to this window"
+    )
+    takeOverBadge.innerHTML = "<span class=\"tob-label\">Mirroring another device</span>" +
+        "<span class=\"tob-action\">Take over</span>"
+    container.appendChild(takeOverBadge)
+
     val term = Terminal(kotlin.js.json(
         "cursorBlink" to true,
         "fontFamily" to resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily),
@@ -544,8 +600,10 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
                     // be gone.
                     // Skipped for panes with automatic reflow off — the
                     // local refit above keeps metrics correct, but the
-                    // frozen PTY is left untouched.
-                    terminals[paneId]?.let { if (it.autoReflow) forceReassert(it) }
+                    // frozen PTY is left untouched. A *soft* reassert: a
+                    // webfont load is not a user "reformat" gesture, so it
+                    // votes rather than seizes the grid from a phone driver.
+                    terminals[paneId]?.let { if (it.autoReflow) reassertSoft(it) }
                 } else {
                     safeFit(term, fit)
                 }
@@ -604,6 +662,20 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     })
 
     val entry = TerminalEntry(paneId, sessionId, term, fit, container)
+    // Seed the natural grid from the creation-time fit above. `term.onResize` (which
+    // records it thereafter) is registered further down, so that first fit would
+    // otherwise leave it at 0 — and a 0 natural width makes `isPassive` undecidable,
+    // so the pane can neither judge whether it is mirroring nor vote a sane grid
+    // until some later ambient refit happens to fire.
+    entry.naturalCols = term.cols
+    entry.naturalRows = term.rows
+    entry.baseFontSize = appVm.stateFlow.value.paneFontSize ?: 14
+    // Arm the vote-pending grace from creation. Setting it inside [sendResize] alone
+    // was not enough: that arms it *after* the early-return guards, and the cold
+    // restore path (`restoreSettling`) returns before reaching it — which is exactly
+    // the path taken on startup, so the mirror still flashed there.
+    entry.awaitingVoteAnswer = true
+    entry.votePendingUntil = kotlin.js.Date.now() + VOTE_PENDING_GRACE_MS
     // Freeze the effective automatic-reflow flag at creation time: the
     // per-pane override if the pane carries one, otherwise a *snapshot* of
     // the current global default. Snapshotting here (rather than evaluating
@@ -612,6 +684,12 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     // (future windows)" — only panes created afterwards pick up the change.
     entry.autoReflow = perPaneAutoReflowOverride(paneId) ?: globalAutoReformatDefault()
     entry.scrollButton = scrollBtn
+    entry.takeOverBadge = takeOverBadge
+    takeOverBadge.addEventListener("click", { ev ->
+        ev.stopPropagation()
+        forceReassert(entry)
+        try { term.focus() } catch (_: Throwable) {}
+    })
     terminals[paneId] = entry
     connectionState[sessionId] = "connecting"
     updateAggregateStatus()
@@ -630,8 +708,40 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     // [TerminalEntry.replaying]). The resize handler also forwards demo-mode
     // grid changes ([pushDemoSessionResize], a no-op outside demo mode —
     // this is the single registration demo panes rely on too).
-    term.onData { data -> if (!entry.replaying) entry.sendInput?.invoke(data) }
+    // Outbound bytes are classified three ways, exactly as the Android client does
+    // (shared rules in [PtyPresentation]) — the difference only matters while this
+    // pane is a passive mirror:
+    //  - device replies (cursor position, device attributes, colour/mode reports)
+    //    are xterm answering a query the *remote program* sent. They must be
+    //    delivered — the program is blocked on them — but they are not user intent,
+    //    and treating them as such made a mirroring client seize the PTY whenever
+    //    the running program happened to probe the terminal.
+    //  - ambient mouse/focus reports the mirror's own view generates are dropped:
+    //    neither input nor a take-over, or scrolling a mirror would steal the grid.
+    //  - anything else is real input, so take over first (fit the shared PTY to this
+    //    window) and then send, so the keystroke lands at this pane's width.
+    term.onData { data ->
+        if (!entry.replaying) {
+            val bytes = data.encodeToByteArray()
+            when {
+                PtyPresentation.isDeviceReply(bytes) -> entry.sendInput?.invoke(data)
+                entry.passive && PtyPresentation.isAmbientReport(bytes) -> Unit
+                else -> {
+                    if (entry.passive) forceReassert(entry)
+                    entry.sendInput?.invoke(data)
+                }
+            }
+        }
+    }
     term.onResize { _ ->
+        // A fit we chose ourselves defines this pane's NATURAL grid — the width it
+        // renders at with the user's own font, which is both the baseline the mirror
+        // scale is measured against and the grid take-over forces the PTY to. A
+        // server-mandated resize is somebody else's grid, so it must not overwrite it.
+        if (!entry.applyingServerSize && term.cols > 0 && term.rows > 0) {
+            entry.naturalCols = term.cols
+            entry.naturalRows = term.rows
+        }
         sendResize(entry)
         pushDemoSessionResize(entry)
         updateOobOverlay(entry)
@@ -716,9 +826,12 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
                         // — same fix as the startup-active-tab case in
                         // `connectPane.onopen`, just deferred to first
                         // activation. Tracking visibility across fires means
-                        // a quick hide/show cycle re-fires correctly.
+                        // a quick hide/show cycle re-fires correctly. A *soft*
+                        // reassert: first tab activation is not a user
+                        // "reformat" gesture, so it votes rather than seizes the
+                        // grid from a phone driver.
                         if (!entry.wasContainerVisible) {
-                            forceReassert(entry)
+                            reassertSoft(entry)
                         }
                     }
                 }
@@ -849,7 +962,7 @@ fun mountPaneContent(paneId: String): HTMLElement {
                 // /pty/{sessionId} socket a shell pane uses, and keystrokes
                 // typed here flow back into the agent's input channel.
                 val entry = ensureTerminal(paneId, sessionId)
-                entry.term.options.fontSize = (appVm.stateFlow.value.paneFontSize ?: 14)
+                try { setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14) } catch (_: Throwable) {}
                 entry.term.options.fontFamily = resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily)
                 // See the terminal branch below: don't steal the container off a
                 // 3D plane while the world is open. @see closeWorld3dSpike
@@ -879,7 +992,7 @@ fun mountPaneContent(paneId: String): HTMLElement {
             // `entry.autoReflow` at the value frozen in `ensureTerminal`, so
             // a later global-default change never drifts this open pane.
             (leaf.content?.autoReflow as? Boolean)?.let { entry.autoReflow = it }
-            entry.term.options.fontSize = (appVm.stateFlow.value.paneFontSize ?: 14)
+            try { setPaneFontSize(entry, appVm.stateFlow.value.paneFontSize ?: 14) } catch (_: Throwable) {}
             entry.term.options.fontFamily = resolveFontFamilyCss(appVm.stateFlow.value.paneFontFamily)
             // While the 3D world owns this terminal, its `entry.container` is
             // reparented onto a CSS3D plane. Do NOT append it into this (hidden)

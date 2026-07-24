@@ -197,6 +197,26 @@ public class ResizeTest extends TerminalTestCase {
 		enterString(twoCharsWidthOne).assertLinesAre(twoCharsWidthOne + "  ", twoCharsWidthOne + twoCharsWidthOne + " ", "   ");
 	}
 
+	public void testStyledTrailingSpacesSurviveColumnGrow() {
+		// A non-blank row whose trailing cells are spaces carrying a non-default
+		// background (a coloured status bar / box row) must keep that background
+		// through a column-grow rewrap. The rewrap used to find the last content
+		// cell by indexing the style array with the *char* index, so it dropped
+		// styled trailing spaces; the row then rewrapped with a default
+		// background. Regression test for that fix.
+		final int rows = 3, cols = 3;
+		withTerminalSized(cols, rows);
+		enterString("\033[48;5;129m"); // background colour 129
+		enterString("A  ");             // 'A' + two spaces, all with bg 129
+		enterString("\033[0m\r\n");      // reset style, move off the row
+		// Row 0 is now a non-cursor, non-wrapped row of styled cells. Grow the
+		// grid; every cell of that row must still carry bg 129.
+		resize(cols + 2, rows);
+		assertEquals(129, TextStyle.decodeBackColor(getStyleAt(0, 0)));
+		assertEquals(129, TextStyle.decodeBackColor(getStyleAt(0, 1)));
+		assertEquals(129, TextStyle.decodeBackColor(getStyleAt(0, 2)));
+	}
+
 	public void testResizeWithMoreWideChars() {
 		final int rows = 4, cols = 5;
 

@@ -1,0 +1,391 @@
+/**
+ * The server's canonical, server-authoritative terminal screen for a single PTY
+ * session.
+ *
+ * This file contains [SessionGrid], a thin thread-safe wrapper around the exact
+ * vendored Termux [TerminalEmulator] the Android client renders with (extracted
+ * to the pure-JVM `:terminal-core` module). It is fed the same raw PTY byte
+ * stream as the replay rings and the JediTerm-based [se.soderbjorn.lunamux.ScreenEmulator],
+ * so the server always holds a fully-interpreted grid — cells, styles, cursor,
+ * modes, scrollback — rather than only a byte ring.
+ *
+ * In this phase the grid is observer-only: it is maintained but not yet consumed.
+ * A later phase reads it back through a serializer to synthesize an attach/resync
+ * redraw at each client's width (the tmux/mosh model), which dissolves the
+ * width-bound byte-replay bug class instead of managing it.
+ *
+ * @see se.soderbjorn.lunamux.TerminalSession the PTY session that owns one grid
+ * @see se.soderbjorn.lunamux.ScreenEmulator the JediTerm screen kept for AI state detection
+ */
+package se.soderbjorn.lunamux.pty
+
+import com.termux.terminal.TerminalEmulator
+import com.termux.terminal.TerminalOutput
+
+/**
+ * A headless [TerminalEmulator] fed the raw PTY output stream, maintaining the
+ * canonical interpreted screen for one session.
+ *
+ * Thread safety: every operation synchronizes on the wrapped emulator (the same
+ * monitor the read path and any future serializer take), so feeds, resizes and
+ * reads never observe a torn grid. [feed] and [resize] also swallow any
+ * exception a malformed control sequence might raise — the PTY read loop must
+ * never die because of grid interpretation.
+ *
+ * @param cols initial grid columns.
+ * @param rows initial grid rows.
+ */
+class SessionGrid(cols: Int, rows: Int) {
+
+    /**
+     * Where the emulator writes its device-query replies (DSR, DA, OSC color
+     * reads, …). On the server that reply has nowhere legitimate to go: the
+     * running program's queries are already answered by every attached client's
+     * real terminal, so a server answer would be a duplicate, and a *replayed*
+     * query would be answered again as phantom shell input. Sinking them here is
+     * why the grid can ingest arbitrary (even legacy, query-laden) bytes safely,
+     * and why a synthesized redraw — which never contains queries — has no
+     * re-answer hazard at all.
+     *
+     * [discardedOutputBytes] counts what was sunk, purely so tests can assert the
+     * emulator really did answer-and-drop rather than leak to a PTY (it never has
+     * a PTY handle to leak to).
+     */
+    private val discardOutput = object : TerminalOutput() {
+        override fun write(data: ByteArray?, offset: Int, count: Int) {
+            if (count > 0) discardedOutputBytes += count.toLong()
+        }
+
+        override fun titleChanged(oldTitle: String?, newTitle: String?) {}
+        override fun onCopyTextToClipboard(text: String?) {}
+        override fun onPasteTextFromClipboard() {}
+        override fun onBell() {}
+        override fun onColorsChanged() {}
+    }
+
+    /**
+     * Bytes the emulator wrote back to [discardOutput] (query replies, mouse
+     * reports, …) and this grid discarded. Observability-only; see the field doc
+     * on [discardOutput]. `@Volatile` because feeds may arrive from the PTY read
+     * coroutine while a test thread reads the counter.
+     */
+    @Volatile
+    var discardedOutputBytes: Long = 0L
+        private set
+
+    /**
+     * The canonical emulator. `null` client → the cursor style defaults and
+     * Logger falls back to stderr (this grid is never bound to a Session client).
+     * Cell pixel sizes are nominal (headless). Transcript depth matches the
+     * ~3000-row scrollback promise of the normal-buffer replay ring.
+     */
+    private val emulator = TerminalEmulator(
+        discardOutput,
+        cols.coerceAtLeast(MIN_DIM),
+        rows.coerceAtLeast(MIN_DIM),
+        NOMINAL_CELL_WIDTH_PX,
+        NOMINAL_CELL_HEIGHT_PX,
+        TRANSCRIPT_ROWS,
+        null,
+    )
+
+    /**
+     * Feed [len] bytes of raw PTY output into the canonical grid.
+     *
+     * Called from the PTY read loop for every chunk the session emits (alongside
+     * the ring append and the JediTerm feed), and on the restore path for the
+     * persisted scrollback blob plus the mode-reset epilogue.
+     *
+     * @param buf the byte buffer; only indices `[0, len)` are read.
+     * @param len number of valid bytes in [buf]; ≤ 0 is a no-op.
+     */
+    fun feed(buf: ByteArray, len: Int) {
+        if (len <= 0) return
+        synchronized(emulator) {
+            withdrawRedundantArchivalIfDeclared(buf, len)
+            try {
+                emulator.append(buf, len)
+            } catch (_: Throwable) {
+                // A malformed control sequence must never take the PTY read loop
+                // down. The grid may be left mid-sequence; the next feed recovers.
+            }
+        }
+    }
+
+    /**
+     * How many complete logical lines the transcript held just before the resize that
+     * opened the current window, or -1 when no resize is awaiting a verdict.
+     *
+     * A resize arms this; a declared repaint (or the window expiring) disarms it. See
+     * [withdrawRedundantArchivalIfDeclared] for what the verdict is and why it must wait
+     * across more than one chunk.
+     */
+    private var transcriptLinesBeforeResize: Int = -1
+
+    /**
+     * How many chunks have been fed since the window opened, so the search for a repaint
+     * declaration can span the stale in-flight output that typically precedes the
+     * program's actual SIGWINCH response, yet still give up in bounded time.
+     */
+    private var chunksSinceResize: Int = 0
+
+    /**
+     * If the resize just applied archived rows into scrollback and this chunk declares a
+     * full-screen repaint, take that archival back.
+     *
+     * Narrowing rewraps the old screen into more rows than the new screen holds, and the
+     * emulator archives the overflow — correct in general, because for most programs (a
+     * shell, a build log) that content is committed history nobody will rewrite. But a
+     * program that owns the whole screen answers the SIGWINCH by redrawing its frame from
+     * the top, and its redraw reaches only the screen: the archived copy stays in
+     * scrollback, where a per-row erase cannot touch it, and the redraw's own overflow is
+     * archived on top of it. That is one duplicate of the frame per device switch, which
+     * is what made switching cost a repaint.
+     *
+     * The decision cannot be made at resize time — nothing then distinguishes the two
+     * cases — so the archival happens as usual (the safe default: history is kept) and is
+     * withdrawn only once the program has explicitly declared otherwise. The measure used
+     * is the transcript's complete-logical-line count, which is width-invariant: rewrapping
+     * changes how many rows those lines occupy but never how many lines there are, so
+     * restoring the count restores exactly what the resize added and nothing older.
+     *
+     * Alt-screen programs (vim, less) are skipped: the alternate buffer has no scrollback,
+     * so their repaints never had anything to duplicate.
+     *
+     * @param buf the chunk about to be fed.
+     * @param len its length.
+     */
+    private fun withdrawRedundantArchivalIfDeclared(buf: ByteArray, len: Int) {
+        val target = transcriptLinesBeforeResize
+        if (target < 0) return
+        if (emulator.isAlternateBufferActive) {
+            transcriptLinesBeforeResize = -1
+            return
+        }
+        val declared = RepaintDeclaration.declaresFullScreenRepaint(buf, len, emulator.mRows)
+        chunksSinceResize++
+        val before = try { emulator.mainBuffer.transcriptCompletedLineCount } catch (_: Throwable) { -1 }
+        var dropped = -1
+        if (declared) {
+            if (withdrawEnabled()) {
+                try {
+                    dropped = emulator.mainBuffer.truncateTranscriptToCompletedLines(target)
+                } catch (_: Throwable) {
+                    // Withdrawing is an optimisation; leaving the duplicate is survivable, a
+                    // half-applied buffer shuffle is not.
+                }
+            } else {
+                // Observe-only: report what a truncate WOULD drop, without touching the
+                // buffer. Lets a device run answer "does the single-resize path even
+                // duplicate?" before we risk deleting genuine history.
+                dropped = -2 - (before - target).coerceAtLeast(0)
+            }
+            transcriptLinesBeforeResize = -1
+        } else if (chunksSinceResize >= REPAINT_SEARCH_CHUNKS) {
+            // The program never declared a full-screen repaint within the window — this
+            // was a shell, or output the program will not rewrite. Leave history intact.
+            transcriptLinesBeforeResize = -1
+        }
+        Diagnostic.recordWithdraw(target, declared, before, dropped, chunksSinceResize, emulator.mRows, buf, len)
+        if (declared) Diagnostic.recordTranscriptTail(emulator.mainBuffer.transcriptText)
+    }
+
+    /**
+     * Resize the canonical grid, running the emulator's own (wrap-flag-faithful)
+     * reflow. Called from the session's size-apply path whenever the arbitrated
+     * PTY grid changes.
+     *
+     * @param cols new column count; values below the emulator's 2-column floor are ignored.
+     * @param rows new row count; values below the 2-row floor are ignored.
+     */
+    fun resize(cols: Int, rows: Int) {
+        if (cols < MIN_DIM || rows < MIN_DIM) return
+        synchronized(emulator) {
+            // Note what history looked like before the reflow, so a later chunk can decide
+            // whether the reflow's archival was redundant. Arm only once per window: a
+            // single take-over often fires several resizes in a burst (a cols change, then
+            // a rows-only keyboard adjust), and only the FIRST reflect the pre-take-over
+            // history. Re-arming on a later one would capture the already-inflated
+            // transcript and withdraw nothing. A fresh window opens only after the previous
+            // one is resolved (transcriptLinesBeforeResize back to -1).
+            if (transcriptLinesBeforeResize < 0) {
+                transcriptLinesBeforeResize = try {
+                    if (emulator.isAlternateBufferActive) -1
+                    else emulator.mainBuffer.transcriptCompletedLineCount
+                } catch (_: Throwable) {
+                    -1
+                }
+                chunksSinceResize = 0
+            }
+            Diagnostic.recordResize(cols, rows, transcriptLinesBeforeResize)
+            try {
+                emulator.resize(cols, rows, NOMINAL_CELL_WIDTH_PX, NOMINAL_CELL_HEIGHT_PX)
+            } catch (_: Throwable) {
+                // Resize races are benign; the next feed settles the layout.
+            }
+        }
+    }
+
+    /**
+     * Run [block] against the live emulator while holding the grid monitor, and
+     * return its result. The lock is held for the duration of [block], so callers
+     * must not escape a reference to the emulator or block for long.
+     *
+     * @param block reader given exclusive, consistent access to the emulator.
+     * @return whatever [block] returns.
+     */
+    fun <T> read(block: (TerminalEmulator) -> T): T = synchronized(emulator) { block(emulator) }
+
+    /**
+     * The full normal-buffer transcript (scrollback + visible screen) as plain
+     * text, one logical line per row. Backed by the canonical grid so it stays
+     * correct across resizes; used by the MCP `read_scrollback` tool.
+     *
+     * @return the main buffer's transcript text.
+     */
+    fun transcriptText(): String = synchronized(emulator) { emulator.mainBuffer.transcriptText }
+
+    /**
+     * Synthesize an attach/resync redraw of the current grid at its current width:
+     * a self-contained byte stream (RIS + styled row flow + state epilogue) that
+     * reconstructs this exact screen — cells, cursor, modes, palette, title — when
+     * fed to a fresh emulator or a client terminal. The width-correct replacement for
+     * raw byte-ring replay.
+     *
+     * @return UTF-8 redraw bytes for the current grid.
+     * @see GridSerializer.serialize
+     */
+    fun synthesizeRedraw(): ByteArray = synchronized(emulator) { GridSerializer.serialize(emulator) }
+
+    /**
+     * Synthesize the persistence form: scrollback (and, for a live TUI, an inert
+     * frozen frame) with no mode/cursor epilogue, safe to store and replay into a
+     * fresh grid on restore without resurrecting a dead session's modes.
+     *
+     * @return UTF-8 bytes for persistence.
+     * @see GridSerializer.serializeForPersist
+     */
+    fun synthesizeForPersist(): ByteArray = synchronized(emulator) { GridSerializer.serializeForPersist(emulator) }
+
+    private companion object {
+        /** Emulator's hard minimum per side; [TerminalEmulator.resize] throws below 2. */
+        const val MIN_DIM = 2
+
+        /** Headless cell pixel sizes — used only for DECSLPP-style pixel reports, never rendered. */
+        const val NOMINAL_CELL_WIDTH_PX = 8
+        const val NOMINAL_CELL_HEIGHT_PX = 16
+
+        /**
+         * Scrollback depth of the canonical grid. Matches the ~3000-row promise of
+         * the normal-buffer replay ring. Worst-case memory is a few MB per active
+         * session (full-width styled rows) versus the ring's ~512 KB — acceptable
+         * for the fidelity it buys, and flagged here as the one real cost.
+         */
+        const val TRANSCRIPT_ROWS = 3000
+
+        /**
+         * How many chunks after a resize to keep looking for the program's full-screen
+         * repaint declaration. On device the SIGWINCH response does not always arrive in
+         * the very first chunk: stale in-flight output (a spinner frame, a partial write)
+         * can precede it. A small window bridges that gap while still giving up promptly so
+         * a normal-buffer program's later legitimate output is never mistaken for a repaint.
+         */
+        const val REPAINT_SEARCH_CHUNKS = 24
+    }
+
+    /**
+     * Whether a declared repaint actually withdraws the reflow's archival, or merely
+     * reports what it would withdraw. Default OFF while we confirm on device whether the
+     * single (debounced) resize path duplicates at all — deleting history is far worse than
+     * a duplicate, so the withdrawal earns its place only against evidence. Read fresh from
+     * the `lunamux.gridWithdraw` system property each call so tests can opt in per-run
+     * without a class-load ordering hazard. TEMPORARY — collapses to always-on (or always-
+     * off) once the device verdict is in.
+     */
+    private fun withdrawEnabled(): Boolean = System.getProperty("lunamux.gridWithdraw") == "true"
+
+    /**
+     * TEMPORARY DIAGNOSTIC. Records resize windows and each withdraw decision to the same
+     * file as `TerminalSessionManager.SizeChurnLog`, so the take-over-duplication behaviour
+     * can be read from device rather than reasoned about. A no-op unless
+     * `lunamux.sizeChurnLog` (or `LUNAMUX_SIZE_CHURN_LOG`) points at a path. Remove together
+     * with `SizeChurnLog` before upstream.
+     */
+    private object Diagnostic {
+        private val path: String? =
+            System.getProperty("lunamux.sizeChurnLog") ?: System.getenv("LUNAMUX_SIZE_CHURN_LOG")
+
+        fun recordResize(cols: Int, rows: Int, armedTarget: Int) {
+            val target = path ?: return
+            runCatching {
+                java.io.File(target).appendText("GRID resize -> ${cols}x$rows armedTarget=$armedTarget\n")
+            }
+        }
+
+        fun recordWithdraw(
+            target: Int,
+            declared: Boolean,
+            before: Int,
+            dropped: Int,
+            chunkIndex: Int,
+            mRows: Int,
+            buf: ByteArray,
+            len: Int,
+        ) {
+            val logPath = path ?: return
+            runCatching {
+                val n = minOf(len, 96)
+                val sb = StringBuilder(n * 2)
+                for (i in 0 until n) {
+                    when (val b = buf[i].toInt() and 0xff) {
+                        0x1b -> sb.append("<ESC>")
+                        0x07 -> sb.append("<BEL>")
+                        0x0d -> sb.append("<CR>")
+                        0x0a -> sb.append("<LF>")
+                        in 0x20..0x7e -> sb.append(b.toChar())
+                        else -> sb.append('.')
+                    }
+                }
+                java.io.File(logPath).appendText(
+                    "GRID withdraw chunk#$chunkIndex declared=$declared target=$target before=$before " +
+                        "dropped=$dropped mRows=$mRows head=[$sb]\n"
+                )
+            }
+        }
+
+        /**
+         * After a declared repaint settles, record the transcript's shape so duplication can
+         * be seen at the content level rather than inferred from counts: the total non-blank
+         * line count, how many of those are DISTINCT, and the last dozen lines. A total that
+         * runs well ahead of distinct — or a repeated tail — is duplication; a tail that
+         * shrinks between switches is loss.
+         *
+         * @param transcript the full main-buffer transcript text.
+         */
+        fun recordTranscriptTail(transcript: String) {
+            val logPath = path ?: return
+            runCatching {
+                val lines = transcript.split('\n').map { it.trimEnd() }
+                val nonBlank = lines.filter { it.isNotBlank() }
+                val distinct = nonBlank.toHashSet().size
+                // Count occurrences of stable banner/prompt markers directly, so grid-level
+                // duplication is visible per snapshot rather than masked by distinct-collapse.
+                // "███" is in the Claude banner logo; "❯ " is the prompt gutter.
+                val logoCount = lines.count { it.contains("███") }
+                val promptCount = lines.count { it.contains("❯ ") }
+                // Group consecutive identical non-blank lines to spot repeated blocks.
+                val repeatedLines = nonBlank.groupingBy { it }.eachCount().filter { it.value > 1 }
+                val worst = repeatedLines.entries.sortedByDescending { it.value }.take(3)
+                    .joinToString("; ") { "\"${it.key.take(30)}\"×${it.value}" }
+                val tail = lines.takeLast(8).joinToString(" | ") { it.take(50) }
+                java.io.File(logPath).appendText(
+                    "GRID transcript lines=${lines.size} nonBlank=${nonBlank.size} distinct=$distinct " +
+                        "logo=$logoCount prompt=$promptCount worstRepeats=[$worst] tail=[$tail]\n"
+                )
+                // Overwrite a sidecar with the full transcript each time, so after the run
+                // the server's canonical view can be compared to what the client rendered.
+                java.io.File("$logPath.grid-transcript.txt").writeText(transcript)
+            }
+        }
+    }
+}

@@ -1,9 +1,8 @@
 package com.termux.terminal;
 
-import android.util.Base64;
-
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Stack;
@@ -176,7 +175,7 @@ public final class TerminalEmulator {
     /** The terminal session this emulator is bound to. */
     private final TerminalOutput mSession;
 
-    TerminalSessionClient mClient;
+    TerminalSessionClientBase mClient;
 
     /** Keeps track of the current argument of the current escape sequence. Ranges from 0 to MAX_ESCAPE_PARAMETERS-1. */
     private int mArgIndex;
@@ -322,7 +321,7 @@ public final class TerminalEmulator {
         }
     }
 
-    public TerminalEmulator(TerminalOutput session, int columns, int rows, int cellWidthPixels, int cellHeightPixels, Integer transcriptRows, TerminalSessionClient client) {
+    public TerminalEmulator(TerminalOutput session, int columns, int rows, int cellWidthPixels, int cellHeightPixels, Integer transcriptRows, TerminalSessionClientBase client) {
         mSession = session;
         mScreen = mMainBuffer = new TerminalBuffer(columns, getTerminalTranscriptRows(transcriptRows), rows);
         mAltBuffer = new TerminalBuffer(columns, rows, rows);
@@ -335,7 +334,7 @@ public final class TerminalEmulator {
         reset();
     }
 
-    public void updateTerminalSessionClient(TerminalSessionClient client) {
+    public void updateTerminalSessionClient(TerminalSessionClientBase client) {
         mClient = client;
         setCursorStyle();
         setCursorBlinkState(true);
@@ -481,6 +480,115 @@ public final class TerminalEmulator {
     /** If mouse events are being sent as escape codes to the terminal. */
     public boolean isMouseTrackingActive() {
         return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) || isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT);
+    }
+
+    // ── Server-side serialization accessors ──────────────────────────────────
+    // Added beyond upstream Termux so the headless server can read the full
+    // emulator state needed to synthesize an attach/resync redraw at a client's
+    // width (see :server GridSerializer). All pure reads — no behavior change.
+
+    /** DECAWM (?7): graphic chars wrap at the right margin when set. */
+    public boolean isAutoWrapEnabled() {
+        return isDecsetInternalBitSet(DECSET_BIT_AUTOWRAP);
+    }
+
+    /** DECOM (?6): cursor addressing is margin-relative when set. */
+    public boolean isOriginMode() {
+        return isDecsetInternalBitSet(DECSET_BIT_ORIGIN_MODE);
+    }
+
+    /** Bracketed paste mode (?2004). */
+    public boolean isBracketedPasteMode() {
+        return isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+    }
+
+    /** Focus-event reporting (?1004). */
+    public boolean isFocusEventsEnabled() {
+        return isDecsetInternalBitSet(DECSET_BIT_SEND_FOCUS_EVENTS);
+    }
+
+    /** SGR (?1006) mouse-report encoding is active. */
+    public boolean isMouseProtocolSgr() {
+        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_PROTOCOL_SGR);
+    }
+
+    /** Press/release mouse tracking (?1000). Mutually exclusive with {@link #isMouseTrackingButtonEvent()}. */
+    public boolean isMouseTrackingPressRelease() {
+        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE);
+    }
+
+    /** Button-event mouse tracking (?1002 — press/release plus motion-while-pressed). */
+    public boolean isMouseTrackingButtonEvent() {
+        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT);
+    }
+
+    /** DECLRMM (?69): left/right margins are honored when set. */
+    public boolean isLeftRightMarginModeEnabled() {
+        return isDecsetInternalBitSet(DECSET_BIT_LEFTRIGHT_MARGIN_MODE);
+    }
+
+    /** Current SGR foreground color: a color index in [0,259], or a 24-bit value with 0xff000000 set. */
+    public int getCurrentForeColor() {
+        return mForeColor;
+    }
+
+    /** Current SGR background color. @see #getCurrentForeColor() */
+    public int getCurrentBackColor() {
+        return mBackColor;
+    }
+
+    /** Current SGR underline color (parsed but not yet used during rendering). @see #getCurrentForeColor() */
+    public int getCurrentUnderlineColor() {
+        return mUnderlineColor;
+    }
+
+    /** Current {@link TextStyle} effect bitmask. */
+    public int getCurrentEffect() {
+        return mEffect;
+    }
+
+    /** A defensive copy of the tab-stop flags, indexed by column (true = a tab stop is set at that column). */
+    public boolean[] getTabStops() {
+        return mTabStop.clone();
+    }
+
+    /** Top row of the vertical scroll region (0-based, inclusive). */
+    public int getTopMargin() {
+        return mTopMargin;
+    }
+
+    /** First row below the vertical scroll region (0-based, exclusive). */
+    public int getBottomMargin() {
+        return mBottomMargin;
+    }
+
+    /** Left column of the horizontal scroll region (0-based, inclusive). */
+    public int getLeftMargin() {
+        return mLeftMargin;
+    }
+
+    /** First column past the right of the horizontal scroll region (0-based, exclusive). */
+    public int getRightMargin() {
+        return mRightMargin;
+    }
+
+    /**
+     * Whether a graphic char has filled the last column with the cursor parked there, so the next
+     * graphic char wraps to the following line (deferred-autowrap / "pending wrap" state). The
+     * serializer re-arms this by re-emitting the last cell so a round-trip preserves the wrap point.
+     */
+    public boolean isAboutToAutoWrap() {
+        return mAboutToAutoWrap;
+    }
+
+    /** The normal screen buffer (the one that carries scrollback). */
+    public TerminalBuffer getMainBuffer() {
+        return mMainBuffer;
+    }
+
+    /** The alternate screen buffer (display-sized; no scrollback). */
+    public TerminalBuffer getAltBuffer() {
+        return mAltBuffer;
     }
 
     private void setDefaultTabStops() {
@@ -2104,7 +2212,11 @@ public final class TerminalEmulator {
             case 52: // Manipulate Selection Data. Skip the optional first selection parameter(s).
                 int startIndex = textParameter.indexOf(";") + 1;
                 try {
-                    String clipboardText = new String(Base64.decode(textParameter.substring(startIndex), 0), StandardCharsets.UTF_8);
+                    // Vendored-code shim: android.util.Base64.decode(str, DEFAULT) → java.util.Base64.
+                    // getMimeDecoder() matches Android DEFAULT's leniency (ignores characters outside the
+                    // base64 alphabet, e.g. embedded newlines); getDecoder() would reject them and change
+                    // behaviour. Keeps this module pure-JVM.
+                    String clipboardText = new String(Base64.getMimeDecoder().decode(textParameter.substring(startIndex)), StandardCharsets.UTF_8);
                     mSession.onCopyTextToClipboard(clipboardText);
                 } catch (Exception e) {
                     Logger.logError(mClient, LOG_TAG, "OSC Manipulate selection, invalid string '" + textParameter + "");
