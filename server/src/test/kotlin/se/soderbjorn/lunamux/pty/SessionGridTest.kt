@@ -106,11 +106,16 @@ class SessionGridTest {
     }
 
     @Test
-    fun `synthesizeForPersist round-trips into a fresh grid`() {
+    fun `synthesizeForPersist round-trips committed scrollback into a fresh grid`() {
         // This is the Phase 4 persistence contract: persistSnapshot() bytes fed into a
-        // fresh grid on restart reconstruct the scrollback.
+        // fresh grid on restart reconstruct the scrollback. Scoped to *committed*
+        // lines — everything up to the last newline. The live line (the row the cursor
+        // sits on) is deliberately excluded, because the shell spawned on restore
+        // re-emits its own prompt and persisting the old one stacked a duplicate; see
+        // `persist form restores history followed by exactly one fresh prompt`.
+        // Every line here is newline-terminated, so all of it is committed.
         val grid = SessionGrid(40, 8)
-        grid.feed("line one\r\nline two\r\nprompt$ ")
+        grid.feed("line one\r\nline two\r\nline three\r\n")
         val blob = grid.synthesizeForPersist()
 
         val restored = SessionGrid(40, 8)
@@ -119,13 +124,16 @@ class SessionGridTest {
     }
 
     @Test
-    fun `persist form leaves the cursor just after the restored content`() {
+    fun `persist form restores history followed by exactly one fresh prompt`() {
         // The persist form deliberately carries no cursor epilogue (#91), so wherever
         // its row flow stops is where the restored grid's cursor is left — and the
-        // shell spawned on restore writes its first prompt from there. Emitting the
-        // screen's trailing blank rows parked the cursor at the bottom of a screenful
-        // of blanks, so the new prompt appeared far below the restored content with a
-        // large gap above it, and a further copy accumulated on each restore.
+        // shell spawned on restore writes its first prompt from there. Two faults fed
+        // the same symptom, a stacked prompt accumulating on every restore:
+        //  - emitting the screen's trailing blank rows parked the cursor at the bottom
+        //    of a screenful of blanks, so the new prompt appeared far below with a big
+        //    gap above it; and
+        //  - persisting the cursor's own row committed the LIVE prompt line to
+        //    history, which the fresh shell then duplicated immediately below.
         val grid = SessionGrid(40, 20)
         grid.feed("line one\r\nline two\r\nprompt$ ")
         val blob = grid.synthesizeForPersist()
@@ -133,17 +141,24 @@ class SessionGridTest {
         val restored = SessionGrid(40, 20)
         restored.feed(blob, blob.size)
 
-        // Content occupies rows 0..2, so the cursor must still be on row 2 — not
-        // stranded on row 19 by a run of trailing blank-row CRLFs.
-        assertEquals(2, restored.read { it.cursorRow }, "cursor must not be parked below the content")
-
-        // What the shell then writes must land directly after the restored content.
-        restored.feed("\r\nnext$ ")
-        val text = restored.transcriptText().trimEnd()
+        // Committed lines only: rows 0..1. The live prompt row is not history, and the
+        // cursor is left right after the last committed line — not on row 19.
+        assertEquals(1, restored.read { it.cursorRow }, "cursor must sit after the committed content")
         assertFalse(
-            text.contains("\n\n"),
-            "restored content and the new prompt must not be separated by blank rows: <$text>",
+            restored.transcriptText().contains("prompt$"),
+            "the live prompt line must not be persisted as history",
         )
+
+        // The shell spawned on restore prints its prompt; it must land directly under
+        // the restored history, exactly once and with no blank gap.
+        restored.feed("\r\nprompt$ ")
+        val text = restored.transcriptText().trimEnd()
+        assertEquals(
+            1,
+            text.split("\n").count { it.contains("prompt$") },
+            "exactly one prompt line after restore: <$text>",
+        )
+        assertFalse(text.contains("\n\n"), "no blank rows between history and the prompt: <$text>")
     }
 
     @Test
@@ -151,7 +166,10 @@ class SessionGridTest {
         // A dead full-screen app must not re-enable sticky modes on restore (#91):
         // serializeForPersist carries no mode epilogue.
         val grid = SessionGrid(40, 8)
-        grid.feed("$esc[?2004h$esc[?1000h$esc[?1006hcontent")   // bracketed paste + mouse on
+        // Newline-terminated so the text is committed scrollback: the persist form
+        // carries only committed lines, so a bare "content" would be the live line and
+        // legitimately absent from the restore.
+        grid.feed("$esc[?2004h$esc[?1000h$esc[?1006hcontent\r\n")   // bracketed paste + mouse on
         assertTrue(grid.read { it.isBracketedPasteMode })
 
         val blob = grid.synthesizeForPersist()

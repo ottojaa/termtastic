@@ -97,9 +97,10 @@ object GridSerializer {
         emitBufferFlow(
             sb, e.mainBuffer, e.mColumns, e.mRows,
             includeTranscript = true,
-            // No cursor epilogue follows (see the kdoc), so the flow must not leave
-            // the cursor stranded below the content it just painted.
-            trimTrailingBlankRows = true,
+            // Persist mode: no cursor epilogue follows (see the kdoc), so the flow
+            // must not leave the cursor stranded below the content it painted, and
+            // the live prompt line must not be committed to history.
+            persistCursorRow = e.cursorRow,
         )
         if (e.isAlternateBufferActive) {
             sb.append("\r\n")
@@ -124,13 +125,21 @@ object GridSerializer {
         cols: Int,
         screenRows: Int,
         includeTranscript: Boolean,
-        trimTrailingBlankRows: Boolean = false,
+        persistCursorRow: Int? = null,
     ) {
         sb.append(CSI).append("H") // home before drawing so the flow is deterministic
         val transcript = if (includeTranscript) buffer.activeTranscriptRows else 0
-        val lastRow =
-            if (trimTrailingBlankRows) lastNonBlankRow(buffer, cols, screenRows, transcript)
-            else screenRows - 1
+        var lastRow = screenRows - 1
+        if (persistCursorRow != null) {
+            lastRow = lastNonBlankRow(buffer, cols, screenRows, transcript)
+            // Drop the live line. The cursor's row holds the shell's prompt plus
+            // anything typed but not yet entered — transient screen state, not
+            // committed history — and the shell spawned on restore re-emits its own
+            // prompt regardless, so persisting this row guarantees a duplicate.
+            // Persist committed lines only; the restored session then reads as
+            // history followed by exactly one fresh prompt.
+            if (lastRow == persistCursorRow) lastRow--
+        }
         var y = -transcript
         while (y <= lastRow) {
             val wrapped = emitRow(sb, buffer, y, cols)

@@ -515,7 +515,11 @@ fun applyMirrorPresentation(entry: TerminalEntry) {
     // width, so every pane would briefly look passive and flash the mirror before the
     // vote is answered. While the vote is outstanding, keep driving; if the deadline
     // passes and the width still differs, another client really is governing.
-    val awaitingOurVote = entry.votePendingUntil > kotlin.js.Date.now()
+    // `restoreSettling` is the explicit "this pane has not asserted its size yet"
+    // state, and it suppresses the vote itself — so during it a mismatch can never
+    // mean another client is driving, and no timer can be relied on either.
+    val awaitingOurVote =
+        entry.restoreSettling || entry.votePendingUntil > kotlin.js.Date.now()
     val matchesOurVote = serverCols == entry.naturalCols
     if (matchesOurVote) entry.votePendingUntil = 0.0
     val passive = PtyPresentation.isPassive(entry.naturalCols, serverCols) && !awaitingOurVote

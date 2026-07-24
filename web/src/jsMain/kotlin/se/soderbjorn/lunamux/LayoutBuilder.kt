@@ -666,6 +666,11 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     entry.naturalCols = term.cols
     entry.naturalRows = term.rows
     entry.baseFontSize = appVm.stateFlow.value.paneFontSize ?: 14
+    // Arm the vote-pending grace from creation. Setting it inside [sendResize] alone
+    // was not enough: that arms it *after* the early-return guards, and the cold
+    // restore path (`restoreSettling`) returns before reaching it — which is exactly
+    // the path taken on startup, so the mirror still flashed there.
+    entry.votePendingUntil = kotlin.js.Date.now() + VOTE_PENDING_GRACE_MS
     // Freeze the effective automatic-reflow flag at creation time: the
     // per-pane override if the pane carries one, otherwise a *snapshot* of
     // the current global default. Snapshotting here (rather than evaluating
