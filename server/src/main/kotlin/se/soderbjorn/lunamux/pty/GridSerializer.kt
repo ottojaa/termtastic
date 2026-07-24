@@ -130,6 +130,7 @@ object GridSerializer {
         sb.append(CSI).append("H") // home before drawing so the flow is deterministic
         val transcript = if (includeTranscript) buffer.activeTranscriptRows else 0
         var lastRow = screenRows - 1
+        var firstRow = -transcript
         if (persistCursorRow != null) {
             lastRow = lastNonBlankRow(buffer, cols, screenRows, transcript)
             // Drop the live line. The cursor's row holds the shell's prompt plus
@@ -139,8 +140,13 @@ object GridSerializer {
             // Persist committed lines only; the restored session then reads as
             // history followed by exactly one fresh prompt.
             if (lastRow == persistCursorRow) lastRow--
+            // Skip leading blank rows too, for the same reason the trailing ones are
+            // skipped: with no cursor epilogue they are emitted as bare CRLFs, so a
+            // grid whose top rows happen to be empty restored as blank lines pushed
+            // above the first real content.
+            firstRow = firstNonBlankRow(buffer, cols, lastRow, transcript)
         }
-        var y = -transcript
+        var y = firstRow
         while (y <= lastRow) {
             val wrapped = emitRow(sb, buffer, y, cols)
             if (y != lastRow && !wrapped) sb.append("\r\n")
@@ -161,6 +167,29 @@ object GridSerializer {
      * there, far below the restored content: a stacked prompt with a large gap above
      * it, growing by one on every restore.
      */
+    /**
+     * The first row holding any content, searching down from the top of the
+     * transcript; [lastRow] + 1 when every row up to it is blank.
+     *
+     * Persist-only, and the mirror of [lastNonBlankRow] — leading blank rows would
+     * otherwise be emitted as bare CRLFs and restore as empty lines above the first
+     * real content.
+     */
+    private fun firstNonBlankRow(
+        buffer: TerminalBuffer,
+        cols: Int,
+        lastRow: Int,
+        transcript: Int,
+    ): Int {
+        var y = -transcript
+        while (y <= lastRow) {
+            val row = buffer.getLineOrNull(y)
+            if (row != null && lastContentColumn(row, cols) >= 0) return y
+            y++
+        }
+        return lastRow + 1
+    }
+
     private fun lastNonBlankRow(
         buffer: TerminalBuffer,
         cols: Int,

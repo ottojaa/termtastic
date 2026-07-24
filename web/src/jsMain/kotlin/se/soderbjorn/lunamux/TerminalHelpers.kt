@@ -328,7 +328,7 @@ fun updateOobOverlay(entry: TerminalEntry) {
     // The gates below would also read it wrong — they compare against a fit proposal
     // measured at the shrunken mirror font, which reports a far larger grid than the
     // user's own font would, so the hatch would paint straight over the mirror.
-    if (isRidingSpikePlane(entry) || entry.passive) {
+    if (isRidingSpikePlane(entry) || entry.passive || isAwaitingOwnSize(entry)) {
         entry.oobOverlayRight?.style?.display = "none"
         entry.oobOverlayBottom?.style?.display = "none"
         return
@@ -486,6 +486,27 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: I
     runCatching { spikeOnServerSize(entry) }
 }
 
+/**
+ * Whether [entry] is still waiting for the PTY to reach the size it asked for.
+ *
+ * True while a cold-restored pane is settling (during which it deliberately casts no
+ * vote) and for a grace period after each vote is scheduled. In that window the
+ * server still holds the session at its *previous* — typically persisted — grid, so
+ * the pane legitimately differs from it while the handshake completes.
+ *
+ * Both size-mismatch affordances key off this, because during startup neither is
+ * telling the user anything true: the take-over mirror would claim another device is
+ * driving when none is, and the out-of-bounds hatch would advertise space to reclaim
+ * that the in-flight vote is already reclaiming. Both resolve on their own a moment
+ * later, so showing them just makes initialisation look broken.
+ *
+ * @param entry the pane to test.
+ * @return true while the pane's own size request is outstanding.
+ * @see applyMirrorPresentation @see updateOobOverlay
+ */
+private fun isAwaitingOwnSize(entry: TerminalEntry): Boolean =
+    entry.restoreSettling || entry.votePendingUntil > kotlin.js.Date.now()
+
 /** Smallest / largest font (px) the passive mirror will scale the pane text to. */
 private const val MIRROR_FONT_MIN_PX = 4.0
 private const val MIRROR_FONT_MAX_PX = 40.0
@@ -515,11 +536,7 @@ fun applyMirrorPresentation(entry: TerminalEntry) {
     // width, so every pane would briefly look passive and flash the mirror before the
     // vote is answered. While the vote is outstanding, keep driving; if the deadline
     // passes and the width still differs, another client really is governing.
-    // `restoreSettling` is the explicit "this pane has not asserted its size yet"
-    // state, and it suppresses the vote itself — so during it a mismatch can never
-    // mean another client is driving, and no timer can be relied on either.
-    val awaitingOurVote =
-        entry.restoreSettling || entry.votePendingUntil > kotlin.js.Date.now()
+    val awaitingOurVote = isAwaitingOwnSize(entry)
     val matchesOurVote = serverCols == entry.naturalCols
     if (matchesOurVote) entry.votePendingUntil = 0.0
     val passive = PtyPresentation.isPassive(entry.naturalCols, serverCols) && !awaitingOurVote

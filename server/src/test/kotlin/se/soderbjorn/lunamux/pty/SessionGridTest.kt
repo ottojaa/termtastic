@@ -149,6 +149,13 @@ class SessionGridTest {
             "the live prompt line must not be persisted as history",
         )
 
+        // No leading blank rows either: the restored history must start at its first
+        // real line, not be pushed down by empty rows above it.
+        assertFalse(
+            restored.transcriptText().trimEnd().startsWith("\n"),
+            "restored history must not begin with blank rows",
+        )
+
         // The shell spawned on restore prints its prompt; it must land directly under
         // the restored history, exactly once and with no blank gap.
         restored.feed("\r\nprompt$ ")
