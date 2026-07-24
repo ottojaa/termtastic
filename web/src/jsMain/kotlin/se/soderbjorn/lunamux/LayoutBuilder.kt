@@ -84,10 +84,13 @@ fun attachDragDrop(container: HTMLElement, term: Terminal) {
  * @see forceReassert
  */
 /**
- * How long a pane's own size vote is treated as still in flight (ms): the 200 ms
- * send debounce plus room for the server to arbitrate and broadcast the answer.
- * Generous on purpose — overshooting only delays a genuine mirror slightly, while
- * undershooting flashes "Mirroring another device" on every attach.
+ * Upper bound (ms) on waiting for the server to answer a size vote.
+ *
+ * This is a backstop, not the mechanism: the wait normally ends when the server's
+ * next `Size` broadcast arrives (see [TerminalEntry.awaitingVoteAnswer]). It exists
+ * only because a vote that changes nothing — the arbiter reports null when the
+ * effective size is unchanged — produces no broadcast at all, so a losing vote would
+ * otherwise suppress the take-over mirror forever.
  */
 private const val VOTE_PENDING_GRACE_MS = 2_000.0
 
@@ -164,6 +167,7 @@ fun sendResize(entry: TerminalEntry) {
     // answers (or this deadline lapses) a differing server width is just us waiting,
     // not another client driving, so the mirror is not flashed up. See
     // [TerminalEntry.votePendingUntil].
+    entry.awaitingVoteAnswer = true
     entry.votePendingUntil = kotlin.js.Date.now() + VOTE_PENDING_GRACE_MS
     entry.pendingResizeTimer = window.setTimeout({
         entry.pendingResizeTimer = null
@@ -670,6 +674,7 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     // was not enough: that arms it *after* the early-return guards, and the cold
     // restore path (`restoreSettling`) returns before reaching it — which is exactly
     // the path taken on startup, so the mirror still flashed there.
+    entry.awaitingVoteAnswer = true
     entry.votePendingUntil = kotlin.js.Date.now() + VOTE_PENDING_GRACE_MS
     // Freeze the effective automatic-reflow flag at creation time: the
     // per-pane override if the pane carries one, otherwise a *snapshot* of

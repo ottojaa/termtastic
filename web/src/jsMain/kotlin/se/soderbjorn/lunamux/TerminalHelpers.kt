@@ -57,10 +57,13 @@ external class ResizeObserver(callback: (dynamic, dynamic) -> Unit) {
  *   [naturalCols] — another client is driving, so this pane renders a read-only,
  *   font-scaled mirror of the server grid and drops the ambient reports its own view
  *   generates (see [applyMirrorPresentation])
- * @property votePendingUntil deadline (epoch ms) until which this pane's own size
- *   vote is considered still in flight. A width mismatch during that window is just
- *   the server not having answered us yet — not another client driving — so the
- *   mirror is suppressed rather than flashed up for a moment on every attach.
+ * @property awaitingVoteAnswer true between casting a size vote and the server's next
+ *   `Size` broadcast. A width mismatch in that gap is just the server not having
+ *   answered us yet — not another client driving — so the size-mismatch affordances
+ *   stay hidden. The server's answer, not a clock, is what normally clears this.
+ * @property votePendingUntil backstop deadline (epoch ms) for [awaitingVoteAnswer].
+ *   A vote that changes nothing produces no `Size` broadcast at all, so the wait
+ *   needs an upper bound or a losing vote could suppress the mirror forever.
  * @property takeOverBadge floating "Mirroring another device · Take over" pill shown
  *   while [passive], or null before it is created
  * @property oobOverlayRight DOM element for the right out-of-bounds overlay, or null
@@ -137,6 +140,7 @@ class TerminalEntry(
     var naturalRows: Int = 0,
     var baseFontSize: Int = 13,
     var passive: Boolean = false,
+    var awaitingVoteAnswer: Boolean = false,
     var votePendingUntil: Double = 0.0,
     var takeOverBadge: HTMLElement? = null,
     var oobOverlayRight: HTMLElement? = null,
@@ -473,6 +477,9 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: I
     }
     entry.ptyCols = cols
     entry.ptyRows = rows
+    // The server has spoken, so whatever we asked for has now been answered — this,
+    // not the elapsed-time backstop, is what normally ends the wait.
+    entry.awaitingVoteAnswer = false
     if (cols != entry.term.cols || rows != entry.term.rows) {
         entry.applyingServerSize = true
         try {
@@ -505,7 +512,8 @@ fun applyServerSize(entry: TerminalEntry, cols: Int, rows: Int, maxReplayCols: I
  * @see applyMirrorPresentation @see updateOobOverlay
  */
 private fun isAwaitingOwnSize(entry: TerminalEntry): Boolean =
-    entry.restoreSettling || entry.votePendingUntil > kotlin.js.Date.now()
+    entry.restoreSettling ||
+        (entry.awaitingVoteAnswer && entry.votePendingUntil > kotlin.js.Date.now())
 
 /** Smallest / largest font (px) the passive mirror will scale the pane text to. */
 private const val MIRROR_FONT_MIN_PX = 4.0

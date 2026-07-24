@@ -540,10 +540,20 @@ class TerminalSession private constructor(
             // so a restore never leaves the fresh shell wedged (issue #91).
             grid.feed(initialScrollback, initialScrollback.size)
             grid.feed(RESTORE_MODE_RESET, RESTORE_MODE_RESET.size)
-            // Blank line so restored scrollback doesn't run straight into the new
-            // shell's first prompt.
-            val gap = "\r\n\r\n".toByteArray(Charsets.UTF_8)
-            grid.feed(gap, gap.size)
+            // Break the line so the new shell's prompt starts below the restored
+            // content rather than continuing it — but only when something was
+            // actually restored, and only by a single line.
+            //
+            // This used to be an unconditional "\r\n\r\n". Two breaks made sense when
+            // the persist form could end mid-line (it kept the live prompt row), but
+            // it now ends at a committed line boundary, so the second break is a blank
+            // line the user never asked for — and after a `clear` the blob restores
+            // nothing at all, so BOTH breaks landed above the first prompt as two
+            // stray empty lines at the top of a brand-new session.
+            if (grid.transcriptText().isNotBlank()) {
+                val gap = "\r\n".toByteArray(Charsets.UTF_8)
+                grid.feed(gap, gap.size)
+            }
         }
     }
 
