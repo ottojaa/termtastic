@@ -94,6 +94,43 @@ class TakeOverRepaintTest {
     }
 
     @Test
+    fun `stale in-flight output before the repaint is bridged`() {
+        // On device the program's SIGWINCH response does not always land in the very next
+        // chunk: a spinner frame or partial write already in the pipe arrives first. The
+        // withdrawal must still fire when the repaint follows, not be spent on the stale
+        // chunk. A spinner frame uses cursor save/move/restore and draws no new line.
+        val grid = SessionGrid(WIDE_COLS, WIDE_ROWS)
+        grid.feedText(repaint(WIDE_ROWS))
+
+        grid.resize(NARROW_COLS, NARROW_ROWS)
+        grid.feedText("7[2;1H[38;5;180mIncubating…8") // stale spinner, not a repaint
+        grid.feedText(repaint(NARROW_ROWS))
+
+        val text = grid.transcriptText()
+        assertEquals(1, text.countOf(MARKER_TOP), "top must not be duplicated across a stale chunk")
+        assertEquals(1, text.countOf(MARKER_BOTTOM), "tail must not be duplicated across a stale chunk")
+    }
+
+    @Test
+    fun `a two-step resize burst withdraws to the pre-take-over baseline`() {
+        // A single take-over commonly fires two size changes: the cols change from the new
+        // device, then a rows-only adjust as its soft keyboard settles. The baseline must be
+        // captured before the FIRST, not re-sampled after the cols reflow has already
+        // archived the old frame's top — otherwise the withdrawal targets the inflated count
+        // and removes nothing.
+        val grid = SessionGrid(WIDE_COLS, WIDE_ROWS)
+        grid.feedText(repaint(WIDE_ROWS))
+
+        grid.resize(NARROW_COLS, NARROW_ROWS + 8) // cols change (device width), taller rows
+        grid.resize(NARROW_COLS, NARROW_ROWS)     // rows-only adjust (keyboard settles)
+        grid.feedText(repaint(NARROW_ROWS))
+
+        val text = grid.transcriptText()
+        assertEquals(1, text.countOf(MARKER_TOP), "top must not survive the burst as a duplicate")
+        assertEquals(1, text.countOf(MARKER_BOTTOM), "tail must not survive the burst as a duplicate")
+    }
+
+    @Test
     fun `repeated take-over does not accumulate copies`() {
         val grid = SessionGrid(WIDE_COLS, WIDE_ROWS)
         grid.feedText(repaint(WIDE_ROWS))

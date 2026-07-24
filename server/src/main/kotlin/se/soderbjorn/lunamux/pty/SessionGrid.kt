@@ -113,13 +113,21 @@ class SessionGrid(cols: Int, rows: Int) {
     }
 
     /**
-     * How many complete logical lines the transcript held just before the last resize,
-     * or -1 when there is no resize awaiting a verdict.
+     * How many complete logical lines the transcript held just before the resize that
+     * opened the current window, or -1 when no resize is awaiting a verdict.
      *
-     * A resize arms this; the very next [feed] disarms it, whichever way it decides. See
-     * [withdrawRedundantArchivalIfDeclared] for what the verdict is and why it must wait.
+     * A resize arms this; a declared repaint (or the window expiring) disarms it. See
+     * [withdrawRedundantArchivalIfDeclared] for what the verdict is and why it must wait
+     * across more than one chunk.
      */
     private var transcriptLinesBeforeResize: Int = -1
+
+    /**
+     * How many chunks have been fed since the window opened, so the search for a repaint
+     * declaration can span the stale in-flight output that typically precedes the
+     * program's actual SIGWINCH response, yet still give up in bounded time.
+     */
+    private var chunksSinceResize: Int = 0
 
     /**
      * If the resize just applied archived rows into scrollback and this chunk declares a
@@ -150,15 +158,28 @@ class SessionGrid(cols: Int, rows: Int) {
     private fun withdrawRedundantArchivalIfDeclared(buf: ByteArray, len: Int) {
         val target = transcriptLinesBeforeResize
         if (target < 0) return
-        transcriptLinesBeforeResize = -1
-        if (emulator.isAlternateBufferActive) return
-        if (!RepaintDeclaration.declaresFullScreenRepaint(buf, len, emulator.mRows)) return
-        try {
-            emulator.mainBuffer.truncateTranscriptToCompletedLines(target)
-        } catch (_: Throwable) {
-            // Withdrawing is an optimisation; leaving the duplicate is survivable, a
-            // half-applied buffer shuffle is not.
+        if (emulator.isAlternateBufferActive) {
+            transcriptLinesBeforeResize = -1
+            return
         }
+        val declared = RepaintDeclaration.declaresFullScreenRepaint(buf, len, emulator.mRows)
+        chunksSinceResize++
+        val before = try { emulator.mainBuffer.transcriptCompletedLineCount } catch (_: Throwable) { -1 }
+        var dropped = -1
+        if (declared) {
+            try {
+                dropped = emulator.mainBuffer.truncateTranscriptToCompletedLines(target)
+            } catch (_: Throwable) {
+                // Withdrawing is an optimisation; leaving the duplicate is survivable, a
+                // half-applied buffer shuffle is not.
+            }
+            transcriptLinesBeforeResize = -1
+        } else if (chunksSinceResize >= REPAINT_SEARCH_CHUNKS) {
+            // The program never declared a full-screen repaint within the window — this
+            // was a shell, or output the program will not rewrite. Leave history intact.
+            transcriptLinesBeforeResize = -1
+        }
+        Diagnostic.recordWithdraw(target, declared, before, dropped, chunksSinceResize, emulator.mRows, buf, len)
     }
 
     /**
@@ -172,14 +193,23 @@ class SessionGrid(cols: Int, rows: Int) {
     fun resize(cols: Int, rows: Int) {
         if (cols < MIN_DIM || rows < MIN_DIM) return
         synchronized(emulator) {
-            // Note what history looked like before the reflow, so the next chunk can
-            // decide whether the reflow's archival was redundant.
-            transcriptLinesBeforeResize = try {
-                if (emulator.isAlternateBufferActive) -1
-                else emulator.mainBuffer.transcriptCompletedLineCount
-            } catch (_: Throwable) {
-                -1
+            // Note what history looked like before the reflow, so a later chunk can decide
+            // whether the reflow's archival was redundant. Arm only once per window: a
+            // single take-over often fires several resizes in a burst (a cols change, then
+            // a rows-only keyboard adjust), and only the FIRST reflect the pre-take-over
+            // history. Re-arming on a later one would capture the already-inflated
+            // transcript and withdraw nothing. A fresh window opens only after the previous
+            // one is resolved (transcriptLinesBeforeResize back to -1).
+            if (transcriptLinesBeforeResize < 0) {
+                transcriptLinesBeforeResize = try {
+                    if (emulator.isAlternateBufferActive) -1
+                    else emulator.mainBuffer.transcriptCompletedLineCount
+                } catch (_: Throwable) {
+                    -1
+                }
+                chunksSinceResize = 0
             }
+            Diagnostic.recordResize(cols, rows, transcriptLinesBeforeResize)
             try {
                 emulator.resize(cols, rows, NOMINAL_CELL_WIDTH_PX, NOMINAL_CELL_HEIGHT_PX)
             } catch (_: Throwable) {
@@ -244,5 +274,64 @@ class SessionGrid(cols: Int, rows: Int) {
          * for the fidelity it buys, and flagged here as the one real cost.
          */
         const val TRANSCRIPT_ROWS = 3000
+
+        /**
+         * How many chunks after a resize to keep looking for the program's full-screen
+         * repaint declaration. On device the SIGWINCH response does not always arrive in
+         * the very first chunk: stale in-flight output (a spinner frame, a partial write)
+         * can precede it. A small window bridges that gap while still giving up promptly so
+         * a normal-buffer program's later legitimate output is never mistaken for a repaint.
+         */
+        const val REPAINT_SEARCH_CHUNKS = 24
+    }
+
+    /**
+     * TEMPORARY DIAGNOSTIC. Records resize windows and each withdraw decision to the same
+     * file as `TerminalSessionManager.SizeChurnLog`, so the take-over-duplication behaviour
+     * can be read from device rather than reasoned about. A no-op unless
+     * `lunamux.sizeChurnLog` (or `LUNAMUX_SIZE_CHURN_LOG`) points at a path. Remove together
+     * with `SizeChurnLog` before upstream.
+     */
+    private object Diagnostic {
+        private val path: String? =
+            System.getProperty("lunamux.sizeChurnLog") ?: System.getenv("LUNAMUX_SIZE_CHURN_LOG")
+
+        fun recordResize(cols: Int, rows: Int, armedTarget: Int) {
+            val target = path ?: return
+            runCatching {
+                java.io.File(target).appendText("GRID resize -> ${cols}x$rows armedTarget=$armedTarget\n")
+            }
+        }
+
+        fun recordWithdraw(
+            target: Int,
+            declared: Boolean,
+            before: Int,
+            dropped: Int,
+            chunkIndex: Int,
+            mRows: Int,
+            buf: ByteArray,
+            len: Int,
+        ) {
+            val logPath = path ?: return
+            runCatching {
+                val n = minOf(len, 96)
+                val sb = StringBuilder(n * 2)
+                for (i in 0 until n) {
+                    when (val b = buf[i].toInt() and 0xff) {
+                        0x1b -> sb.append("<ESC>")
+                        0x07 -> sb.append("<BEL>")
+                        0x0d -> sb.append("<CR>")
+                        0x0a -> sb.append("<LF>")
+                        in 0x20..0x7e -> sb.append(b.toChar())
+                        else -> sb.append('.')
+                    }
+                }
+                java.io.File(logPath).appendText(
+                    "GRID withdraw chunk#$chunkIndex declared=$declared target=$target before=$before " +
+                        "dropped=$dropped mRows=$mRows head=[$sb]\n"
+                )
+            }
+        }
     }
 }
