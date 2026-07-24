@@ -27,11 +27,18 @@
  */
 package se.soderbjorn.lunamux.pty
 
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class TakeOverRepaintTest {
+
+    // The withdrawal defaults OFF in production (observe-only on device); these tests pin
+    // the algorithm itself, so they opt the real truncation in for their duration.
+    @BeforeTest fun enableWithdraw() { System.setProperty("lunamux.gridWithdraw", "true") }
+    @AfterTest fun disableWithdraw() { System.clearProperty("lunamux.gridWithdraw") }
 
     private fun SessionGrid.feedText(s: String) {
         val b = s.toByteArray(Charsets.UTF_8)

@@ -167,11 +167,18 @@ class SessionGrid(cols: Int, rows: Int) {
         val before = try { emulator.mainBuffer.transcriptCompletedLineCount } catch (_: Throwable) { -1 }
         var dropped = -1
         if (declared) {
-            try {
-                dropped = emulator.mainBuffer.truncateTranscriptToCompletedLines(target)
-            } catch (_: Throwable) {
-                // Withdrawing is an optimisation; leaving the duplicate is survivable, a
-                // half-applied buffer shuffle is not.
+            if (withdrawEnabled()) {
+                try {
+                    dropped = emulator.mainBuffer.truncateTranscriptToCompletedLines(target)
+                } catch (_: Throwable) {
+                    // Withdrawing is an optimisation; leaving the duplicate is survivable, a
+                    // half-applied buffer shuffle is not.
+                }
+            } else {
+                // Observe-only: report what a truncate WOULD drop, without touching the
+                // buffer. Lets a device run answer "does the single-resize path even
+                // duplicate?" before we risk deleting genuine history.
+                dropped = -2 - (before - target).coerceAtLeast(0)
             }
             transcriptLinesBeforeResize = -1
         } else if (chunksSinceResize >= REPAINT_SEARCH_CHUNKS) {
@@ -180,6 +187,7 @@ class SessionGrid(cols: Int, rows: Int) {
             transcriptLinesBeforeResize = -1
         }
         Diagnostic.recordWithdraw(target, declared, before, dropped, chunksSinceResize, emulator.mRows, buf, len)
+        if (declared) Diagnostic.recordTranscriptTail(emulator.mainBuffer.transcriptText)
     }
 
     /**
@@ -286,6 +294,17 @@ class SessionGrid(cols: Int, rows: Int) {
     }
 
     /**
+     * Whether a declared repaint actually withdraws the reflow's archival, or merely
+     * reports what it would withdraw. Default OFF while we confirm on device whether the
+     * single (debounced) resize path duplicates at all — deleting history is far worse than
+     * a duplicate, so the withdrawal earns its place only against evidence. Read fresh from
+     * the `lunamux.gridWithdraw` system property each call so tests can opt in per-run
+     * without a class-load ordering hazard. TEMPORARY — collapses to always-on (or always-
+     * off) once the device verdict is in.
+     */
+    private fun withdrawEnabled(): Boolean = System.getProperty("lunamux.gridWithdraw") == "true"
+
+    /**
      * TEMPORARY DIAGNOSTIC. Records resize windows and each withdraw decision to the same
      * file as `TerminalSessionManager.SizeChurnLog`, so the take-over-duplication behaviour
      * can be read from device rather than reasoned about. A no-op unless
@@ -330,6 +349,29 @@ class SessionGrid(cols: Int, rows: Int) {
                 java.io.File(logPath).appendText(
                     "GRID withdraw chunk#$chunkIndex declared=$declared target=$target before=$before " +
                         "dropped=$dropped mRows=$mRows head=[$sb]\n"
+                )
+            }
+        }
+
+        /**
+         * After a declared repaint settles, record the transcript's shape so duplication can
+         * be seen at the content level rather than inferred from counts: the total non-blank
+         * line count, how many of those are DISTINCT, and the last dozen lines. A total that
+         * runs well ahead of distinct — or a repeated tail — is duplication; a tail that
+         * shrinks between switches is loss.
+         *
+         * @param transcript the full main-buffer transcript text.
+         */
+        fun recordTranscriptTail(transcript: String) {
+            val logPath = path ?: return
+            runCatching {
+                val lines = transcript.split('\n').map { it.trimEnd() }
+                val nonBlank = lines.filter { it.isNotBlank() }
+                val distinct = nonBlank.toHashSet().size
+                val tail = lines.takeLast(12).joinToString(" | ") { it.take(50) }
+                java.io.File(logPath).appendText(
+                    "GRID transcript lines=${lines.size} nonBlank=${nonBlank.size} distinct=$distinct " +
+                        "tail=[$tail]\n"
                 )
             }
         }
