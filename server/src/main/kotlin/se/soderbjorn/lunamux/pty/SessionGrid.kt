@@ -368,11 +368,23 @@ class SessionGrid(cols: Int, rows: Int) {
                 val lines = transcript.split('\n').map { it.trimEnd() }
                 val nonBlank = lines.filter { it.isNotBlank() }
                 val distinct = nonBlank.toHashSet().size
-                val tail = lines.takeLast(12).joinToString(" | ") { it.take(50) }
+                // Count occurrences of stable banner/prompt markers directly, so grid-level
+                // duplication is visible per snapshot rather than masked by distinct-collapse.
+                // "███" is in the Claude banner logo; "❯ " is the prompt gutter.
+                val logoCount = lines.count { it.contains("███") }
+                val promptCount = lines.count { it.contains("❯ ") }
+                // Group consecutive identical non-blank lines to spot repeated blocks.
+                val repeatedLines = nonBlank.groupingBy { it }.eachCount().filter { it.value > 1 }
+                val worst = repeatedLines.entries.sortedByDescending { it.value }.take(3)
+                    .joinToString("; ") { "\"${it.key.take(30)}\"×${it.value}" }
+                val tail = lines.takeLast(8).joinToString(" | ") { it.take(50) }
                 java.io.File(logPath).appendText(
                     "GRID transcript lines=${lines.size} nonBlank=${nonBlank.size} distinct=$distinct " +
-                        "tail=[$tail]\n"
+                        "logo=$logoCount prompt=$promptCount worstRepeats=[$worst] tail=[$tail]\n"
                 )
+                // Overwrite a sidecar with the full transcript each time, so after the run
+                // the server's canonical view can be compared to what the client rendered.
+                java.io.File("$logPath.grid-transcript.txt").writeText(transcript)
             }
         }
     }
