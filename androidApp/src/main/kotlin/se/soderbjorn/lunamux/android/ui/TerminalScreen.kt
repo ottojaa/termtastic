@@ -401,6 +401,17 @@ fun TerminalScreen(
                     synchronized(emulator) {
                         runCatching { emulator.resize(sz.first, emulator.mRows, 1, 1) }
                     }
+                    // Repaint after the resize. A cols change is followed by the
+                    // synthesized redraw Bytes (which repaint), but a rows-only Size
+                    // carries no redraw, and even on a cols change the view otherwise
+                    // shows the pre-resize buffer until those Bytes land — the
+                    // "invisible until you scroll" flash on take-over. Respect a
+                    // scrolled-up user: onScreenUpdated force-snaps to the bottom, so
+                    // only call it at the bottom and otherwise just invalidate in place.
+                    terminalViewRef.value?.post {
+                        val view = terminalViewRef.value ?: return@post
+                        if (view.topRow < 0) view.invalidate() else view.onScreenUpdated()
+                    }
                     return@collect
                 }
                 PtyEvent.Reset -> {
