@@ -709,6 +709,12 @@ class TerminalSession private constructor(
     private fun applySize(next: Pair<Int, Int>?) {
         val (c, r) = next ?: return
         val colsChanged = c != _sizeEvents.value.first
+        // TEMPORARY DIAGNOSTIC (remove once the take-over repaint churn is understood).
+        // Every effective size change is a SIGWINCH, and a live TUI answers a SIGWINCH
+        // by repainting — which, in the normal buffer, appends another copy of its
+        // output. Duplicated blocks are therefore a count of size changes, so record
+        // them with their cause to compare against the pre-refactor build.
+        SizeChurnLog.record(_sizeEvents.value, Pair(c, r), colsChanged)
         try {
             pty.winSize = WinSize(c, r)
         } catch (_: Throwable) {
@@ -725,6 +731,29 @@ class TerminalSession private constructor(
         // Only a cols change rewraps the grid, so only then does the client need a
         // resync redraw; a rows-only change is carried by the Size event alone.
         if (colsChanged) resyncTrigger.tryEmit(Unit)
+    }
+
+    /**
+     * TEMPORARY DIAGNOSTIC. Appends every effective PTY size change to a file so the
+     * take-over repaint churn can be counted instead of guessed at.
+     *
+     * Enabled by pointing `LUNAMUX_SIZE_CHURN_LOG` at a path; a no-op otherwise, so
+     * it costs nothing when unset. Remove together with its call site once the cause
+     * is found.
+     */
+    private object SizeChurnLog {
+        private val path: String? = System.getenv("LUNAMUX_SIZE_CHURN_LOG")
+
+        fun record(from: Pair<Int, Int>, to: Pair<Int, Int>, colsChanged: Boolean) {
+            val target = path ?: return
+            runCatching {
+                val kind = if (colsChanged) "COLS+RESYNC" else "rows-only"
+                java.io.File(target).appendText(
+                    "${System.currentTimeMillis()} ${from.first}x${from.second} -> " +
+                        "${to.first}x${to.second}  [$kind]\n"
+                )
+            }
+        }
     }
 
     override fun attachPayload(): AttachPayload = synchronized(outboundLock) {
