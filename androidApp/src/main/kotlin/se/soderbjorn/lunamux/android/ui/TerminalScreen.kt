@@ -106,6 +106,18 @@ private const val PASSIVE_FONT_FLOOR_PX = 12f
 /** The phone's normal (driving) terminal font size in px. */
 private const val DRIVING_FONT_PX = 30
 
+/**
+ * Trailing debounce (ms) on the phone's PTY size vote.
+ *
+ * The grid-size listener fires on every layout pass, and a take-over walks the font
+ * from the shrunken mirror size back to the driving size one pixel at a time — so an
+ * undebounced vote resized the shared PTY ~19 times in 250ms. Every one of those is a
+ * SIGWINCH, and a live TUI repaints on SIGWINCH, appending another copy of its output
+ * to the scrollback. Long enough to coalesce a settling layout, short enough that a
+ * finished rotation still feels immediate. Mirrors the web's 200ms vote debounce.
+ */
+private const val SIZE_VOTE_DEBOUNCE_MS = 200L
+
 /** Bounds for the mirror-only pinch zoom (a multiplier on the fitted mirror font). */
 private const val MIRROR_ZOOM_MIN = 0.5f
 private const val MIRROR_ZOOM_MAX = 6f
@@ -223,6 +235,10 @@ fun TerminalScreen(
     var swipeInputActive by remember { mutableStateOf(false) }
     var swipeText by remember { mutableStateOf("") }
     val terminalViewRef = remember { mutableStateOf<TerminalView?>(null) }
+
+    // Trailing debounce for the grid-size vote, so a settling layout casts one vote
+    // rather than one per intermediate pass. See the grid-size listener below.
+    var sizeVoteJob by remember(sessionId) { mutableStateOf<Job?>(null) }
 
     // [localGrid] = the phone's NATURAL grid (what the view renders at the user's
     // own font), measured by the grid-size listener while NOT mirroring. It is the
@@ -670,7 +686,21 @@ fun TerminalScreen(
                             if (passiveGridPin.get() == null) {
                                 localGrid = AndroidGridDims(cols = cols, rows = rows)
                                 gridFlow.value = cols to rows
-                                scope.launch { runCatching { ptySocket.resize(cols, rows) } }
+                                // Vote only once the grid has SETTLED. This fires on every
+                                // layout pass, and taking over walks the font from the
+                                // shrunken mirror size back to the driving size a pixel at
+                                // a time — measured on device as 19 row-only votes inside
+                                // 250ms (55 rows down to 24). Each one resized the PTY,
+                                // and a live TUI answers every SIGWINCH by repainting,
+                                // which in the normal buffer appends another copy of its
+                                // output: one take-over produced a screenful of duplicated
+                                // blocks. The web has always debounced this same vote; the
+                                // phone voting straight from the listener was the gap.
+                                sizeVoteJob?.cancel()
+                                sizeVoteJob = scope.launch {
+                                    delay(SIZE_VOTE_DEBOUNCE_MS)
+                                    runCatching { ptySocket.resize(cols, rows) }
+                                }
                             }
                         }
                         view.setTerminalViewClient(object : TerminalViewClient {
