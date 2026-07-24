@@ -737,12 +737,16 @@ class TerminalSession private constructor(
      * TEMPORARY DIAGNOSTIC. Appends every effective PTY size change to a file so the
      * take-over repaint churn can be counted instead of guessed at.
      *
-     * Enabled by pointing `LUNAMUX_SIZE_CHURN_LOG` at a path; a no-op otherwise, so
-     * it costs nothing when unset. Remove together with its call site once the cause
-     * is found.
+     * Enabled by pointing either the `lunamux.sizeChurnLog` system property (set from
+     * Gradle with `-PsizeChurnLog=<path>`) or the `LUNAMUX_SIZE_CHURN_LOG` environment
+     * variable at a path; a no-op otherwise, so it costs nothing when unset. The
+     * system property is the dependable one — `:server:run` forks a JVM from the
+     * Gradle daemon, whose environment can be stale from an earlier invocation.
+     * Remove together with its call site once the cause is found.
      */
     private object SizeChurnLog {
-        private val path: String? = System.getenv("LUNAMUX_SIZE_CHURN_LOG")
+        private val path: String? =
+            System.getProperty("lunamux.sizeChurnLog") ?: System.getenv("LUNAMUX_SIZE_CHURN_LOG")
 
         fun record(from: Pair<Int, Int>, to: Pair<Int, Int>, colsChanged: Boolean) {
             val target = path ?: return
