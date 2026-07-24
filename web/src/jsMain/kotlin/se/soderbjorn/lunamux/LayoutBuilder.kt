@@ -85,11 +85,6 @@ fun attachDragDrop(container: HTMLElement, term: Terminal) {
  */
 fun sendResize(entry: TerminalEntry) {
     if (entry.applyingServerSize) return
-    // A passive mirror never votes a size: its grid is the server's, not one this
-    // pane chose, so echoing it back would either be a no-op or (once the pane box
-    // changes) seize the PTY from the client actually driving. Take-over is an
-    // explicit act — typing, or the badge — routed through `forceReassert`.
-    if (entry.passive) return
     // Cold-restore settling window: swallow the vote. The stale fit sampled at
     // socket open (before the split geometry / webfont settled) debounces
     // through here ~200 ms later — after the server has already restored the
@@ -117,7 +112,23 @@ fun sendResize(entry: TerminalEntry) {
     // forceReassert, which bypasses this gate). See [resizeGestureActive].
     if (resizeGestureActive) return
     if (!entryOpen(entry)) return
-    val cols = entry.term.cols; val rows = entry.term.rows
+    // Vote this pane's NATURAL grid — the one it renders at with the user's own
+    // font. While mirroring, `term.cols/rows` is the *server's* grid rendered at a
+    // shrunken font, so voting it would either echo the driver's size back or, once
+    // this pane's box changed, vote a number derived from the mirror scale rather
+    // than from anything the user chose.
+    //
+    // A mirror does still vote. It is a soft vote, and the arbiter only hands
+    // governance over on an explicit force or on real input, so this loses to a
+    // client that is actually driving and wins by `driverFallback` when nobody is —
+    // which is the whole point: the earlier "a mirror never votes" guard deadlocked
+    // a lone client. On restore the server holds the session at its *persisted*
+    // width, so the only client attached could differ from it, latch to passive, and
+    // then never be able to say so: no vote, no refit, no take-over. It sat
+    // "Mirroring another device" with no other device in existence.
+    val passiveNow = entry.passive && entry.naturalCols > 0 && entry.naturalRows > 0
+    val cols = if (passiveNow) entry.naturalCols else entry.term.cols
+    val rows = if (passiveNow) entry.naturalRows else entry.term.rows
     // While the pane rides a 3D-world plane, this automatic vote lands on the
     // *same* socket/clientId as the 3D world's explicit vote — fired by
     // `term.onResize` the instant `setPaneGrid` resizes the grid, and again on
@@ -634,6 +645,14 @@ fun ensureTerminal(paneId: String, sessionId: String): TerminalEntry {
     })
 
     val entry = TerminalEntry(paneId, sessionId, term, fit, container)
+    // Seed the natural grid from the creation-time fit above. `term.onResize` (which
+    // records it thereafter) is registered further down, so that first fit would
+    // otherwise leave it at 0 — and a 0 natural width makes `isPassive` undecidable,
+    // so the pane can neither judge whether it is mirroring nor vote a sane grid
+    // until some later ambient refit happens to fire.
+    entry.naturalCols = term.cols
+    entry.naturalRows = term.rows
+    entry.baseFontSize = appVm.stateFlow.value.paneFontSize ?: 14
     // Freeze the effective automatic-reflow flag at creation time: the
     // per-pane override if the pane carries one, otherwise a *snapshot* of
     // the current global default. Snapshotting here (rather than evaluating

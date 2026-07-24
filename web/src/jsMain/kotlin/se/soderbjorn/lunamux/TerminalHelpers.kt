@@ -631,6 +631,10 @@ private fun reassertGrid(entry: TerminalEntry, force: Boolean) {
                 entry.naturalRows = (proposed.second * k).toInt().coerceAtLeast(2)
             }
             applyMirrorPresentation(entry)
+            // Still cast the soft vote (of the natural grid — see [sendResize]).
+            // Returning without voting is what let a lone client latch to passive
+            // with nothing able to release it.
+            sendResize(entry)
             return
         }
         // Forced = an explicit take-over. Drop out of mirror mode and restore the
